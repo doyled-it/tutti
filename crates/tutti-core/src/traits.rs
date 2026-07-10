@@ -27,26 +27,20 @@ pub enum EngineError {
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-/// A disarm marker proving an issue is claimed. There is no `Drop` impl: async
-/// release is impossible from `drop`, so on any error after a claim the engine
-/// explicitly releases the claim (see the release-on-error path in `run_one`).
-/// A stale-issue recovery sweep (reclaiming in-progress issues abandoned by a
-/// crash) is deferred to the live-forge adapter.
+/// A token proving an issue is claimed for as long as it is held. There is no
+/// `Drop` impl: async release is impossible from `drop`, so on any error after
+/// a claim the engine explicitly releases the claim (see the release-on-error
+/// path in `run_one`). A stale-issue recovery sweep (reclaiming in-progress
+/// issues abandoned by a crash) is a forge-label sweep deferred to the live
+/// adapter.
 #[derive(Debug)]
 pub struct ClaimGuard {
     pub issue: IssueId,
-    /// Read by the future recover sweep, not in slice 1; kept as the disarm state.
-    #[allow(dead_code)]
-    armed: bool,
 }
 
 impl ClaimGuard {
     pub fn new(issue: IssueId) -> Self {
-        Self { issue, armed: true }
-    }
-    /// Disarm the guard once the claim has been resolved (shipped or released).
-    pub fn disarm(&mut self) {
-        self.armed = false;
+        Self { issue }
     }
 }
 

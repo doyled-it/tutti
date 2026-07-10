@@ -10,7 +10,7 @@ use crate::message::{
     RolePlaybook,
 };
 use crate::routing;
-use crate::traits::{AgentBackend, ClaimGuard, EngineError, Forge, Result, RoutingStrategy};
+use crate::traits::{AgentBackend, EngineError, Forge, Result, RoutingStrategy};
 use std::path::PathBuf;
 
 /// What one iteration of the loop produced. Drives the outer drain decision.
@@ -85,8 +85,11 @@ impl<'a> Engine<'a> {
         let Some(issue) = self.forge.next_ready_issue(&self.cfg.select).await? else {
             return Ok(IterOutcome::NoReadyWork);
         };
-        let mut guard = self.forge.claim(issue.id).await?;
-        let result = self.run_claimed(&issue, &mut guard).await;
+        // Bind the guard so the claim's lifetime is clear for the duration of the
+        // iteration, even though nothing observes it: release-on-error below is
+        // what actually resolves the claim on failure.
+        let _guard = self.forge.claim(issue.id).await?;
+        let result = self.run_claimed(&issue).await;
         if result.is_err() {
             // Best-effort release so a transient failure does not strand the claim.
             let _ = self.forge.release(issue.id).await;
@@ -94,21 +97,19 @@ impl<'a> Engine<'a> {
         result
     }
 
-    /// The claimed body of one iteration. On every terminal return it disarms the
-    /// guard; any unexpected `Err` propagates and `run_one` releases the claim.
-    async fn run_claimed(&self, issue: &Issue, guard: &mut ClaimGuard) -> Result<IterOutcome> {
+    /// The claimed body of one iteration. Any unexpected `Err` propagates and
+    /// `run_one` releases the claim.
+    async fn run_claimed(&self, issue: &Issue) -> Result<IterOutcome> {
         // Stage: implement.
         let impl_out = self.run_role(Role::Implementer, issue, None).await?;
         if impl_out.status != AgentStatus::ReadyToShip {
             self.forge.release(issue.id).await?;
-            guard.disarm();
             return Ok(IterOutcome::Blocked(
                 impl_out.blocked_reason.unwrap_or_default(),
             ));
         }
         let Some(mut handoff) = impl_out.handoff else {
             self.forge.release(issue.id).await?;
-            guard.disarm();
             return Ok(IterOutcome::Blocked(
                 "agent reported ReadyToShip but produced no handoff".into(),
             ));
@@ -126,14 +127,12 @@ impl<'a> Engine<'a> {
             let fix_out = self.run_role(Role::FixApplier, issue, Some(report)).await?;
             if fix_out.status != AgentStatus::ReadyToShip {
                 self.forge.release(issue.id).await?;
-                guard.disarm();
                 return Ok(IterOutcome::Blocked(
                     fix_out.blocked_reason.unwrap_or_default(),
                 ));
             }
             let Some(fix_handoff) = fix_out.handoff else {
                 self.forge.release(issue.id).await?;
-                guard.disarm();
                 return Ok(IterOutcome::Blocked(
                     "fix applier reported ReadyToShip but produced no handoff".into(),
                 ));
@@ -153,15 +152,10 @@ impl<'a> Engine<'a> {
             poll_delay: std::time::Duration::from_secs(self.cfg.poll_delay_secs),
         };
         match exec.ship(&handoff).await? {
-            ShipResult::Merged(_) => {
-                guard.disarm(); // record() already flipped the label to done
-                Ok(IterOutcome::Shipped)
-            }
-            ShipResult::CiNotGreen(_, _) => {
-                // Leave the issue in-progress and the PR open for a human.
-                guard.disarm();
-                Ok(IterOutcome::StoppedCiRed)
-            }
+            // record() already flipped the label to done.
+            ShipResult::Merged(_) => Ok(IterOutcome::Shipped),
+            // Leave the issue in-progress and the PR open for a human.
+            ShipResult::CiNotGreen(_, _) => Ok(IterOutcome::StoppedCiRed),
         }
     }
 
@@ -424,7 +418,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unexpected_forge_error_releases_claim() {
+    async fn unexpected_backend_error_releases_claim() {
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
         // No scripted implementer outcome: run_role returns Err(Backend(..)) after

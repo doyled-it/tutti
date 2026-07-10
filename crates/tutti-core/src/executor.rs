@@ -56,15 +56,18 @@ impl<'a> Executor<'a> {
             })
             .await?;
 
-        // Poll CI.
+        // Poll CI. Do not sleep after the last poll: a timeout should not waste
+        // one extra poll_delay once there is no further poll to wait for.
         let mut last = CiState::Pending;
-        for _ in 0..self.ci_max_polls {
+        for i in 0..self.ci_max_polls {
             last = self.forge.ci_status(&pr).await?;
             match last {
                 CiState::Pass => break,
                 CiState::Fail => return Ok(ShipResult::CiNotGreen(pr, CiState::Fail)),
                 CiState::Pending => {
-                    tokio::time::sleep(self.poll_delay).await;
+                    if i + 1 < self.ci_max_polls {
+                        tokio::time::sleep(self.poll_delay).await;
+                    }
                     continue;
                 }
             }
