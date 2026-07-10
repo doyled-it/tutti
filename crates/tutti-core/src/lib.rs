@@ -4,6 +4,7 @@
 pub mod domain;
 pub mod gate;
 pub mod message;
+pub mod routing;
 pub mod testing;
 pub mod traits;
 
