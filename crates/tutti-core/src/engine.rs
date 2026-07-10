@@ -336,6 +336,77 @@ mod tests {
         assert_eq!(engine.run_one().await.unwrap(), IterOutcome::NoReadyWork);
     }
 
+    #[tokio::test]
+    async fn ci_red_leaves_issue_in_progress() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Fail);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::StoppedCiRed);
+        // CI red must not release the claim: the issue stays in-progress, not done,
+        // and not handed back to the ready pool.
+        assert!(!forge.is_done(IssueId(1)));
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:in-progress".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
+    }
+
+    #[tokio::test]
+    async fn fix_applier_blocked_releases_claim() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let dirty_review = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![Finding {
+                    severity: Severity::Blocking,
+                    file: "a.rs".into(),
+                    line: None,
+                    claim: "bug".into(),
+                }],
+                verdict: Verdict::RequestChanges,
+            }),
+            summary: "changes".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        let fix_blocked = AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
+            review: None,
+            summary: "could not apply fix".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("cannot fix".into()),
+        };
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, dirty_review)
+            .script(Role::FixApplier, fix_blocked);
+        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert!(matches!(outcome, IterOutcome::Blocked(_)));
+        // The claim is released back to the ready pool for a future attempt.
+        assert!(forge
+            .labels_of(IssueId(1))
+            .contains(&"status:ready".to_string()));
+    }
+
+    #[test]
+    fn stop_action_is_not_auto_executable() {
+        let stop = PlanDecision {
+            action: PlanAction::Stop,
+            rationale: String::new(),
+            needs_human: false,
+        };
+        assert!(!plan_is_auto_executable(&stop));
+    }
+
     #[test]
     fn planner_guardrail_blocks_close_milestone_and_human_actions() {
         let close = PlanDecision {
