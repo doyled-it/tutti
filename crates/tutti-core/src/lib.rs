@@ -3,6 +3,7 @@
 
 pub mod domain;
 pub mod message;
+pub mod testing;
 pub mod traits;
 
 /// The engine's semantic version, surfaced in logs and handoff artifacts.
