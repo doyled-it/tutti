@@ -97,9 +97,13 @@ impl Config {
         Ok(())
     }
 
-    /// The skills for `role`, falling back to the shipped default.
+    /// The skills for `role`, falling back to the shipped default when the role
+    /// is absent from `self.roles` (e.g. a Config built directly, not loaded).
     pub fn skills_for(&self, role: Role) -> Vec<String> {
-        self.roles.get(&role).cloned().unwrap_or_default()
+        self.roles
+            .get(&role)
+            .cloned()
+            .unwrap_or_else(|| default_roles().get(&role).cloned().unwrap_or_default())
     }
 }
 
@@ -169,6 +173,32 @@ implementer = ["custom:my-implement-skill"]
         assert!(cfg
             .skills_for(Role::Reviewer)
             .contains(&"superpowers:requesting-code-review".to_string()));
+    }
+
+    #[test]
+    fn skills_for_falls_back_to_default_when_role_absent() {
+        let cfg = Config {
+            trunk: "main".into(),
+            routing: "trunk".into(),
+            integration_branch: "version/v0.1".into(),
+            model: "m".into(),
+            max_issues_per_run: 25,
+            ci_max_polls: 40,
+            poll_delay_secs: 15,
+            select: SelectFilter {
+                require_label: "status:ready".into(),
+                skip_labels: vec![],
+            },
+            gate: Gate {
+                commands: vec!["true".into()],
+                working_dir: Default::default(),
+            },
+            roles: HashMap::new(),
+        };
+        assert_eq!(
+            cfg.skills_for(Role::Reviewer),
+            default_roles().get(&Role::Reviewer).cloned().unwrap()
+        );
     }
 
     #[test]

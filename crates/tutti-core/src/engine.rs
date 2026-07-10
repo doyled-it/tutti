@@ -20,6 +20,7 @@ pub enum IterOutcome {
     NoReadyWork,
     Blocked(String),
     StoppedCiRed,
+    // Reserved for the gate stage, wired with the live implement adapter (not produced in slice 1).
     StoppedGateRed,
 }
 
@@ -186,6 +187,7 @@ impl<'a> Engine<'a> {
     /// The planning hook. GUARDRAIL #3: only whitelisted, non-human actions execute;
     /// everything else is returned for a human to action.
     async fn plan(&self) -> Result<PlanDecision> {
+        // Slice 2: the live planner executes whitelisted actions; slice 1 only proposes.
         // A real planner is an agent run; slice-1 default is deterministic "NextIssue".
         // (The Planner role + agent wiring lands with the live backend.)
         Ok(PlanDecision {

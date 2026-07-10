@@ -14,6 +14,8 @@ struct State {
     issues: Vec<Issue>,
     branches: HashSet<String>,
     prs: HashMap<u64, PrHandle>,
+    /// PR number -> its base branch (the integration target it merges into).
+    bases: HashMap<u64, String>,
     ci: HashMap<u64, CiState>,
     next_pr: u64,
     done: HashSet<IssueId>,
@@ -53,11 +55,12 @@ impl FakeForge {
         self.state.lock().unwrap().done.contains(&issue)
     }
 
+    /// The base branches merged into (one per recorded ship), read from the PR bases.
     pub fn merged_bases(&self) -> Vec<String> {
         let st = self.state.lock().unwrap();
         st.records
             .iter()
-            .filter_map(|(_, r)| st.prs.get(&r.pr.number).map(|p| p.branch.clone()))
+            .filter_map(|(_, r)| st.bases.get(&r.pr.number).cloned())
             .collect()
     }
 
@@ -126,9 +129,10 @@ impl Forge for FakeForge {
         st.next_pr += 1;
         let handle = PrHandle {
             number,
-            branch: pr.base.clone(),
+            branch: pr.head.clone(),
         };
         st.prs.insert(number, handle.clone());
+        st.bases.insert(number, pr.base.clone());
         let verdict = *self.default_ci.lock().unwrap();
         st.ci.insert(number, verdict);
         Ok(handle)

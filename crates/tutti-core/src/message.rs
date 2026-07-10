@@ -29,7 +29,7 @@ pub struct AgentTask {
     /// The feature branch the agent works on inside the worktree.
     pub worktree_branch: String,
     pub model: String,
-    /// Present for the FixApplier / Reviewer: findings to act on or the diff to judge.
+    /// The prior `ReviewReport` carried into the fix-applier stage (its findings to act on).
     pub review: Option<ReviewReport>,
 }
 

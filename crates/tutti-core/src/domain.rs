@@ -43,6 +43,7 @@ pub struct BranchPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrHandle {
     pub number: u64,
+    /// The HEAD branch of the PR (the feature branch), not its base.
     pub branch: String,
 }
 
