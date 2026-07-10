@@ -7,8 +7,6 @@ use crate::domain::{
 use crate::message::{AgentEvent, AgentOutcome, AgentTask};
 use async_trait::async_trait;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 
@@ -29,27 +27,26 @@ pub enum EngineError {
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-/// RAII marker proving an issue is claimed. See the module note on async Drop.
+/// A disarm marker proving an issue is claimed. There is no `Drop` impl: async
+/// release is impossible from `drop`, so on any error after a claim the engine
+/// explicitly releases the claim (see the release-on-error path in `run_one`).
+/// A stale-issue recovery sweep (reclaiming in-progress issues abandoned by a
+/// crash) is deferred to the live-forge adapter.
 #[derive(Debug)]
 pub struct ClaimGuard {
     pub issue: IssueId,
-    released: Arc<AtomicBool>,
+    /// Read by the future recover sweep, not in slice 1; kept as the disarm state.
+    #[allow(dead_code)]
+    armed: bool,
 }
 
 impl ClaimGuard {
     pub fn new(issue: IssueId) -> Self {
-        Self {
-            issue,
-            released: Arc::new(AtomicBool::new(false)),
-        }
+        Self { issue, armed: true }
     }
-    /// Mark the guard as explicitly released (call after `forge.release`).
-    pub fn mark_released(&self) {
-        self.released.store(true, Ordering::SeqCst);
-    }
-    /// For tests: was this guard released before drop?
-    pub fn was_released(&self) -> bool {
-        self.released.load(Ordering::SeqCst)
+    /// Disarm the guard once the claim has been resolved (shipped or released).
+    pub fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
