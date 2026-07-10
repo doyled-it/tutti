@@ -123,6 +123,41 @@ working_dir = ""
     }
 
     #[test]
+    fn parses_explicit_roles_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "version/v0.1"
+model = "claude-opus-4-8"
+
+[select]
+require_label = "status:ready"
+skip_labels = ["status:needs-human"]
+
+[gate]
+commands = ["cargo test"]
+working_dir = ""
+
+[roles]
+implementer = ["custom:my-implement-skill"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(
+            cfg.skills_for(Role::Implementer),
+            vec!["custom:my-implement-skill".to_string()]
+        );
+        assert!(cfg
+            .skills_for(Role::Reviewer)
+            .contains(&"superpowers:requesting-code-review".to_string()));
+    }
+
+    #[test]
     fn rejects_integration_branch_equal_to_trunk() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tutti.toml");
