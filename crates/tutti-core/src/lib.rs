@@ -2,6 +2,7 @@
 //! Tutti engine core: the offline rails loop, testable with fakes.
 
 pub mod domain;
+pub mod executor;
 pub mod gate;
 pub mod message;
 pub mod routing;
