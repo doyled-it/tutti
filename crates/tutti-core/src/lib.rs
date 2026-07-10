@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Tutti engine core: the offline rails loop, testable with fakes.
 
+pub mod domain;
+
 /// The engine's semantic version, surfaced in logs and handoff artifacts.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
