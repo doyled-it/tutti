@@ -3,6 +3,7 @@
 
 pub mod domain;
 pub mod message;
+pub mod traits;
 
 /// The engine's semantic version, surfaced in logs and handoff artifacts.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
