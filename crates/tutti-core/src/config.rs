@@ -22,6 +22,12 @@ pub struct Config {
     pub model: String,
     #[serde(default = "default_max_issues")]
     pub max_issues_per_run: u32,
+    /// How many times the executor polls CI before giving up.
+    #[serde(default = "default_ci_max_polls")]
+    pub ci_max_polls: u32,
+    /// Seconds the executor sleeps between CI polls.
+    #[serde(default = "default_poll_delay_secs")]
+    pub poll_delay_secs: u64,
     pub select: SelectFilter,
     pub gate: Gate,
     /// role -> skill refs. Roles absent here fall back to `default_roles()`.
@@ -31,6 +37,14 @@ pub struct Config {
 
 fn default_max_issues() -> u32 {
     25
+}
+
+fn default_ci_max_polls() -> u32 {
+    40
+}
+
+fn default_poll_delay_secs() -> u64 {
+    15
 }
 
 /// The shipped default role -> skills mapping.

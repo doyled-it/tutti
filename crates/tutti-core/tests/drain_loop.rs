@@ -16,6 +16,8 @@ fn cfg() -> Config {
         integration_branch: "version/v0.1".into(),
         model: "fake".into(),
         max_issues_per_run: 5,
+        ci_max_polls: 40,
+        poll_delay_secs: 0,
         select: SelectFilter {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],

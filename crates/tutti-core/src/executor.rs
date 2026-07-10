@@ -6,12 +6,16 @@ use crate::domain::{CiState, MergeMode, PrHandle, PrRequest, ShipRecord};
 use crate::message::Handoff;
 use crate::traits::{EngineError, Forge, Result};
 
-/// How many times to poll CI before giving up (each poll sleeps `poll_delay`).
+/// The mechanical ship path. Polls CI up to `ci_max_polls` times, sleeping
+/// `poll_delay` between polls, then merges or leaves the PR open.
 pub struct Executor<'a> {
     pub forge: &'a dyn Forge,
     /// The protected trunk. GUARDRAIL: the executor refuses to merge here.
     pub trunk: String,
+    /// How many times to poll CI before giving up.
     pub ci_max_polls: u32,
+    /// How long to wait between CI polls.
+    pub poll_delay: std::time::Duration,
 }
 
 /// Outcome of a ship attempt.
@@ -35,7 +39,7 @@ impl<'a> Executor<'a> {
 
         // Ensure the integration branch exists.
         if !self.forge.branch_exists(&handoff.target.target).await? {
-            let from = handoff.target.create_from.as_deref().unwrap_or("main");
+            let from = handoff.target.create_from.as_deref().unwrap_or(&self.trunk);
             self.forge
                 .create_branch(&handoff.target.target, from)
                 .await?;
@@ -59,7 +63,10 @@ impl<'a> Executor<'a> {
             match last {
                 CiState::Pass => break,
                 CiState::Fail => return Ok(ShipResult::CiNotGreen(pr, CiState::Fail)),
-                CiState::Pending => continue,
+                CiState::Pending => {
+                    tokio::time::sleep(self.poll_delay).await;
+                    continue;
+                }
             }
         }
         if last != CiState::Pass {
@@ -118,6 +125,7 @@ mod tests {
             forge: &forge,
             trunk: "main".into(),
             ci_max_polls: 3,
+            poll_delay: std::time::Duration::from_millis(0),
         };
         let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
         assert!(matches!(res, ShipResult::Merged(_)));
@@ -131,6 +139,7 @@ mod tests {
             forge: &forge,
             trunk: "main".into(),
             ci_max_polls: 3,
+            poll_delay: std::time::Duration::from_millis(0),
         };
         let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
         assert!(matches!(res, ShipResult::CiNotGreen(_, CiState::Fail)));
@@ -144,6 +153,7 @@ mod tests {
             forge: &forge,
             trunk: "main".into(),
             ci_max_polls: 3,
+            poll_delay: std::time::Duration::from_millis(0),
         };
         let err = exec.ship(&handoff_to("main")).await.unwrap_err();
         assert!(matches!(err, EngineError::Guardrail(_)));

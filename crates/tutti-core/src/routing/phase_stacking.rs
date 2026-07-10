@@ -3,10 +3,16 @@ use crate::domain::{BranchPlan, Issue};
 use crate::traits::{EngineError, Result, RoutingStrategy};
 
 /// Ports SOTTO's model: an issue's milestone (e.g. "Phase 2") maps to
-/// `milestone/phase-2`, created from the highest lower-numbered phase (or main).
-pub struct PhaseStacking;
+/// `milestone/phase-2`, created from the highest lower-numbered phase (or the trunk).
+pub struct PhaseStacking {
+    trunk: String,
+}
 
 impl PhaseStacking {
+    pub fn new(trunk: String) -> Self {
+        Self { trunk }
+    }
+
     /// Extract the phase number from a milestone title like "Phase 2" or "phase-2".
     fn phase_num(milestone: &str) -> Option<u32> {
         let lower = milestone.to_lowercase();
@@ -32,7 +38,7 @@ impl RoutingStrategy for PhaseStacking {
             EngineError::Routing(format!("milestone '{milestone}' has no phase number"))
         })?;
         let from = if n == 0 {
-            "main".to_string()
+            self.trunk.clone()
         } else {
             format!("milestone/phase-{}", n - 1)
         };
@@ -60,7 +66,7 @@ mod tests {
 
     #[test]
     fn phase_two_stacks_off_phase_one() {
-        let plan = PhaseStacking
+        let plan = PhaseStacking::new("main".into())
             .target_branch(&issue_in(Some("Phase 2")))
             .unwrap();
         assert_eq!(plan.target, "milestone/phase-2");
@@ -69,7 +75,7 @@ mod tests {
 
     #[test]
     fn phase_zero_branches_from_main() {
-        let plan = PhaseStacking
+        let plan = PhaseStacking::new("main".into())
             .target_branch(&issue_in(Some("phase-0")))
             .unwrap();
         assert_eq!(plan.create_from.as_deref(), Some("main"));
@@ -77,6 +83,8 @@ mod tests {
 
     #[test]
     fn missing_milestone_errors() {
-        assert!(PhaseStacking.target_branch(&issue_in(None)).is_err());
+        assert!(PhaseStacking::new("main".into())
+            .target_branch(&issue_in(None))
+            .is_err());
     }
 }

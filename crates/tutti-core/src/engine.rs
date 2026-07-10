@@ -39,7 +39,7 @@ impl<'a> Engine<'a> {
         backend: &'a dyn AgentBackend,
         workdir: PathBuf,
     ) -> Result<Self> {
-        let routing = routing::by_name(&cfg.routing, &cfg.integration_branch)
+        let routing = routing::by_name(&cfg.routing, &cfg.integration_branch, &cfg.trunk)
             .ok_or_else(|| EngineError::Routing(format!("unknown routing '{}'", cfg.routing)))?;
         Ok(Self {
             cfg,
@@ -148,7 +148,8 @@ impl<'a> Engine<'a> {
         let exec = Executor {
             forge: self.forge,
             trunk: self.cfg.trunk.clone(),
-            ci_max_polls: 40,
+            ci_max_polls: self.cfg.ci_max_polls,
+            poll_delay: std::time::Duration::from_secs(self.cfg.poll_delay_secs),
         };
         match exec.ship(&handoff).await? {
             ShipResult::Merged(_) => {
@@ -222,6 +223,8 @@ mod tests {
             integration_branch: "version/v0.1".into(),
             model: "fake".into(),
             max_issues_per_run: 5,
+            ci_max_polls: 40,
+            poll_delay_secs: 0,
             select: SelectFilter {
                 require_label: "status:ready".into(),
                 skip_labels: vec!["status:needs-human".into()],
