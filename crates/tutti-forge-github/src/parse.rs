@@ -60,26 +60,40 @@ struct GhMilestoneObj {
     closed_issues: u32,
 }
 
-/// Parse `gh api repos/<repo>/milestones` output into `Milestone`s. The milestone's
-/// `Progress` is derived from GitHub's own counters: `total = open + closed`, `done =
-/// closed`. An unrecognized `state` string falls back to `Open`.
+fn milestone_from(m: GhMilestoneObj) -> Milestone {
+    Milestone {
+        id: MilestoneId(m.number),
+        title: m.title,
+        // The milestone's `Progress` is derived from GitHub's own counters:
+        // total = open + closed, done = closed. An unrecognized state falls back to Open.
+        state: match m.state.as_str() {
+            "closed" => TrackState::Closed,
+            _ => TrackState::Open,
+        },
+        due: m.due_on,
+        progress: Progress {
+            total: m.open_issues + m.closed_issues,
+            done: m.closed_issues,
+        },
+    }
+}
+
+/// Parse `gh api repos/<repo>/milestones` output (an array) into `Milestone`s.
 pub fn parse_milestones(json: &str) -> Vec<Milestone> {
     let raw: Vec<GhMilestoneObj> = serde_json::from_str(json).unwrap_or_default();
-    raw.into_iter()
-        .map(|m| Milestone {
-            id: MilestoneId(m.number),
-            title: m.title,
-            state: match m.state.as_str() {
-                "closed" => TrackState::Closed,
-                _ => TrackState::Open,
-            },
-            due: m.due_on,
-            progress: Progress {
-                total: m.open_issues + m.closed_issues,
-                done: m.closed_issues,
-            },
-        })
-        .collect()
+    raw.into_iter().map(milestone_from).collect()
+}
+
+/// Parse a single milestone object, as returned by a create (POST) response.
+pub fn parse_milestone(json: &str) -> Option<Milestone> {
+    let raw: GhMilestoneObj = serde_json::from_str(json).ok()?;
+    Some(milestone_from(raw))
+}
+
+/// Parse a `gh api repos/<repo>/issues?...` array into `Issue`s (all of them, unfiltered).
+pub fn parse_issue_list(json: &str) -> Vec<Issue> {
+    let issues: Vec<GhIssue> = serde_json::from_str(json).unwrap_or_default();
+    issues.into_iter().map(to_issue).collect()
 }
 
 /// Parse `gh api repos/<repo>/issues/<n>/sub_issues` (an array of issue objects) into

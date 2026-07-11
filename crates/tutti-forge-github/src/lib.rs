@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use tutti_core::domain::{
     CiState, Issue, IssueId, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
 };
+use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
 use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
 /// Drives a GitHub repo via `gh` and `git`.
@@ -279,74 +280,193 @@ impl Forge for GitHubForge {
         Ok(())
     }
 
-    // --- tracking methods ---
-    // Stubs until slice 3A task 4 wires them to `gh api`. They compile so the
-    // workspace builds; each returns a Forge error if called before then.
-    async fn list_milestones(&self) -> Result<Vec<tutti_core::tracking::Milestone>> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    // --- tracking methods (via `gh api`; parsers are fixture-tested in `parse`) ---
+
+    async fn list_milestones(&self) -> Result<Vec<Milestone>> {
+        // `--paginate` merges the per-page arrays into one JSON array. Include closed
+        // milestones so the auto-close path can observe an already-closed milestone.
+        let endpoint = format!("repos/{}/milestones?state=all", self.repo);
+        let json = self.gh(&["api", &endpoint, "--paginate"]).await?;
+        Ok(parse::parse_milestones(&json))
     }
 
-    async fn milestone_children(
-        &self,
-        _id: tutti_core::tracking::MilestoneId,
-    ) -> Result<Vec<Issue>> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    async fn milestone_children(&self, id: MilestoneId) -> Result<Vec<Issue>> {
+        // All issues (open and closed) filed under this milestone number.
+        let endpoint = format!("repos/{}/issues?milestone={}&state=all", self.repo, id.0);
+        let json = self.gh(&["api", &endpoint, "--paginate"]).await?;
+        Ok(parse::parse_issue_list(&json))
     }
 
-    async fn list_epics(&self) -> Result<Vec<tutti_core::tracking::Epic>> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    async fn list_epics(&self) -> Result<Vec<Epic>> {
+        // GitHub has no first-class epic. Treat any issue that HAS sub-issues as an epic.
+        // This is a thin read; the planner mainly reasons over milestones.
+        let list = self
+            .gh(&[
+                "issue",
+                "list",
+                "--repo",
+                &self.repo,
+                "--limit",
+                "100",
+                "--json",
+                "number,title",
+            ])
+            .await?;
+        #[derive(serde::Deserialize)]
+        struct IssueRef {
+            number: u64,
+            title: String,
+        }
+        let refs: Vec<IssueRef> = serde_json::from_str(&list).unwrap_or_default();
+        let mut epics = Vec::new();
+        for r in refs {
+            let sub_endpoint = format!("repos/{}/issues/{}/sub_issues", self.repo, r.number);
+            let children_json = self.gh(&["api", &sub_endpoint]).await?;
+            let children = parse::parse_sub_issues(&children_json);
+            if children.is_empty() {
+                continue;
+            }
+            // Progress comes from the issue's own `sub_issues_summary`.
+            let issue_endpoint = format!("repos/{}/issues/{}", self.repo, r.number);
+            let issue_json = self.gh(&["api", &issue_endpoint]).await?;
+            let progress = parse::parse_summary(&issue_json);
+            epics.push(Epic {
+                id: EpicId(r.number),
+                title: r.title,
+                children,
+                progress,
+            });
+        }
+        Ok(epics)
     }
 
-    async fn roadmap(&self) -> Result<tutti_core::tracking::Roadmap> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    async fn roadmap(&self) -> Result<Roadmap> {
+        // Open milestones ordered by due date; milestones without a due date sort last.
+        let mut milestones: Vec<Milestone> = self
+            .list_milestones()
+            .await?
+            .into_iter()
+            .filter(|m| m.state == TrackState::Open)
+            .collect();
+        milestones.sort_by(|a, b| match (&a.due, &b.due) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        Ok(Roadmap { milestones })
     }
 
     async fn create_milestone(
         &self,
-        _title: &str,
-        _due: Option<&str>,
-        _description: &str,
-    ) -> Result<tutti_core::tracking::Milestone> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+        title: &str,
+        due: Option<&str>,
+        description: &str,
+    ) -> Result<Milestone> {
+        let endpoint = format!("repos/{}/milestones", self.repo);
+        let mut args_owned = vec![
+            "api".to_string(),
+            "--method".to_string(),
+            "POST".to_string(),
+            endpoint,
+            "-f".to_string(),
+            format!("title={title}"),
+            "-f".to_string(),
+            format!("description={description}"),
+        ];
+        if let Some(d) = due {
+            args_owned.push("-f".to_string());
+            args_owned.push(format!("due_on={d}"));
+        }
+        let args: Vec<&str> = args_owned.iter().map(String::as_str).collect();
+        let json = self.gh(&args).await?;
+        parse::parse_milestone(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created milestone: {json}")))
     }
 
-    async fn close_milestone(&self, _id: tutti_core::tracking::MilestoneId) -> Result<()> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    async fn close_milestone(&self, id: MilestoneId) -> Result<()> {
+        let endpoint = format!("repos/{}/milestones/{}", self.repo, id.0);
+        self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed"])
+            .await?;
+        Ok(())
     }
 
-    async fn create_epic(&self, _title: &str, _body: &str) -> Result<tutti_core::tracking::Epic> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    async fn create_epic(&self, title: &str, body: &str) -> Result<Epic> {
+        // An epic is a plain issue that will parent sub-issues.
+        let endpoint = format!("repos/{}/issues", self.repo);
+        let title_arg = format!("title={title}");
+        let body_arg = format!("body={body}");
+        let json = self
+            .gh(&[
+                "api", "--method", "POST", &endpoint, "-f", &title_arg, "-f", &body_arg,
+            ])
+            .await?;
+        let issue = parse::parse_created_issue(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created epic: {json}")))?;
+        Ok(Epic {
+            id: EpicId(issue.id.0),
+            title: issue.title,
+            children: Vec::new(),
+            progress: tutti_core::tracking::Progress::default(),
+        })
     }
 
-    async fn link_sub_issue(&self, _parent: IssueId, _child: IssueId) -> Result<()> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+    async fn link_sub_issue(&self, parent: IssueId, child: IssueId) -> Result<()> {
+        // The sub_issues endpoint takes the child's issue DATABASE id (`.id`), not its
+        // number, so resolve it first.
+        let child_endpoint = format!("repos/{}/issues/{}", self.repo, child.0);
+        let child_id = self
+            .gh(&["api", &child_endpoint, "--jq", ".id"])
+            .await?
+            .trim()
+            .to_string();
+        let parent_endpoint = format!("repos/{}/issues/{}/sub_issues", self.repo, parent.0);
+        self.gh(&[
+            "api",
+            "--method",
+            "POST",
+            &parent_endpoint,
+            "-F",
+            &format!("sub_issue_id={child_id}"),
+        ])
+        .await?;
+        Ok(())
     }
 
     async fn create_issue(
         &self,
-        _new: &tutti_core::message::NewIssue,
-        _milestone: Option<tutti_core::tracking::MilestoneId>,
-        _epic: Option<tutti_core::tracking::EpicId>,
+        new: &tutti_core::message::NewIssue,
+        milestone: Option<MilestoneId>,
+        epic: Option<EpicId>,
     ) -> Result<Issue> {
-        Err(EngineError::Forge(
-            "not implemented until slice 3A task 4".into(),
-        ))
+        let endpoint = format!("repos/{}/issues", self.repo);
+        let mut args_owned = vec![
+            "api".to_string(),
+            "--method".to_string(),
+            "POST".to_string(),
+            endpoint,
+            "-f".to_string(),
+            format!("title={}", new.title),
+            "-f".to_string(),
+            format!("body={}", new.body),
+        ];
+        if let Some(m) = milestone {
+            args_owned.push("-f".to_string());
+            args_owned.push(format!("milestone={}", m.0));
+        }
+        for label in &new.labels {
+            args_owned.push("-F".to_string());
+            args_owned.push(format!("labels[]={label}"));
+        }
+        let args: Vec<&str> = args_owned.iter().map(String::as_str).collect();
+        let json = self.gh(&args).await?;
+        let issue = parse::parse_created_issue(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created issue: {json}")))?;
+        // If an epic parent was given, link the new issue under it as a sub-issue.
+        if let Some(epic) = epic {
+            self.link_sub_issue(IssueId(epic.0), issue.id).await?;
+        }
+        Ok(issue)
     }
 }
 
