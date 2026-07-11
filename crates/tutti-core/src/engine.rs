@@ -196,10 +196,40 @@ impl<'a> Engine<'a> {
         };
         match exec.ship(&handoff).await? {
             // record() already flipped the label to done.
-            ShipResult::Merged(_) => Ok(IterOutcome::Shipped),
+            ShipResult::Merged(_) => {
+                self.maybe_close_milestone(issue).await?;
+                Ok(IterOutcome::Shipped)
+            }
             // Leave the issue in-progress and the PR open for a human.
             ShipResult::CiNotGreen(_, _) => Ok(IterOutcome::StoppedCiRed),
         }
+    }
+
+    /// After a ship, close the shipped issue's milestone iff it is verifiably drained:
+    /// resolve the milestone by title, read its children fresh at close time, and close
+    /// only when that child set is NON-EMPTY and every child carries `status:done`.
+    /// A milestone with no milestone on the issue, an unresolvable title, an empty child
+    /// set, or any remaining open work is left untouched. The check is read live (never a
+    /// cached count) so a stale rollup can never trigger a close.
+    async fn maybe_close_milestone(&self, issue: &Issue) -> Result<()> {
+        let Some(title) = issue.milestone.as_deref() else {
+            return Ok(());
+        };
+        let Some(milestone) = self
+            .forge
+            .list_milestones()
+            .await?
+            .into_iter()
+            .find(|m| m.title == title)
+        else {
+            return Ok(());
+        };
+        let children = self.forge.milestone_children(milestone.id).await?;
+        let drained = !children.is_empty() && children.iter().all(|c| c.has_label("status:done"));
+        if drained {
+            self.forge.close_milestone(milestone.id).await?;
+        }
+        Ok(())
     }
 
     /// Drain up to `max_issues_per_run` issues, then run the planning hook once.
@@ -254,6 +284,7 @@ mod tests {
     use crate::gate::Gate;
     use crate::message::*;
     use crate::testing::{FakeBackend, FakeForge};
+    use crate::tracking::TrackState;
 
     fn cfg() -> Config {
         Config {
@@ -267,6 +298,7 @@ mod tests {
             select: SelectFilter {
                 require_label: "status:ready".into(),
                 skip_labels: vec!["status:needs-human".into()],
+                milestone: None,
             },
             gate: Gate {
                 commands: vec!["true".into()],
@@ -713,6 +745,121 @@ mod tests {
         assert!(forge
             .labels_of(IssueId(1))
             .contains(&"status:ready".to_string()));
+    }
+
+    fn new_issue(title: &str) -> NewIssue {
+        NewIssue {
+            title: title.into(),
+            body: String::new(),
+            labels: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn milestone_auto_closes_when_all_issues_done() {
+        // Seed a milestone with two ready issues under it, then ship both. Once the
+        // second ship drains the milestone (both children status:done), it must close.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let ms = forge.create_milestone("v0.1", None, "").await.unwrap();
+        let a = forge
+            .create_issue(&new_issue("a"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let b = forge
+            .create_issue(&new_issue("b"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(a.id.0))
+            .script(Role::Reviewer, clean_review())
+            .script(Role::Implementer, ship_outcome(b.id.0))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        // First ship leaves one child still open: milestone stays open.
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Open);
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        // Second ship drains the milestone: verified all-done, non-empty, closed now.
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Closed);
+    }
+
+    #[tokio::test]
+    async fn milestone_stays_open_with_remaining_work() {
+        // Two issues in the milestone, ship only one: the drain is not verified, so the
+        // milestone must remain open.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let ms = forge.create_milestone("v0.1", None, "").await.unwrap();
+        let a = forge
+            .create_issue(&new_issue("a"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let _b = forge
+            .create_issue(&new_issue("b"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(a.id.0))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Open);
+    }
+
+    #[tokio::test]
+    async fn next_ready_issue_honors_milestone_scope() {
+        // One ready issue in "v0.1", one ready issue with no milestone. A scoped filter
+        // returns only the in-milestone issue; an unscoped filter returns the first ready.
+        let scoped_issue = Issue {
+            id: IssueId(1),
+            title: "scoped".into(),
+            body: String::new(),
+            labels: vec!["status:ready".into()],
+            milestone: Some("v0.1".into()),
+        };
+        let unscoped_issue = Issue {
+            id: IssueId(2),
+            title: "unscoped".into(),
+            body: String::new(),
+            labels: vec!["status:ready".into()],
+            milestone: None,
+        };
+        let forge = FakeForge::new(
+            vec![unscoped_issue.clone(), scoped_issue.clone()],
+            CiState::Pass,
+        );
+
+        let scoped = SelectFilter {
+            require_label: "status:ready".into(),
+            skip_labels: vec![],
+            milestone: Some("v0.1".into()),
+        };
+        let got = forge.next_ready_issue(&scoped).await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(1));
+
+        let unscoped = SelectFilter {
+            require_label: "status:ready".into(),
+            skip_labels: vec![],
+            milestone: None,
+        };
+        // With no scope, selection order is unchanged: the first seeded ready issue.
+        let got = forge.next_ready_issue(&unscoped).await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
     }
 
     #[tokio::test]

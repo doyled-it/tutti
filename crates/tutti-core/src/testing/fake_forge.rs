@@ -119,6 +119,10 @@ impl Forge for FakeForge {
             .find(|i| {
                 i.has_label(&filter.require_label)
                     && !filter.skip_labels.iter().any(|s| i.has_label(s))
+                    && filter
+                        .milestone
+                        .as_ref()
+                        .is_none_or(|m| i.milestone.as_ref() == Some(m))
             })
             .cloned())
     }
@@ -351,6 +355,7 @@ mod tests {
         SelectFilter {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],
+            milestone: None,
         }
     }
 

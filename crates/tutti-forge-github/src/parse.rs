@@ -31,7 +31,12 @@ struct GhMilestone {
 pub fn first_ready_issue(json: &str, filter: &SelectFilter) -> Option<Issue> {
     let issues: Vec<GhIssue> = serde_json::from_str(json).ok()?;
     issues.into_iter().map(to_issue).find(|i| {
-        i.has_label(&filter.require_label) && !filter.skip_labels.iter().any(|s| i.has_label(s))
+        i.has_label(&filter.require_label)
+            && !filter.skip_labels.iter().any(|s| i.has_label(s))
+            && filter
+                .milestone
+                .as_ref()
+                .is_none_or(|m| i.milestone.as_ref() == Some(m))
     })
 }
 
@@ -193,6 +198,7 @@ mod tests {
         SelectFilter {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],
+            milestone: None,
         }
     }
 

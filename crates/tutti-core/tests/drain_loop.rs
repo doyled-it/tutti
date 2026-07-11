@@ -20,6 +20,7 @@ fn cfg() -> Config {
         select: SelectFilter {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],
+            milestone: None,
         },
         gate: Gate {
             commands: vec!["true".into()],

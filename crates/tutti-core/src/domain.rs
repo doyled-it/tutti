@@ -29,6 +29,11 @@ impl Issue {
 pub struct SelectFilter {
     pub require_label: String,
     pub skip_labels: Vec<String>,
+    /// Optional milestone scope by title. `None` considers issues in any milestone
+    /// (and issues with no milestone); `Some(title)` restricts to that milestone only.
+    /// `#[serde(default)]` keeps configs written before this field existed parseable.
+    #[serde(default)]
+    pub milestone: Option<String>,
 }
 
 /// Where an issue's work merges, and (if the branch is new) what to branch it from.
