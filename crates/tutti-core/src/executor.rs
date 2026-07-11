@@ -45,6 +45,9 @@ impl<'a> Executor<'a> {
                 .await?;
         }
 
+        // Push the head branch to origin so the PR has commits to compare against.
+        self.forge.push_branch(&handoff.branch).await?;
+
         let pr = self
             .forge
             .open_pr(PrRequest {
@@ -133,6 +136,8 @@ mod tests {
         let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
         assert!(matches!(res, ShipResult::Merged(_)));
         assert!(forge.is_done(IssueId(1)));
+        // The executor pushed the head branch before opening the PR.
+        assert!(forge.branch_exists("feat/x-1").await.unwrap());
     }
 
     #[tokio::test]

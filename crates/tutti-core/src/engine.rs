@@ -175,6 +175,16 @@ impl<'a> Engine<'a> {
         // The routing strategy decides the target; overwrite whatever the agent guessed.
         handoff.target = plan;
 
+        // Commit the agent's working-tree changes onto the feature branch. The review
+        // stage above reads the uncommitted tree, which is fine. If the agent produced
+        // nothing to commit, there is no work to ship: release and stop clean.
+        if !self.workspace.commit_all(handle, &handoff.pr_title).await? {
+            self.forge.release(issue.id).await?;
+            return Ok(IterOutcome::Blocked(
+                "agent produced no file changes to commit".into(),
+            ));
+        }
+
         // Stage: merge (mechanical executor). CI is the gate for real forges;
         // the local `Gate` is run by the implement stage's own tooling before handoff.
         let exec = Executor {
@@ -561,6 +571,13 @@ mod tests {
                 branch: format!("feat/issue-{}", issue.0),
             })
         }
+        async fn commit_all(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _message: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(true)
+        }
         async fn remove(
             &self,
             _h: &crate::workspace::WorkspaceHandle,
@@ -585,6 +602,13 @@ mod tests {
             base: &str,
         ) -> crate::traits::Result<crate::workspace::WorkspaceHandle> {
             self.0.create(issue, base).await
+        }
+        async fn commit_all(
+            &self,
+            h: &crate::workspace::WorkspaceHandle,
+            message: &str,
+        ) -> crate::traits::Result<bool> {
+            self.0.commit_all(h, message).await
         }
         async fn remove(&self, h: &crate::workspace::WorkspaceHandle) -> crate::traits::Result<()> {
             self.0.remove(h).await
@@ -634,6 +658,59 @@ mod tests {
         let outcome2 = engine2.run_one().await.unwrap();
         assert_eq!(outcome2, IterOutcome::Shipped);
         assert_eq!(*counting2.last_base.lock().unwrap(), "version/v0.1");
+    }
+
+    /// A workspace whose `commit_all` always reports nothing to commit, so the
+    /// engine must treat the issue as producing no shippable work.
+    struct NoChangesWorkspace;
+    #[async_trait::async_trait]
+    impl crate::workspace::Workspace for NoChangesWorkspace {
+        async fn create(
+            &self,
+            issue: crate::domain::IssueId,
+            _base: &str,
+        ) -> crate::traits::Result<crate::workspace::WorkspaceHandle> {
+            Ok(crate::workspace::WorkspaceHandle {
+                issue,
+                path: std::path::PathBuf::from("."),
+                branch: format!("feat/issue-{}", issue.0),
+            })
+        }
+        async fn commit_all(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _message: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
+        async fn remove(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+        ) -> crate::traits::Result<()> {
+            Ok(())
+        }
+        async fn prune(&self) -> crate::traits::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn no_file_changes_blocks_and_releases() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(&cfg, &forge, &backend, Box::new(NoChangesWorkspace)).unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert!(matches!(outcome, IterOutcome::Blocked(_)));
+        // No commit means no ship: the issue must not be done.
+        assert!(!forge.is_done(IssueId(1)));
+        // The claim is released back to the ready pool for a future attempt.
+        assert!(forge
+            .labels_of(IssueId(1))
+            .contains(&"status:ready".to_string()));
     }
 
     #[tokio::test]
