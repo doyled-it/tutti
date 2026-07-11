@@ -278,6 +278,76 @@ impl Forge for GitHubForge {
         .await?;
         Ok(())
     }
+
+    // --- tracking methods ---
+    // Stubs until slice 3A task 4 wires them to `gh api`. They compile so the
+    // workspace builds; each returns a Forge error if called before then.
+    async fn list_milestones(&self) -> Result<Vec<tutti_core::tracking::Milestone>> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn milestone_children(
+        &self,
+        _id: tutti_core::tracking::MilestoneId,
+    ) -> Result<Vec<Issue>> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn list_epics(&self) -> Result<Vec<tutti_core::tracking::Epic>> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn roadmap(&self) -> Result<tutti_core::tracking::Roadmap> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn create_milestone(
+        &self,
+        _title: &str,
+        _due: Option<&str>,
+        _description: &str,
+    ) -> Result<tutti_core::tracking::Milestone> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn close_milestone(&self, _id: tutti_core::tracking::MilestoneId) -> Result<()> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn create_epic(&self, _title: &str, _body: &str) -> Result<tutti_core::tracking::Epic> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn link_sub_issue(&self, _parent: IssueId, _child: IssueId) -> Result<()> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
+
+    async fn create_issue(
+        &self,
+        _new: &tutti_core::message::NewIssue,
+        _milestone: Option<tutti_core::tracking::MilestoneId>,
+        _epic: Option<tutti_core::tracking::EpicId>,
+    ) -> Result<Issue> {
+        Err(EngineError::Forge(
+            "not implemented until slice 3A task 4".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
