@@ -3,7 +3,6 @@
 //!   cargo test -p tutti-backend-claude --features live -- --ignored
 #![cfg(feature = "live")]
 
-use std::path::Path;
 use tutti_backend_claude::ClaudeBackend;
 use tutti_core::domain::{Issue, IssueId};
 use tutti_core::message::{AgentTask, Role, RolePlaybook};
