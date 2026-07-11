@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tutti-core"]
+members = ["crates/tutti-core", "crates/tutti-git"]
 resolver = "2"
 
 [workspace.package]

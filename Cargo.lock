@@ -331,6 +331,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-git"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "tempfile",
+ "tokio",
+ "tutti-core",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
