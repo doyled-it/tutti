@@ -181,9 +181,14 @@ trait Forge {
 }
 ```
 
-`claim` returns a `ClaimGuard` (RAII): if a run dies mid-issue, `Drop` releases the
-label lock so the next run re-selects (the equivalent of the SOTTO engine's
-`recover_stale`). Slice 2 grows this trait for epics, milestones, and roadmaps;
+`claim` returns a `ClaimGuard`, a disarm marker for the claimed issue. Async `Drop`
+is not available in Rust, so the guard does not release the lock on drop. Instead the
+engine wraps the post-claim work and explicitly calls `release` on any error path, so
+a transient failure cannot strand an `in-progress` issue. Recovering from a hard crash
+that skips even that path (reclaiming `in-progress` issues abandoned mid-run, the
+equivalent of the SOTTO engine's `recover_stale`) is a stale-issue sweep on selection,
+deferred to the live-forge adapter where the "is there an open PR / live runner?"
+checks are meaningful. Slice 2 grows this trait for epics, milestones, and roadmaps;
 slice 1 needs only the above.
 
 #### RoutingStrategy
@@ -225,8 +230,10 @@ forge labels and branch state.
 
 - **Per-issue state is derived, not stored.** The stage a crashed issue was in is
   re-derived from forge state: label `in-progress` and no PR -> restart from
-  implement; PR open and CI pending -> resume at gate/merge; and so on. The
-  `ClaimGuard` releases the lock on `Drop`.
+  implement; PR open and CI pending -> resume at gate/merge; and so on. The engine
+  explicitly releases the claim on any error after claiming; a stale-issue sweep on
+  selection (for a crash that skips even that) is deferred to the live-forge adapter
+  (see the `ClaimGuard` note under Forge).
 - **The handoff artifact** is the typed contract between a creative stage and the
   mechanical executor (the SOTTO `.git/engine-handoff.json`, now typed), produced at
   two points:
