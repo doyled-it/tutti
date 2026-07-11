@@ -255,12 +255,13 @@ impl<'a> Engine<'a> {
         Ok((shipped, plan))
     }
 
-    /// Build a compact tracking snapshot for the planner: milestones and epics with their
-    /// progress rollups, plus a ready-issue count. Titles and progress only, never issue
-    /// bodies, so the prompt stays small.
+    /// Build a compact tracking snapshot for the planner: milestones with their progress
+    /// rollups, plus a ready-issue count. Titles and progress only, never issue bodies, so
+    /// the prompt stays small.
     async fn plan_snapshot(&self) -> Result<String> {
         let milestones = self.forge.list_milestones().await?;
-        let epics = self.forge.list_epics().await?;
+        // epics omitted from the snapshot to avoid an N+1 in the planning hot path;
+        // revisit when list_epics is cheap.
 
         // Count ready issues across the tracked milestones (best effort: the Forge trait
         // exposes issues only via milestone children and the single-issue selector). This
@@ -282,19 +283,6 @@ impl<'a> Engine<'a> {
             s.push_str(&format!(
                 "  - {} [{:?}] progress {}/{}\n",
                 m.title, m.state, m.progress.done, m.progress.total
-            ));
-        }
-        s.push_str("Epics:\n");
-        if epics.is_empty() {
-            s.push_str("  (none)\n");
-        }
-        for e in &epics {
-            s.push_str(&format!(
-                "  - {} progress {}/{} (children: {})\n",
-                e.title,
-                e.progress.done,
-                e.progress.total,
-                e.children.len()
             ));
         }
         s.push_str(&format!("Ready issues: {ready_issues}\n"));

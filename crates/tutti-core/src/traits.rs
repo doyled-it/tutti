@@ -23,6 +23,10 @@ pub enum EngineError {
     Guardrail(String),
     #[error("gate failed:\n{0}")]
     Gate(String),
+    /// A capability a forge adapter cannot provide (e.g. a glab/tea adapter that does not
+    /// support sub-issues), distinct from a real operational error.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;

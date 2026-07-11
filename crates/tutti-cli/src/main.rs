@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tutti_core::config::Config;
 use tutti_core::engine::Engine;
+use tutti_core::message::{PlanAction, PlanDecision};
 
 #[derive(Parser)]
 #[command(
@@ -43,8 +44,9 @@ async fn main() -> std::process::ExitCode {
             repo,
             repo_root,
         } => match run(config, repo, repo_root).await {
-            Ok(n) => {
+            Ok((n, plan)) => {
                 println!("tutti: shipped {n} issue(s)");
+                report_plan(plan.as_ref());
                 std::process::ExitCode::SUCCESS
             }
             Err(e) => {
@@ -55,7 +57,35 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run(config: PathBuf, repo: String, repo_root: PathBuf) -> Result<u32, String> {
+/// Surface the planner's decision to the operator: a stdout line describing the action,
+/// plus a prominent stderr notice when the planner wants a human or requests a stop.
+fn report_plan(plan: Option<&PlanDecision>) {
+    let Some(decision) = plan else {
+        return;
+    };
+    let action = match &decision.action {
+        PlanAction::NextIssue => "next-issue".to_string(),
+        PlanAction::CreateIssues(list) => format!("create-issues ({})", list.len()),
+        PlanAction::CloseMilestone(title) => format!("close-milestone ({title})"),
+        PlanAction::Stop => "stop".to_string(),
+    };
+    println!("tutti: planner -> {action} ({})", decision.rationale);
+    let halts = matches!(
+        decision.action,
+        PlanAction::CloseMilestone(_) | PlanAction::Stop
+    );
+    if decision.needs_human {
+        eprintln!("tutti: planner requests a human: {action}");
+    } else if halts {
+        eprintln!("tutti: planner requests stop: {action}");
+    }
+}
+
+async fn run(
+    config: PathBuf,
+    repo: String,
+    repo_root: PathBuf,
+) -> Result<(u32, Option<PlanDecision>), String> {
     let cfg = Config::load(&config).map_err(|e| e.to_string())?;
     let _lock = lock::PidLock::acquire(repo_root.join(".tutti").join("run.lock.d"))
         .map_err(|e| format!("could not acquire run lock: {e}"))?;
@@ -73,6 +103,6 @@ async fn run(config: PathBuf, repo: String, repo_root: PathBuf) -> Result<u32, S
         Box::new(adapters.workspace),
     )
     .map_err(|e| e.to_string())?;
-    let (shipped, _plan) = engine.drain().await.map_err(|e| e.to_string())?;
-    Ok(shipped)
+    let (shipped, plan) = engine.drain().await.map_err(|e| e.to_string())?;
+    Ok((shipped, plan))
 }
