@@ -1,0 +1,18 @@
+[package]
+name = "tutti-forge-github"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+live = []
+
+[dependencies]
+tutti-core = { path = "../tutti-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "rt", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "macros"] }

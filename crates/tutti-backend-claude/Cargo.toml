@@ -1,0 +1,20 @@
+[package]
+name = "tutti-backend-claude"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Off by default: gates tests that spawn a real `claude` process.
+live = []
+
+[dependencies]
+tutti-core = { path = "../tutti-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "fs", "rt", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["process", "io-util", "fs", "rt", "rt-multi-thread", "macros"] }
