@@ -123,6 +123,16 @@ impl Forge for FakeForge {
         Ok(())
     }
 
+    async fn push_branch(&self, branch: &str) -> Result<()> {
+        // Record it as an existing branch so downstream PR opens stay valid.
+        self.state
+            .lock()
+            .unwrap()
+            .branches
+            .insert(branch.to_string());
+        Ok(())
+    }
+
     async fn open_pr(&self, pr: PrRequest) -> Result<PrHandle> {
         let mut st = self.state.lock().unwrap();
         let number = st.next_pr;

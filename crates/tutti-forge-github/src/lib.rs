@@ -196,6 +196,16 @@ impl Forge for GitHubForge {
         Ok(())
     }
 
+    async fn push_branch(&self, branch: &str) -> Result<()> {
+        // Push the engine-owned feature branch to origin so a PR can be opened
+        // against it. force-with-lease because feat branches are engine-owned and
+        // recreated with `git worktree add -B`; a stale remote tip must yield to
+        // the freshly built local branch, but not clobber an unexpected foreign push.
+        self.git(&["push", "-u", "--force-with-lease", "origin", branch])
+            .await?;
+        Ok(())
+    }
+
     async fn open_pr(&self, pr: PrRequest) -> Result<PrHandle> {
         let out = self
             .gh(&[

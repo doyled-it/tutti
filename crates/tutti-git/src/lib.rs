@@ -110,6 +110,35 @@ impl Workspace for GitWorkspace {
         })
     }
 
+    async fn commit_all(&self, handle: &WorkspaceHandle, message: &str) -> Result<bool> {
+        // Run git IN THE WORKTREE (handle.path), not the shared repo_root: the
+        // agent's file changes live in the isolated worktree checkout.
+        let path_str = handle.path.to_string_lossy().into_owned();
+        // Nothing staged or unstaged means nothing to commit.
+        let status = self
+            .git(&["-C", &path_str, "status", "--porcelain"])
+            .await?;
+        if status.trim().is_empty() {
+            return Ok(false);
+        }
+        self.git(&["-C", &path_str, "add", "-A"]).await?;
+        // A robust inline identity so the commit works even without global git
+        // config (e.g. a bare CI runner with no user.name/user.email set).
+        self.git(&[
+            "-C",
+            &path_str,
+            "-c",
+            "user.name=tutti",
+            "-c",
+            "user.email=tutti@local",
+            "commit",
+            "-m",
+            message,
+        ])
+        .await?;
+        Ok(true)
+    }
+
     async fn remove(&self, handle: &WorkspaceHandle) -> Result<()> {
         let path_str = handle.path.to_string_lossy().into_owned();
         self.git(&["worktree", "remove", "--force", &path_str])
@@ -250,6 +279,36 @@ mod tests {
         // The Tutti worktree slot is reclaimed, so a fresh create succeeds.
         let h2 = ws.create(IssueId(11), "main").await.unwrap();
         assert!(h2.path.exists());
+    }
+
+    #[tokio::test]
+    async fn commit_all_commits_changes() {
+        let dir = temp_repo().await;
+        let ws = GitWorkspace::new(dir.path());
+        let h = ws.create(IssueId(20), "main").await.unwrap();
+        // The agent writes a new file into the isolated worktree.
+        std::fs::write(h.path.join("agent.txt"), "work").unwrap();
+        assert!(ws.commit_all(&h, "feat: agent change").await.unwrap());
+        // The commit landed on the worktree's branch.
+        let log = Command::new("git")
+            .args(["-C", &h.path.to_string_lossy(), "log", "--oneline"])
+            .output()
+            .await
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log.contains("feat: agent change"),
+            "commit should be in the log: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_all_returns_false_when_clean() {
+        let dir = temp_repo().await;
+        let ws = GitWorkspace::new(dir.path());
+        let h = ws.create(IssueId(21), "main").await.unwrap();
+        // A fresh worktree with no agent changes has nothing to commit.
+        assert!(!ws.commit_all(&h, "noop").await.unwrap());
     }
 
     #[tokio::test]

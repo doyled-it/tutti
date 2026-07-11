@@ -67,6 +67,8 @@ pub trait Forge: Send + Sync {
     async fn branch_exists(&self, branch: &str) -> Result<bool>;
     /// Create `branch` from `from` on the remote.
     async fn create_branch(&self, branch: &str, from: &str) -> Result<()>;
+    /// Push `branch` to origin so a PR can be opened against it.
+    async fn push_branch(&self, branch: &str) -> Result<()>;
     async fn open_pr(&self, pr: PrRequest) -> Result<PrHandle>;
     async fn ci_status(&self, pr: &PrHandle) -> Result<CiState>;
     async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()>;

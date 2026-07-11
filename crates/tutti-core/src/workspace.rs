@@ -26,6 +26,9 @@ pub trait Workspace: Send + Sync {
     /// pass a remote-only branch must have fetched it already (the live CLI fetches
     /// before draining).
     async fn create(&self, issue: IssueId, base: &str) -> Result<WorkspaceHandle>;
+    /// Stage and commit all changes in the workspace onto its branch. Returns Ok(true)
+    /// if a commit was made, Ok(false) if there was nothing to commit.
+    async fn commit_all(&self, handle: &WorkspaceHandle, message: &str) -> Result<bool>;
     /// Remove the workspace after the issue reaches a terminal state (best-effort).
     async fn remove(&self, handle: &WorkspaceHandle) -> Result<()>;
     /// Prune any Tutti workspaces left behind by a crashed run.
@@ -65,6 +68,10 @@ impl Workspace for NoopWorkspace {
             branch: format!("feat/issue-{}", issue.0),
         })
     }
+    async fn commit_all(&self, _handle: &WorkspaceHandle, _message: &str) -> Result<bool> {
+        // Pretend a commit happened so offline engine tests still ship.
+        Ok(true)
+    }
     async fn remove(&self, _handle: &WorkspaceHandle) -> Result<()> {
         Ok(())
     }
@@ -83,6 +90,7 @@ mod tests {
         let h = ws.create(IssueId(7), "main").await.unwrap();
         assert_eq!(h.branch, "feat/issue-7");
         assert_eq!(h.path, PathBuf::from("/tmp/x"));
+        assert!(ws.commit_all(&h, "msg").await.unwrap());
         ws.remove(&h).await.unwrap();
         ws.prune().await.unwrap();
     }
