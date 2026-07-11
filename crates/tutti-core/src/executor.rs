@@ -159,6 +159,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn executor_forwards_configured_merge_mode() {
+        let forge = FakeForge::new(vec![ready()], CiState::Pass);
+        let exec = Executor {
+            forge: &forge,
+            trunk: "main".into(),
+            ci_max_polls: 3,
+            poll_delay: std::time::Duration::from_millis(0),
+            merge_mode: MergeMode::Squash,
+        };
+        let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
+        assert!(matches!(res, ShipResult::Merged(_)));
+        assert_eq!(forge.last_merge_mode(), Some(MergeMode::Squash));
+    }
+
+    #[tokio::test]
     async fn guardrail_refuses_trunk_target() {
         let forge = FakeForge::new(vec![ready()], CiState::Pass);
         let exec = Executor {

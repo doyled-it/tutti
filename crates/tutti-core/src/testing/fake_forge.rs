@@ -20,6 +20,8 @@ struct State {
     next_pr: u64,
     done: HashSet<IssueId>,
     records: Vec<(IssueId, ShipRecord)>,
+    /// The merge mode passed to the most recent `merge` call, whatever the outcome.
+    last_merge_mode: Option<MergeMode>,
 }
 
 /// A scriptable in-memory forge. Configure CI outcomes per-branch via `set_ci_for_next_pr`.
@@ -53,6 +55,11 @@ impl FakeForge {
 
     pub fn is_done(&self, issue: IssueId) -> bool {
         self.state.lock().unwrap().done.contains(&issue)
+    }
+
+    /// The merge mode passed to the most recent `merge` call, if any.
+    pub fn last_merge_mode(&self) -> Option<MergeMode> {
+        self.state.lock().unwrap().last_merge_mode
     }
 
     /// The base branches merged into (one per recorded ship), read from the PR bases.
@@ -158,8 +165,9 @@ impl Forge for FakeForge {
             .unwrap_or(&CiState::Pending))
     }
 
-    async fn merge(&self, pr: &PrHandle, _how: MergeMode) -> Result<()> {
-        let st = self.state.lock().unwrap();
+    async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.last_merge_mode = Some(how);
         match st.ci.get(&pr.number) {
             Some(CiState::Pass) => Ok(()),
             other => Err(EngineError::Forge(format!("refuse merge, CI={:?}", other))),

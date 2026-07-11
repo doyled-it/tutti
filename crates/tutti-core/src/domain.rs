@@ -71,6 +71,7 @@ pub enum CiState {
 pub enum MergeMode {
     Squash,
     Merge,
+    Rebase,
 }
 
 /// What the engine records once an issue ships.
