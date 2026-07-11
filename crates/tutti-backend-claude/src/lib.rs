@@ -7,7 +7,7 @@ pub mod stream;
 
 use async_trait::async_trait;
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::Sender;
 use tutti_core::message::{AgentEvent, AgentOutcome, AgentStatus, AgentTask, Role, Usage};
 use tutti_core::traits::{AgentBackend, EngineError, Result};
@@ -41,6 +41,8 @@ impl ClaudeBackend {
         task: &AgentTask,
         out_path: &Path,
         full_output: &str,
+        exit_success: bool,
+        stderr: &str,
     ) -> Result<AgentOutcome> {
         if stream::hit_usage_limit(full_output) {
             return Ok(AgentOutcome {
@@ -54,36 +56,57 @@ impl ClaudeBackend {
         }
         if task.playbook.role == Role::Reviewer {
             let review = artifact::read_review(out_path)?;
+            if review.is_some() {
+                return Ok(AgentOutcome {
+                    status: AgentStatus::ReadyToShip,
+                    handoff: None,
+                    review,
+                    summary: "review complete".into(),
+                    usage: Usage::default(),
+                    blocked_reason: None,
+                });
+            }
+            return Ok(no_artifact_outcome(exit_success, stderr, "review complete"));
+        }
+        let handoff = artifact::read_handoff(out_path)?;
+        if handoff.is_some() {
             return Ok(AgentOutcome {
-                status: if review.is_some() {
-                    AgentStatus::ReadyToShip
-                } else {
-                    AgentStatus::Blocked
-                },
-                handoff: None,
-                review,
-                summary: "review complete".into(),
+                status: AgentStatus::ReadyToShip,
+                handoff,
+                review: None,
+                summary: "run complete".into(),
                 usage: Usage::default(),
                 blocked_reason: None,
             });
         }
-        let handoff = artifact::read_handoff(out_path)?;
-        Ok(AgentOutcome {
-            status: if handoff.is_some() {
-                AgentStatus::ReadyToShip
-            } else {
-                AgentStatus::Blocked
-            },
-            handoff,
+        Ok(no_artifact_outcome(exit_success, stderr, "run complete"))
+    }
+}
+
+/// Build the outcome when no handoff/review artifact was produced. A non-zero exit means
+/// the process actually failed (crash, bad flags), which is an `Error` carrying a short
+/// stderr snippet, not a `Blocked` (which is the agent cleanly finishing without a
+/// handoff). A clean zero exit with no artifact is a genuine block.
+fn no_artifact_outcome(exit_success: bool, stderr: &str, summary: &str) -> AgentOutcome {
+    if exit_success {
+        return AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
             review: None,
-            summary: "run complete".into(),
+            summary: summary.into(),
             usage: Usage::default(),
-            blocked_reason: if out_path.exists() {
-                None
-            } else {
-                Some("agent produced no handoff".into())
-            },
-        })
+            blocked_reason: Some("agent produced no handoff".into()),
+        };
+    }
+    let snippet: String = stderr.trim().chars().take(500).collect();
+    let reason = format!("claude exited non-zero: {snippet}");
+    AgentOutcome {
+        status: AgentStatus::Error,
+        handoff: None,
+        review: None,
+        summary: reason.clone(),
+        usage: Usage::default(),
+        blocked_reason: Some(reason),
     }
 }
 
@@ -116,6 +139,18 @@ impl AgentBackend for ClaudeBackend {
             .stdout
             .take()
             .ok_or_else(|| EngineError::Backend("no stdout".into()))?;
+        // Drain stderr concurrently. A long run that fills the ~64KB stderr pipe would
+        // otherwise deadlock: the child blocks on the full pipe while we block reading
+        // stdout, and neither side advances.
+        let stderr_pipe = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = String::new();
+            if let Some(pipe) = stderr_pipe {
+                let _ = BufReader::new(pipe).read_to_string(&mut buf).await;
+            }
+            buf
+        });
+
         let mut reader = BufReader::new(stdout).lines();
         let mut full = String::new();
         while let Some(line) = reader
@@ -129,10 +164,14 @@ impl AgentBackend for ClaudeBackend {
                 let _ = events.send(ev).await;
             }
         }
-        let _ = child.wait().await;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| EngineError::Backend(format!("wait: {e}")))?;
+        let stderr = stderr_task.await.unwrap_or_default();
         let _ = events.send(AgentEvent::Done).await;
 
-        self.outcome_from(&task, &out_path, &full)
+        self.outcome_from(&task, &out_path, &full, status.success(), &stderr)
     }
 }
 
@@ -170,6 +209,8 @@ mod outcome_tests {
                 &task(Role::Implementer),
                 &dir.path().join("handoff.json"),
                 "ok",
+                true,
+                "",
             )
             .unwrap();
         assert_eq!(out.status, AgentStatus::Blocked);
@@ -181,7 +222,9 @@ mod outcome_tests {
         let p = dir.path().join("handoff.json");
         std::fs::write(&p, r#"{"issue":1,"branch":"feat/issue-1","target":{"target":"version/v0.1","create_from":"main"},"pr_title":"t","pr_body":"b","labels":[],"decision_note":null}"#).unwrap();
         let be = ClaudeBackend::default();
-        let out = be.outcome_from(&task(Role::Implementer), &p, "ok").unwrap();
+        let out = be
+            .outcome_from(&task(Role::Implementer), &p, "ok", true, "")
+            .unwrap();
         assert_eq!(out.status, AgentStatus::ReadyToShip);
         assert!(out.handoff.is_some());
     }
@@ -190,13 +233,33 @@ mod outcome_tests {
     fn usage_limit_maps_to_error() {
         let dir = tempfile::tempdir().unwrap();
         let be = ClaudeBackend::default();
+        // The limit marker must appear on a structured result-type line to trip detection.
         let out = be
             .outcome_from(
                 &task(Role::Implementer),
                 &dir.path().join("h.json"),
-                "hit the usage limit",
+                r#"{"type":"result","subtype":"error","result":"Claude usage limit reached"}"#,
+                true,
+                "",
             )
             .unwrap();
         assert_eq!(out.status, AgentStatus::Error);
+    }
+
+    #[test]
+    fn nonzero_exit_without_artifact_maps_to_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = ClaudeBackend::default();
+        let out = be
+            .outcome_from(
+                &task(Role::Implementer),
+                &dir.path().join("handoff.json"),
+                "some output",
+                false,
+                "fatal: boom happened",
+            )
+            .unwrap();
+        assert_eq!(out.status, AgentStatus::Error);
+        assert!(out.blocked_reason.as_deref().unwrap().contains("boom"));
     }
 }
