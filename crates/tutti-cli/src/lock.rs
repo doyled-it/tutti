@@ -13,6 +13,11 @@ impl PidLock {
     /// Acquire the lock at `dir`. Err if a live process already holds it.
     pub fn acquire(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
+        // Ensure the parent exists (e.g. `.tutti/`); the lock dir itself is still
+        // created with the atomic, fail-if-exists `create_dir` so it stays a mutex.
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         match std::fs::create_dir(&dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -83,6 +88,14 @@ mod tests {
             let _l = PidLock::acquire(&lock_path).unwrap();
         }
         // After drop, re-acquire succeeds.
+        assert!(PidLock::acquire(&lock_path).is_ok());
+    }
+
+    #[test]
+    fn acquire_creates_missing_parent_dirs() {
+        // Real repos have no .tutti/ yet; acquire must create the parent chain.
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join(".tutti").join("run.lock.d");
         assert!(PidLock::acquire(&lock_path).is_ok());
     }
 
