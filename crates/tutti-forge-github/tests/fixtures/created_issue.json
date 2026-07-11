@@ -1,0 +1,14 @@
+{
+  "number": 5,
+  "title": "fixture-epic",
+  "body": "parent",
+  "labels": [
+    {
+      "name": "status:ready"
+    }
+  ],
+  "milestone": {
+    "number": 1,
+    "title": "fixture-ms"
+  }
+}

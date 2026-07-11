@@ -1,0 +1,18 @@
+[
+  {
+    "number": 2,
+    "title": "fixture-ms-closed",
+    "state": "closed",
+    "due_on": null,
+    "open_issues": 0,
+    "closed_issues": 0
+  },
+  {
+    "number": 1,
+    "title": "fixture-ms",
+    "state": "open",
+    "due_on": "2026-07-31T00:00:00Z",
+    "open_issues": 2,
+    "closed_issues": 1
+  }
+]

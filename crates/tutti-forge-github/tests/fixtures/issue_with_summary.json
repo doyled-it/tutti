@@ -1,0 +1,9 @@
+{
+  "number": 5,
+  "title": "fixture-epic",
+  "sub_issues_summary": {
+    "total": 2,
+    "completed": 1,
+    "percent_completed": 50
+  }
+}

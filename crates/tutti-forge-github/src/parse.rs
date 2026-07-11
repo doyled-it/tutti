@@ -4,6 +4,7 @@
 
 use serde::Deserialize;
 use tutti_core::domain::{CiState, Issue, IssueId, SelectFilter};
+use tutti_core::tracking::{Milestone, MilestoneId, Progress, TrackState};
 
 #[derive(Deserialize)]
 struct GhLabel {
@@ -42,6 +43,92 @@ fn to_issue(g: GhIssue) -> Issue {
         labels: g.labels.into_iter().map(|l| l.name).collect(),
         milestone: g.milestone.map(|m| m.title),
     }
+}
+
+/// A `gh api .../milestones` object. Only the fields the engine needs are read; `gh`
+/// returns many more, which serde ignores.
+#[derive(Deserialize)]
+struct GhMilestoneObj {
+    number: u64,
+    title: String,
+    state: String,
+    #[serde(default)]
+    due_on: Option<String>,
+    #[serde(default)]
+    open_issues: u32,
+    #[serde(default)]
+    closed_issues: u32,
+}
+
+/// Parse `gh api repos/<repo>/milestones` output into `Milestone`s. The milestone's
+/// `Progress` is derived from GitHub's own counters: `total = open + closed`, `done =
+/// closed`. An unrecognized `state` string falls back to `Open`.
+pub fn parse_milestones(json: &str) -> Vec<Milestone> {
+    let raw: Vec<GhMilestoneObj> = serde_json::from_str(json).unwrap_or_default();
+    raw.into_iter()
+        .map(|m| Milestone {
+            id: MilestoneId(m.number),
+            title: m.title,
+            state: match m.state.as_str() {
+                "closed" => TrackState::Closed,
+                _ => TrackState::Open,
+            },
+            due: m.due_on,
+            progress: Progress {
+                total: m.open_issues + m.closed_issues,
+                done: m.closed_issues,
+            },
+        })
+        .collect()
+}
+
+/// Parse `gh api repos/<repo>/issues/<n>/sub_issues` (an array of issue objects) into
+/// the child issue ids.
+pub fn parse_sub_issues(json: &str) -> Vec<IssueId> {
+    #[derive(Deserialize)]
+    struct Child {
+        number: u64,
+    }
+    let children: Vec<Child> = serde_json::from_str(json).unwrap_or_default();
+    children.into_iter().map(|c| IssueId(c.number)).collect()
+}
+
+/// Parse an issue's `sub_issues_summary` block into a `Progress` (total children and how
+/// many are completed). Accepts either a full issue object carrying the summary or the
+/// bare summary object.
+pub fn parse_summary(json: &str) -> Progress {
+    #[derive(Deserialize)]
+    struct Summary {
+        #[serde(default)]
+        total: u32,
+        #[serde(default)]
+        completed: u32,
+    }
+    #[derive(Deserialize)]
+    struct Wrapper {
+        sub_issues_summary: Summary,
+    }
+    // Prefer the wrapped form (an issue object); fall back to a bare summary object.
+    if let Ok(w) = serde_json::from_str::<Wrapper>(json) {
+        return Progress {
+            total: w.sub_issues_summary.total,
+            done: w.sub_issues_summary.completed,
+        };
+    }
+    match serde_json::from_str::<Summary>(json) {
+        Ok(s) => Progress {
+            total: s.total,
+            done: s.completed,
+        },
+        Err(_) => Progress::default(),
+    }
+}
+
+/// Parse a `gh api --method POST repos/<repo>/issues` create response into an `Issue`.
+/// The response is a single issue object (`number,title,body,labels,milestone`).
+pub fn parse_created_issue(json: &str) -> Option<Issue> {
+    let g: GhIssue = serde_json::from_str(json).ok()?;
+    Some(to_issue(g))
 }
 
 /// Parse the PR number from `gh pr create` output. gh prints the PR URL, sometimes
@@ -166,5 +253,59 @@ mod tests {
     #[test]
     fn pr_number_garbage_is_none() {
         assert_eq!(parse_pr_number("not a url"), None);
+    }
+
+    // --- tracking parsers, against fixtures captured from real `gh api` output ---
+
+    #[test]
+    fn milestones_map_state_and_progress() {
+        let json = include_str!("../tests/fixtures/milestones.json");
+        let ms = parse_milestones(json);
+        assert_eq!(ms.len(), 2);
+
+        // The closed milestone (no children) maps state and zeroed progress.
+        let closed = ms.iter().find(|m| m.id == MilestoneId(2)).unwrap();
+        assert_eq!(closed.state, TrackState::Closed);
+        assert_eq!(closed.title, "fixture-ms-closed");
+        assert_eq!(closed.due, None);
+        assert_eq!(closed.progress, Progress { total: 0, done: 0 });
+
+        // The open milestone: total = open_issues + closed_issues, done = closed_issues.
+        let open = ms.iter().find(|m| m.id == MilestoneId(1)).unwrap();
+        assert_eq!(open.state, TrackState::Open);
+        assert_eq!(open.due.as_deref(), Some("2026-07-31T00:00:00Z"));
+        assert_eq!(open.progress, Progress { total: 3, done: 1 });
+    }
+
+    #[test]
+    fn sub_issues_yield_child_ids() {
+        let json = include_str!("../tests/fixtures/sub_issues.json");
+        let ids = parse_sub_issues(json);
+        assert_eq!(ids, vec![IssueId(6), IssueId(7)]);
+    }
+
+    #[test]
+    fn summary_rolls_up_completed() {
+        let json = include_str!("../tests/fixtures/issue_with_summary.json");
+        let p = parse_summary(json);
+        assert_eq!(p, Progress { total: 2, done: 1 });
+    }
+
+    #[test]
+    fn summary_accepts_bare_object() {
+        // The parser also accepts a bare `sub_issues_summary` payload.
+        let p = parse_summary(r#"{"total":5,"completed":2,"percent_completed":40}"#);
+        assert_eq!(p, Progress { total: 5, done: 2 });
+    }
+
+    #[test]
+    fn created_issue_carries_labels_and_milestone() {
+        let json = include_str!("../tests/fixtures/created_issue.json");
+        let issue = parse_created_issue(json).unwrap();
+        assert_eq!(issue.id, IssueId(5));
+        assert_eq!(issue.title, "fixture-epic");
+        assert_eq!(issue.body, "parent");
+        assert_eq!(issue.labels, vec!["status:ready".to_string()]);
+        assert_eq!(issue.milestone.as_deref(), Some("fixture-ms"));
     }
 }
