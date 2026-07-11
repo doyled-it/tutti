@@ -1,0 +1,20 @@
+[
+  {
+    "number": 11,
+    "title": "a real issue in the milestone",
+    "body": "child work",
+    "labels": [{ "name": "status:done" }],
+    "milestone": { "title": "Phase 1" }
+  },
+  {
+    "number": 12,
+    "title": "a pull request assigned to the milestone",
+    "body": "not a child",
+    "labels": [],
+    "milestone": { "title": "Phase 1" },
+    "pull_request": {
+      "url": "https://api.github.com/repos/o/r/pulls/12",
+      "html_url": "https://github.com/o/r/pull/12"
+    }
+  }
+]

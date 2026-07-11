@@ -20,6 +20,10 @@ struct GhIssue {
     labels: Vec<GhLabel>,
     #[serde(default, rename = "milestone")]
     milestone: Option<GhMilestone>,
+    // GitHub's `issues` REST list returns pull requests too; a PR object carries a
+    // `pull_request` block. Present only to detect and drop PRs in `parse_issue_list`.
+    #[serde(default)]
+    pull_request: Option<serde_json::Value>,
 }
 #[derive(Deserialize)]
 struct GhMilestone {
@@ -95,10 +99,16 @@ pub fn parse_milestone(json: &str) -> Option<Milestone> {
     Some(milestone_from(raw))
 }
 
-/// Parse a `gh api repos/<repo>/issues?...` array into `Issue`s (all of them, unfiltered).
+/// Parse a `gh api repos/<repo>/issues?...` array into `Issue`s. The `issues` REST
+/// endpoint also returns pull requests (a PR carries a `pull_request` block), so those
+/// are dropped: a PR filed under a milestone is not a child that must be `status:done`.
 pub fn parse_issue_list(json: &str) -> Vec<Issue> {
     let issues: Vec<GhIssue> = serde_json::from_str(json).unwrap_or_default();
-    issues.into_iter().map(to_issue).collect()
+    issues
+        .into_iter()
+        .filter(|g| g.pull_request.is_none())
+        .map(to_issue)
+        .collect()
 }
 
 /// Parse `gh api repos/<repo>/issues/<n>/sub_issues` (an array of issue objects) into
@@ -316,6 +326,16 @@ mod tests {
         // The parser also accepts a bare `sub_issues_summary` payload.
         let p = parse_summary(r#"{"total":5,"completed":2,"percent_completed":40}"#);
         assert_eq!(p, Progress { total: 5, done: 2 });
+    }
+
+    #[test]
+    fn issue_list_excludes_pull_requests() {
+        // GitHub's issues?milestone= list returns PRs too; only the real issue is a child.
+        let json = include_str!("../tests/fixtures/milestone_children.json");
+        let issues = parse_issue_list(json);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, IssueId(11));
+        assert!(issues[0].has_label("status:done"));
     }
 
     #[test]

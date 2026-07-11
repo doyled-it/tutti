@@ -451,11 +451,15 @@ impl Forge for GitHubForge {
             format!("body={}", new.body),
         ];
         if let Some(m) = milestone {
-            args_owned.push("-f".to_string());
+            // milestone is an integer field on the create-issue API; -F sends it typed
+            // (mirrors the -F sub_issue_id= in link_sub_issue). A raw -f string is rejected.
+            args_owned.push("-F".to_string());
             args_owned.push(format!("milestone={}", m.0));
         }
         for label in &new.labels {
-            args_owned.push("-F".to_string());
+            // Labels are low-trust planner input; -f sends them as raw strings so a
+            // leading `@` is not treated by gh as a file reference (which -F would do).
+            args_owned.push("-f".to_string());
             args_owned.push(format!("labels[]={label}"));
         }
         let args: Vec<&str> = args_owned.iter().map(String::as_str).collect();
