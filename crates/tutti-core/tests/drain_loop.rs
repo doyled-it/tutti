@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Black-box: the public API drains multiple issues and stops cleanly.
 
-use std::path::PathBuf;
 use tutti_core::config::{default_roles, Config};
 use tutti_core::domain::{BranchPlan, CiState, Issue, IssueId, SelectFilter};
 use tutti_core::engine::{Engine, IterOutcome};
@@ -87,7 +86,13 @@ async fn drains_two_ready_issues_then_stops() {
         .script(Role::Reviewer, approve())
         .script(Role::Implementer, ship(2))
         .script(Role::Reviewer, approve());
-    let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+    let engine = Engine::new(
+        &cfg,
+        &forge,
+        &backend,
+        Box::new(tutti_core::testing::NoopWorkspace::default()),
+    )
+    .unwrap();
 
     let (shipped, plan) = engine.drain().await.unwrap();
     assert_eq!(shipped, 2);

@@ -11,7 +11,8 @@ use crate::message::{
 };
 use crate::routing;
 use crate::traits::{AgentBackend, EngineError, Forge, Result, RoutingStrategy};
-use std::path::PathBuf;
+use crate::workspace::{Workspace, WorkspaceHandle};
+use std::path::Path;
 
 /// What one iteration of the loop produced. Drives the outer drain decision.
 #[derive(Debug, PartialEq, Eq)]
@@ -29,8 +30,8 @@ pub struct Engine<'a> {
     pub forge: &'a dyn Forge,
     pub backend: &'a dyn AgentBackend,
     pub routing: Box<dyn RoutingStrategy>,
-    /// Where worktrees live on disk (real backends use it; fakes ignore it).
-    pub workdir: PathBuf,
+    /// Creates and tears down an isolated worktree per issue (real git or a fake).
+    pub workspace: Box<dyn Workspace>,
 }
 
 impl<'a> Engine<'a> {
@@ -38,7 +39,7 @@ impl<'a> Engine<'a> {
         cfg: &'a Config,
         forge: &'a dyn Forge,
         backend: &'a dyn AgentBackend,
-        workdir: PathBuf,
+        workspace: Box<dyn Workspace>,
     ) -> Result<Self> {
         let routing = routing::by_name(&cfg.routing, &cfg.integration_branch, &cfg.trunk)
             .ok_or_else(|| EngineError::Routing(format!("unknown routing '{}'", cfg.routing)))?;
@@ -47,7 +48,7 @@ impl<'a> Engine<'a> {
             forge,
             backend,
             routing,
-            workdir,
+            workspace,
         })
     }
 
@@ -63,6 +64,7 @@ impl<'a> Engine<'a> {
         role: Role,
         issue: &Issue,
         review: Option<ReviewReport>,
+        worktree: &Path,
     ) -> Result<AgentOutcome> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
         let task = AgentTask {
@@ -74,7 +76,7 @@ impl<'a> Engine<'a> {
         };
         // Drain events into logs so the channel never blocks.
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let out = self.backend.run(task, &self.workdir, tx).await;
+        let out = self.backend.run(task, worktree, tx).await;
         let _ = drain.await;
         out
     }
@@ -97,11 +99,39 @@ impl<'a> Engine<'a> {
         result
     }
 
-    /// The claimed body of one iteration. Any unexpected `Err` propagates and
-    /// `run_one` releases the claim.
+    /// The claimed body of one iteration. Creates an isolated worktree per issue,
+    /// runs the stages there, and removes the worktree on every terminal path.
+    /// Any unexpected `Err` propagates and `run_one` releases the claim.
     async fn run_claimed(&self, issue: &Issue) -> Result<IterOutcome> {
+        // Routing is pure in the issue, so decide the target branch up front and use it
+        // to pick the worktree base.
+        let plan = self.routing.target_branch(issue)?;
+        let base = if self.forge.branch_exists(&plan.target).await? {
+            plan.target.clone()
+        } else {
+            plan.create_from
+                .clone()
+                .unwrap_or_else(|| self.cfg.trunk.clone())
+        };
+        let handle = self.workspace.create(issue.id, &base).await?;
+
+        // Run the stages, then always remove the workspace (Ok or Err).
+        let result = self.run_stages(issue, &handle, plan).await;
+        let _ = self.workspace.remove(&handle).await;
+        result
+    }
+
+    /// The stage pipeline for a claimed issue, run inside an already-created worktree.
+    async fn run_stages(
+        &self,
+        issue: &Issue,
+        handle: &WorkspaceHandle,
+        plan: crate::domain::BranchPlan,
+    ) -> Result<IterOutcome> {
+        let wt = handle.path.as_path();
+
         // Stage: implement.
-        let impl_out = self.run_role(Role::Implementer, issue, None).await?;
+        let impl_out = self.run_role(Role::Implementer, issue, None, wt).await?;
         if impl_out.status != AgentStatus::ReadyToShip {
             self.forge.release(issue.id).await?;
             return Ok(IterOutcome::Blocked(
@@ -116,7 +146,7 @@ impl<'a> Engine<'a> {
         };
 
         // Stage: review (fresh agent).
-        let review_out = self.run_role(Role::Reviewer, issue, None).await?;
+        let review_out = self.run_role(Role::Reviewer, issue, None, wt).await?;
         let report = review_out.review.unwrap_or(ReviewReport {
             findings: vec![],
             verdict: crate::message::Verdict::Approve,
@@ -124,7 +154,9 @@ impl<'a> Engine<'a> {
 
         // Stage: apply-fixes if the review demands it.
         if report.needs_fixes() {
-            let fix_out = self.run_role(Role::FixApplier, issue, Some(report)).await?;
+            let fix_out = self
+                .run_role(Role::FixApplier, issue, Some(report), wt)
+                .await?;
             if fix_out.status != AgentStatus::ReadyToShip {
                 self.forge.release(issue.id).await?;
                 return Ok(IterOutcome::Blocked(
@@ -141,7 +173,7 @@ impl<'a> Engine<'a> {
         }
 
         // The routing strategy decides the target; overwrite whatever the agent guessed.
-        handoff.target = self.routing.target_branch(issue)?;
+        handoff.target = plan;
 
         // Stage: merge (mechanical executor). CI is the gate for real forges;
         // the local `Gate` is run by the implement stage's own tooling before handoff.
@@ -286,7 +318,13 @@ mod tests {
         let backend = FakeBackend::new()
             .script(Role::Implementer, ship_outcome(1))
             .script(Role::Reviewer, clean_review());
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
 
         let outcome = engine.run_one().await.unwrap();
         assert_eq!(outcome, IterOutcome::Shipped);
@@ -319,7 +357,13 @@ mod tests {
             .script(Role::Implementer, ship_outcome(1))
             .script(Role::Reviewer, dirty_review)
             .script(Role::FixApplier, ship_outcome(1));
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
         assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
     }
 
@@ -336,7 +380,13 @@ mod tests {
             blocked_reason: Some("needs a device".into()),
         };
         let backend = FakeBackend::new().script(Role::Implementer, blocked);
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
         assert!(matches!(
             engine.run_one().await.unwrap(),
             IterOutcome::Blocked(_)
@@ -352,7 +402,13 @@ mod tests {
         let cfg = cfg();
         let forge = FakeForge::new(vec![], CiState::Pass);
         let backend = FakeBackend::new();
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
         assert_eq!(engine.run_one().await.unwrap(), IterOutcome::NoReadyWork);
     }
 
@@ -363,7 +419,13 @@ mod tests {
         let backend = FakeBackend::new()
             .script(Role::Implementer, ship_outcome(1))
             .script(Role::Reviewer, clean_review());
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
 
         let outcome = engine.run_one().await.unwrap();
         assert_eq!(outcome, IterOutcome::StoppedCiRed);
@@ -407,7 +469,13 @@ mod tests {
             .script(Role::Implementer, ship_outcome(1))
             .script(Role::Reviewer, dirty_review)
             .script(Role::FixApplier, fix_blocked);
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
 
         let outcome = engine.run_one().await.unwrap();
         assert!(matches!(outcome, IterOutcome::Blocked(_)));
@@ -424,7 +492,13 @@ mod tests {
         // No scripted implementer outcome: run_role returns Err(Backend(..)) after
         // the claim, exercising the release-on-unexpected-error safety net.
         let backend = FakeBackend::new();
-        let engine = Engine::new(&cfg, &forge, &backend, PathBuf::from(".")).unwrap();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
 
         let result = engine.run_one().await;
         assert!(result.is_err());
@@ -464,5 +538,59 @@ mod tests {
             needs_human: false,
         };
         assert!(plan_is_auto_executable(&ok));
+    }
+
+    struct CountingWorkspace {
+        created: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        removed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        last_base: std::sync::Mutex<String>,
+    }
+    #[async_trait::async_trait]
+    impl crate::workspace::Workspace for CountingWorkspace {
+        async fn create(
+            &self,
+            issue: crate::domain::IssueId,
+            base: &str,
+        ) -> crate::traits::Result<crate::workspace::WorkspaceHandle> {
+            self.created
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.last_base.lock().unwrap() = base.to_string();
+            Ok(crate::workspace::WorkspaceHandle {
+                issue,
+                path: std::path::PathBuf::from("."),
+                branch: format!("feat/issue-{}", issue.0),
+            })
+        }
+        async fn remove(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+        ) -> crate::traits::Result<()> {
+            self.removed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn prune(&self) -> crate::traits::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_is_created_and_removed_per_issue() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let removed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ws = Box::new(CountingWorkspace {
+            created: created.clone(),
+            removed: removed.clone(),
+            last_base: std::sync::Mutex::new(String::new()),
+        });
+        let engine = Engine::new(&cfg, &forge, &backend, ws).unwrap();
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(removed.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
