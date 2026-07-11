@@ -192,6 +192,7 @@ impl<'a> Engine<'a> {
             trunk: self.cfg.trunk.clone(),
             ci_max_polls: self.cfg.ci_max_polls,
             poll_delay: std::time::Duration::from_secs(self.cfg.poll_delay_secs),
+            merge_mode: self.cfg.merge_mode,
         };
         match exec.ship(&handoff).await? {
             // record() already flipped the label to done.
@@ -272,6 +273,7 @@ mod tests {
                 working_dir: Default::default(),
             },
             roles: crate::config::default_roles(),
+            merge_mode: crate::domain::MergeMode::Merge,
         }
     }
 

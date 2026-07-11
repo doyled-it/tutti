@@ -54,6 +54,7 @@ mod tests {
             roles: default_roles(),
             ci_max_polls: 40,
             poll_delay_secs: 0,
+            merge_mode: tutti_core::domain::MergeMode::Merge,
         }
     }
 
