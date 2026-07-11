@@ -247,6 +247,7 @@ impl Forge for GitHubForge {
         let flag = match how {
             MergeMode::Squash => "--squash",
             MergeMode::Merge => "--merge",
+            MergeMode::Rebase => "--rebase",
         };
         self.gh(&[
             "pr",

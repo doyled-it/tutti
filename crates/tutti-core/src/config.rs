@@ -33,6 +33,9 @@ pub struct Config {
     /// role -> skill refs. Roles absent here fall back to `default_roles()`.
     #[serde(default)]
     pub roles: HashMap<Role, Vec<String>>,
+    /// How the executor merges a shipped PR. Defaults to a merge commit, never squash.
+    #[serde(default = "default_merge_mode")]
+    pub merge_mode: crate::domain::MergeMode,
 }
 
 fn default_max_issues() -> u32 {
@@ -45,6 +48,10 @@ fn default_ci_max_polls() -> u32 {
 
 fn default_poll_delay_secs() -> u64 {
     15
+}
+
+fn default_merge_mode() -> crate::domain::MergeMode {
+    crate::domain::MergeMode::Merge
 }
 
 /// The shipped default role -> skills mapping.
@@ -194,6 +201,7 @@ implementer = ["custom:my-implement-skill"]
                 working_dir: Default::default(),
             },
             roles: HashMap::new(),
+            merge_mode: crate::domain::MergeMode::Merge,
         };
         assert_eq!(
             cfg.skills_for(Role::Reviewer),
@@ -222,5 +230,50 @@ working_dir = ""
         )
         .unwrap();
         assert!(Config::load(&p).is_err());
+    }
+
+    #[test]
+    fn parses_merge_mode_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "version/v0.1"
+model = "m"
+merge_mode = "squash"
+[select]
+require_label = "status:ready"
+skip_labels = []
+[gate]
+commands = ["true"]
+working_dir = ""
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.merge_mode, crate::domain::MergeMode::Squash);
+
+        let p2 = dir.path().join("tutti-default.toml");
+        std::fs::write(
+            &p2,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "version/v0.1"
+model = "m"
+[select]
+require_label = "status:ready"
+skip_labels = []
+[gate]
+commands = ["true"]
+working_dir = ""
+"#,
+        )
+        .unwrap();
+        let cfg2 = Config::load(&p2).unwrap();
+        assert_eq!(cfg2.merge_mode, crate::domain::MergeMode::Merge);
     }
 }

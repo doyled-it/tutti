@@ -16,6 +16,8 @@ pub struct Executor<'a> {
     pub ci_max_polls: u32,
     /// How long to wait between CI polls.
     pub poll_delay: std::time::Duration,
+    /// How to merge a green PR. Config-driven; defaults to a merge commit.
+    pub merge_mode: MergeMode,
 }
 
 /// Outcome of a ship attempt.
@@ -79,7 +81,7 @@ impl<'a> Executor<'a> {
             return Ok(ShipResult::CiNotGreen(pr, last));
         }
 
-        self.forge.merge(&pr, MergeMode::Squash).await?;
+        self.forge.merge(&pr, self.merge_mode).await?;
         self.forge
             .record(
                 handoff.issue,
@@ -132,6 +134,7 @@ mod tests {
             trunk: "main".into(),
             ci_max_polls: 3,
             poll_delay: std::time::Duration::from_millis(0),
+            merge_mode: MergeMode::Merge,
         };
         let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
         assert!(matches!(res, ShipResult::Merged(_)));
@@ -148,10 +151,26 @@ mod tests {
             trunk: "main".into(),
             ci_max_polls: 3,
             poll_delay: std::time::Duration::from_millis(0),
+            merge_mode: MergeMode::Merge,
         };
         let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
         assert!(matches!(res, ShipResult::CiNotGreen(_, CiState::Fail)));
         assert!(!forge.is_done(IssueId(1)));
+    }
+
+    #[tokio::test]
+    async fn executor_forwards_configured_merge_mode() {
+        let forge = FakeForge::new(vec![ready()], CiState::Pass);
+        let exec = Executor {
+            forge: &forge,
+            trunk: "main".into(),
+            ci_max_polls: 3,
+            poll_delay: std::time::Duration::from_millis(0),
+            merge_mode: MergeMode::Squash,
+        };
+        let res = exec.ship(&handoff_to("version/v0.1")).await.unwrap();
+        assert!(matches!(res, ShipResult::Merged(_)));
+        assert_eq!(forge.last_merge_mode(), Some(MergeMode::Squash));
     }
 
     #[tokio::test]
@@ -162,6 +181,7 @@ mod tests {
             trunk: "main".into(),
             ci_max_polls: 3,
             poll_delay: std::time::Duration::from_millis(0),
+            merge_mode: MergeMode::Merge,
         };
         let err = exec.ship(&handoff_to("main")).await.unwrap_err();
         assert!(matches!(err, EngineError::Guardrail(_)));

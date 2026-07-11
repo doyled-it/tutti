@@ -26,6 +26,7 @@ fn cfg() -> Config {
             working_dir: Default::default(),
         },
         roles: default_roles(),
+        merge_mode: tutti_core::domain::MergeMode::Merge,
     }
 }
 
