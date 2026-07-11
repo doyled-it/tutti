@@ -86,9 +86,104 @@ fn event_from_content(content: &serde_json::Value) -> Option<AgentEvent> {
     }
 }
 
+/// The authoritative `result` event that closes a `stream-json` run. This, not substring
+/// scanning, is the source of truth for a run's outcome, error state, and token accounting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultEvent {
+    /// Whether `claude` flagged the run as failed.
+    pub is_error: bool,
+    /// e.g. "success" or "error".
+    pub subtype: String,
+    /// Populated by the CLI when an API-level error (including rate limiting) occurred.
+    pub api_error_status: Option<String>,
+    /// The final result text (may be an error message when `is_error`).
+    pub result: String,
+    /// `(input_tokens, output_tokens)` when the event carried usage.
+    pub usage: Option<(u64, u64)>,
+}
+
+/// The structured signals distilled from a whole transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamScan {
+    /// The LAST `result` event seen (authoritative outcome), if any.
+    pub result: Option<ResultEvent>,
+    /// True when any `rate_limit_event` reported a status other than "allowed".
+    pub rate_limited: bool,
+}
+
+/// Parse one already-decoded stream-json value as a `result` event. Returns None when the
+/// value is not a `result` line.
+fn parse_result_event(v: &Value) -> Option<ResultEvent> {
+    if v.get("type").and_then(|t| t.as_str()) != Some("result") {
+        return None;
+    }
+    let usage = v.get("usage").and_then(|u| {
+        let input = u.get("input_tokens").and_then(|n| n.as_u64())?;
+        let output = u.get("output_tokens").and_then(|n| n.as_u64())?;
+        Some((input, output))
+    });
+    Some(ResultEvent {
+        is_error: v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false),
+        subtype: v
+            .get("subtype")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        api_error_status: v
+            .get("api_error_status")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
+        result: v
+            .get("result")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        usage,
+    })
+}
+
+/// Distil the structured outcome signals from a run's full transcript: the last `result`
+/// event and whether any `rate_limit_event` reported a non-"allowed" status. Prefer this over
+/// substring scanning to decide a run's fate.
+pub fn scan_stream(full_output: &str) -> StreamScan {
+    let mut scan = StreamScan::default();
+    for line in full_output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("result") => {
+                if let Some(r) = parse_result_event(&v) {
+                    scan.result = Some(r); // keep the LAST one
+                }
+            }
+            Some("rate_limit_event") => {
+                // "allowed" means the request was NOT limited; anything else (rejected,
+                // blocked, exhausted, ...) is a real limit.
+                let status = v
+                    .get("rate_limit_info")
+                    .and_then(|i| i.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("allowed");
+                if !status.eq_ignore_ascii_case("allowed") {
+                    scan.rate_limited = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    scan
+}
+
 /// Scan a run's full output for a usage/rate-limit marker. Restricted to structured
 /// `result`/`system` stream-json lines so that a run whose task or code merely discusses
-/// rate limiting in ordinary assistant text is not misclassified as limit-hit.
+/// rate limiting in ordinary assistant text is not misclassified as limit-hit. This is now
+/// only a defensive fallback: `scan_stream` and the structured `result`/`rate_limit_event`
+/// are the primary signals.
 pub fn hit_usage_limit(full_output: &str) -> bool {
     const MARKERS: [&str; 3] = ["usage limit", "rate limit", "session limit"];
     full_output.lines().any(|line| {
@@ -192,5 +287,84 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"we should handle the rate limit here"}]}}"#
         ));
         assert!(!hit_usage_limit("all good"));
+    }
+
+    /// The captured real transcript (5 lines: system init, assistant text, assistant
+    /// tool_use, rate_limit_event, result), compiled in so these tests are hermetic.
+    const REAL_STREAM: &str = include_str!("../tests/fixtures/real-stream.jsonl");
+
+    fn real_line(idx: usize) -> &'static str {
+        REAL_STREAM.lines().nth(idx).expect("fixture line")
+    }
+
+    #[test]
+    fn real_assistant_text_line_maps_to_line() {
+        // Line 1 (0-indexed): assistant message with a text block.
+        assert_eq!(
+            parse_stream_line(real_line(1)).unwrap(),
+            AgentEvent::Line("hello".into())
+        );
+    }
+
+    #[test]
+    fn real_tool_use_line_maps_to_tooluse() {
+        // Line 2: assistant message with a tool_use block naming "Edit".
+        assert_eq!(
+            parse_stream_line(real_line(2)).unwrap(),
+            AgentEvent::ToolUse("Edit".into())
+        );
+    }
+
+    #[test]
+    fn real_result_line_maps_to_done() {
+        // Line 4: the terminal result event.
+        assert_eq!(parse_stream_line(real_line(4)).unwrap(), AgentEvent::Done);
+    }
+
+    #[test]
+    fn real_system_and_rate_limit_lines_degrade_to_line() {
+        // system init (line 0) and rate_limit_event (line 3) are not modelled as events; they
+        // degrade to Line so a CLI change can never break the adapter.
+        assert!(matches!(
+            parse_stream_line(real_line(0)).unwrap(),
+            AgentEvent::Line(_)
+        ));
+        assert!(matches!(
+            parse_stream_line(real_line(3)).unwrap(),
+            AgentEvent::Line(_)
+        ));
+    }
+
+    #[test]
+    fn scan_of_real_stream_is_success_not_limited() {
+        let scan = scan_stream(REAL_STREAM);
+        let result = scan.result.expect("result event captured");
+        assert!(!result.is_error);
+        assert_eq!(result.subtype, "success");
+        assert_eq!(result.api_error_status, None);
+        assert_eq!(result.result, "hello");
+        assert_eq!(result.usage, Some((2, 4)));
+        // "allowed" rate_limit_event must NOT count as limited.
+        assert!(!scan.rate_limited);
+    }
+
+    #[test]
+    fn scan_flags_non_allowed_rate_limit_event() {
+        let scan =
+            scan_stream(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}"#);
+        assert!(scan.rate_limited);
+        assert!(scan.result.is_none());
+    }
+
+    #[test]
+    fn scan_keeps_last_result_event() {
+        let stream = concat!(
+            r#"{"type":"result","subtype":"error","is_error":true,"result":"first"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"second"}"#,
+        );
+        let result = scan_stream(stream).result.unwrap();
+        assert_eq!(result.result, "second");
+        assert!(!result.is_error);
     }
 }

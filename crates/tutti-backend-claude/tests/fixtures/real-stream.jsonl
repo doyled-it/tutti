@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","cwd":"/tmp","session_id":"abc","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":null},"session_id":"abc"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","id":"msg_02","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Edit","input":{}}]},"session_id":"abc"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783765800,"rateLimitType":"five_hour","overageStatus":"rejected"},"session_id":"abc"}
+{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"result":"hello","session_id":"abc","total_cost_usd":0.14,"usage":{"input_tokens":2,"output_tokens":4}}
