@@ -21,10 +21,18 @@ pub struct WorkspaceHandle {
 pub trait Workspace: Send + Sync {
     /// Create an isolated workspace for `issue` on a fresh `feat/issue-N` branch
     /// based on `base`. Returns the directory the agent should run in.
+    ///
+    /// `base` is resolved as a local ref first, then `origin/<base>`. Callers that
+    /// pass a remote-only branch must have fetched it already (the live CLI fetches
+    /// before draining).
     async fn create(&self, issue: IssueId, base: &str) -> Result<WorkspaceHandle>;
     /// Remove the workspace after the issue reaches a terminal state (best-effort).
     async fn remove(&self, handle: &WorkspaceHandle) -> Result<()>;
     /// Prune any Tutti workspaces left behind by a crashed run.
+    ///
+    /// This is a single-runner startup sweep that force-removes ALL `tutti-issue-*`
+    /// worktrees. It is NOT concurrency-safe and must not run while another runner
+    /// holds an issue worktree.
     async fn prune(&self) -> Result<()>;
 }
 

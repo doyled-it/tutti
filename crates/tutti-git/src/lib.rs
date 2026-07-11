@@ -44,6 +44,44 @@ impl GitWorkspace {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+
+    /// Resolve `base` to a commit-ish that exists locally for `git worktree add`.
+    ///
+    /// The engine picks `base` from `Forge::branch_exists`, which is remote truth
+    /// ("exists on origin"). `git worktree add` resolves its base as a local
+    /// commit-ish, so on a fresh clone an integration branch that exists on origin
+    /// but not locally would fail or resolve to a stale ref. Prefer the local ref,
+    /// fall back to `origin/<base>`, and otherwise error asking for a fetch.
+    async fn resolve_base(&self, base: &str) -> Result<String> {
+        if self
+            .git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{base}^{{commit}}"),
+            ])
+            .await
+            .is_ok()
+        {
+            return Ok(base.to_string());
+        }
+        let origin = format!("origin/{base}");
+        if self
+            .git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{origin}^{{commit}}"),
+            ])
+            .await
+            .is_ok()
+        {
+            return Ok(origin);
+        }
+        Err(EngineError::Forge(format!(
+            "base ref '{base}' not found locally or as origin/{base}; fetch first"
+        )))
+    }
 }
 
 #[async_trait]
@@ -56,11 +94,14 @@ impl Workspace for GitWorkspace {
         let _ = self
             .git(&["worktree", "remove", "--force", &path_str])
             .await;
+        // Resolve `base` to a ref that exists locally (it may be remote-only on a
+        // fresh clone) before handing it to git.
+        let base_ref = self.resolve_base(base).await?;
         // git worktree add -B <branch> <path> <base>
         // `-B` creates the branch or resets it to `base` if it already exists
         // (e.g. left over from a prior create/prune cycle for the same issue),
         // which keeps `create` idempotent per issue.
-        self.git(&["worktree", "add", "-B", &branch, &path_str, base])
+        self.git(&["worktree", "add", "-B", &branch, &path_str, &base_ref])
             .await?;
         Ok(WorkspaceHandle {
             issue,
@@ -76,6 +117,9 @@ impl Workspace for GitWorkspace {
         Ok(())
     }
 
+    /// Single-runner startup sweep: force-removes ALL `tutti-issue-*` worktrees.
+    /// This is NOT concurrency-safe and must not run while another runner holds an
+    /// issue worktree; it would tear that runner's workspace out from under it.
     async fn prune(&self) -> Result<()> {
         // Drop bookkeeping for any manually deleted worktrees.
         self.git(&["worktree", "prune"]).await?;
@@ -166,5 +210,60 @@ mod tests {
         // A second create for the same issue must now succeed cleanly.
         let h2 = ws.create(IssueId(5), "main").await.unwrap();
         assert!(h2.path.exists());
+    }
+
+    #[tokio::test]
+    async fn create_resets_branch_to_base_on_recreate() {
+        let dir = temp_repo().await;
+        let ws = GitWorkspace::new(dir.path());
+        let h = ws.create(IssueId(9), "main").await.unwrap();
+        // Commit a new file inside the issue worktree.
+        std::fs::write(h.path.join("scratch.txt"), "work").unwrap();
+        run_git(&h.path, vec!["add", "."]).await;
+        run_git(&h.path, vec!["commit", "-m", "wip"]).await;
+        ws.remove(&h).await.unwrap();
+        // Recreating from base must reset the branch (`-B`), dropping that commit.
+        let h2 = ws.create(IssueId(9), "main").await.unwrap();
+        assert!(
+            !h2.path.join("scratch.txt").exists(),
+            "recreate must reset the branch to base, dropping prior commits"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_leaves_non_tutti_worktrees_intact() {
+        let dir = temp_repo().await;
+        let ws = GitWorkspace::new(dir.path());
+        // A worktree that is not a Tutti issue worktree must survive prune.
+        let other = dir.path().join("other-wt");
+        let other_str = other.to_string_lossy().into_owned();
+        run_git(
+            dir.path(),
+            vec!["worktree", "add", &other_str, "-b", "other", "main"],
+        )
+        .await;
+        // A Tutti worktree whose dir crashed away.
+        let h = ws.create(IssueId(11), "main").await.unwrap();
+        std::fs::remove_dir_all(&h.path).unwrap();
+        ws.prune().await.unwrap();
+        assert!(other.exists(), "prune must not touch non-Tutti worktrees");
+        // The Tutti worktree slot is reclaimed, so a fresh create succeeds.
+        let h2 = ws.create(IssueId(11), "main").await.unwrap();
+        assert!(h2.path.exists());
+    }
+
+    #[tokio::test]
+    async fn create_errors_when_base_missing() {
+        let dir = temp_repo().await;
+        let ws = GitWorkspace::new(dir.path());
+        let err = ws
+            .create(IssueId(12), "nonexistent-branch")
+            .await
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("nonexistent-branch"),
+            "error should name the missing base: {msg}"
+        );
     }
 }
