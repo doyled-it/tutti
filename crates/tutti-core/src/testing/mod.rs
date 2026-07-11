@@ -4,5 +4,6 @@
 pub mod fake_backend;
 pub mod fake_forge;
 
+pub use crate::workspace::NoopWorkspace;
 pub use fake_backend::FakeBackend;
 pub use fake_forge::FakeForge;

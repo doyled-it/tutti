@@ -10,6 +10,7 @@ pub mod message;
 pub mod routing;
 pub mod testing;
 pub mod traits;
+pub mod workspace;
 
 /// The engine's semantic version, surfaced in logs and handoff artifacts.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
