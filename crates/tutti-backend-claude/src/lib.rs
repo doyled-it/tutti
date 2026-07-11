@@ -2,3 +2,4 @@
 //! The Claude `AgentBackend`: drives `claude -p` and reads the file-based handoff.
 
 pub mod prompt;
+pub mod stream;
