@@ -574,6 +574,68 @@ mod tests {
         }
     }
 
+    /// Forwards to a shared `CountingWorkspace` so the test can read `last_base`
+    /// back after the `Box<dyn Workspace>` has been moved into the engine.
+    struct SharedCountingWorkspace(std::sync::Arc<CountingWorkspace>);
+    #[async_trait::async_trait]
+    impl crate::workspace::Workspace for SharedCountingWorkspace {
+        async fn create(
+            &self,
+            issue: crate::domain::IssueId,
+            base: &str,
+        ) -> crate::traits::Result<crate::workspace::WorkspaceHandle> {
+            self.0.create(issue, base).await
+        }
+        async fn remove(&self, h: &crate::workspace::WorkspaceHandle) -> crate::traits::Result<()> {
+            self.0.remove(h).await
+        }
+        async fn prune(&self) -> crate::traits::Result<()> {
+            self.0.prune().await
+        }
+    }
+
+    #[tokio::test]
+    async fn worktree_base_prefers_existing_integration_branch_else_trunk() {
+        // Default case: the integration branch does not exist yet, so the worktree
+        // base falls back to create_from (trunk, "main").
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let counting = std::sync::Arc::new(CountingWorkspace {
+            created: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            removed: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            last_base: std::sync::Mutex::new(String::new()),
+        });
+        let ws = Box::new(SharedCountingWorkspace(counting.clone()));
+        let engine = Engine::new(&cfg, &forge, &backend, ws).unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::Shipped);
+        assert_eq!(*counting.last_base.lock().unwrap(), "main");
+
+        // Second scenario: pre-create the integration branch so branch_exists is
+        // true, and confirm the worktree base becomes the target branch itself.
+        let forge2 = FakeForge::new(vec![ready(1)], CiState::Pass);
+        forge2.create_branch("version/v0.1", "main").await.unwrap();
+        assert!(forge2.branch_exists("version/v0.1").await.unwrap());
+        let backend2 = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let counting2 = std::sync::Arc::new(CountingWorkspace {
+            created: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            removed: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            last_base: std::sync::Mutex::new(String::new()),
+        });
+        let ws2 = Box::new(SharedCountingWorkspace(counting2.clone()));
+        let engine2 = Engine::new(&cfg, &forge2, &backend2, ws2).unwrap();
+
+        let outcome2 = engine2.run_one().await.unwrap();
+        assert_eq!(outcome2, IterOutcome::Shipped);
+        assert_eq!(*counting2.last_base.lock().unwrap(), "version/v0.1");
+    }
+
     #[tokio::test]
     async fn workspace_is_created_and_removed_per_issue() {
         let cfg = cfg();
