@@ -72,6 +72,17 @@ impl FakeForge {
         self.state.lock().unwrap().issues.len()
     }
 
+    /// The titles of all tracked issues, for assertions.
+    pub fn issue_titles(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .issues
+            .iter()
+            .map(|i| i.title.clone())
+            .collect()
+    }
+
     pub fn labels_of(&self, issue: IssueId) -> Vec<String> {
         let st = self.state.lock().unwrap();
         st.issues

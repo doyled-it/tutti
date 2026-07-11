@@ -21,7 +21,8 @@ impl FakeBackend {
         }
     }
 
-    /// Queue `outcome` to be returned on the next run of `role` (FIFO).
+    /// Queue `outcome` to be returned on the next run of `role` (FIFO). For a
+    /// `Role::Planner` outcome, set `outcome.plan` to script the planner's `PlanDecision`.
     pub fn script(mut self, role: Role, outcome: AgentOutcome) -> Self {
         self.scripted
             .get_mut()
@@ -86,6 +87,7 @@ mod tests {
                 decision_note: None,
             }),
             review: None,
+            plan: None,
             summary: "done".into(),
             usage: Usage::default(),
             blocked_reason: None,
