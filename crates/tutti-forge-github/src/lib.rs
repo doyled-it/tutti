@@ -16,14 +16,17 @@ pub struct GitHubForge {
     pub ready_label: String,
     pub in_progress_label: String,
     pub done_label: String,
+    /// Working directory for `git` invocations. `gh` uses `--repo` and is
+    /// cwd-independent, but `git ls-remote`/`git push` must run inside the repo.
+    pub repo_root: std::path::PathBuf,
 }
 
 impl GitHubForge {
     async fn gh(&self, args: &[&str]) -> Result<String> {
-        run("gh", args).await
+        run("gh", args, None).await
     }
     async fn git(&self, args: &[&str]) -> Result<String> {
-        run("git", args).await
+        run("git", args, Some(&self.repo_root)).await
     }
 
     /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
@@ -49,34 +52,48 @@ impl GitHubForge {
         struct N {
             number: u64,
         }
+        #[derive(serde::Deserialize)]
+        struct Pr {
+            #[allow(dead_code)]
+            number: u64,
+        }
         let issues: Vec<N> = serde_json::from_str(&json).unwrap_or_default();
         for i in issues {
+            // Match the PR by its head branch (this repo's convention is
+            // `feat/issue-<N>`). `linked:issue-N` is not a valid gh search qualifier,
+            // so an empty result there would falsely release issues that already have
+            // an open PR, producing duplicate PRs.
+            let head = format!("feat/issue-{}", i.number);
             let prs = self
                 .gh(&[
-                    "pr",
-                    "list",
-                    "--repo",
-                    &self.repo,
-                    "--search",
-                    &format!("linked:issue-{}", i.number),
-                    "--state",
-                    "open",
-                    "--json",
-                    "number",
+                    "pr", "list", "--repo", &self.repo, "--state", "open", "--head", &head,
+                    "--json", "number",
                 ])
-                .await
-                .unwrap_or_default();
-            if prs.trim() == "[]" || prs.trim().is_empty() {
-                let _ = self.release(IssueId(i.number)).await;
+                .await;
+            match prs {
+                // Spawn/auth failure: cannot tell whether a PR exists, so skip (safest).
+                Err(_) => continue,
+                Ok(body) => {
+                    let open_prs: Vec<Pr> = serde_json::from_str(body.trim()).unwrap_or_default();
+                    if open_prs.is_empty() {
+                        let _ = self.release(IssueId(i.number)).await;
+                    }
+                }
             }
         }
         Ok(())
     }
 }
 
-async fn run(program: &str, args: &[&str]) -> Result<String> {
-    let out = tokio::process::Command::new(program)
-        .args(args)
+/// Run `program` with `args`, erroring on a non-zero exit. Used for the mutating
+/// commands where a non-zero status is a genuine failure.
+async fn run(program: &str, args: &[&str], cwd: Option<&std::path::Path>) -> Result<String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let out = cmd
         .output()
         .await
         .map_err(|e| EngineError::Forge(format!("{program} {:?}: {e}", args)))?;
@@ -87,6 +104,18 @@ async fn run(program: &str, args: &[&str]) -> Result<String> {
             String::from_utf8_lossy(&out.stderr)
         )));
     }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Run `program` and return its stdout REGARDLESS of exit status; only Err on a spawn
+/// failure. `gh pr checks` exits non-zero by design (8 = pending, 1 = a check failed)
+/// while still printing the JSON we need, so the strict `run` would mask real results.
+async fn run_capture(program: &str, args: &[&str]) -> Result<String> {
+    let out = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| EngineError::Forge(format!("{program} {:?}: {e}", args)))?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -110,6 +139,9 @@ impl Forge for GitHubForge {
         Ok(parse::first_ready_issue(&json, filter))
     }
 
+    // Note: `gh issue edit --add-label/--remove-label` is idempotent and does not error
+    // if the issue is already in-progress, so this is NOT the atomic race-guard the design
+    // describes; the single-runner `PidLock` provides that guarantee.
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         let n = issue.0.to_string();
         self.gh(&[
@@ -152,6 +184,9 @@ impl Forge for GitHubForge {
     }
 
     async fn create_branch(&self, branch: &str, from: &str) -> Result<()> {
+        // Seed from the current remote tip, not a possibly-stale remote-tracking ref.
+        // Best-effort: if the fetch fails we still try the push against what we have.
+        let _ = self.git(&["fetch", "origin", from]).await;
         self.git(&[
             "push",
             "origin",
@@ -168,15 +203,9 @@ impl Forge for GitHubForge {
                 "--title", &pr.title, "--body", &pr.body,
             ])
             .await?;
-        // gh prints the PR URL; the number is its last path segment.
-        let number = out
-            .trim()
-            .rsplit('/')
-            .next()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .ok_or_else(|| {
-                EngineError::Forge(format!("could not parse PR number from '{}'", out.trim()))
-            })?;
+        // gh prints the PR URL; the number is the last path segment of the URL line.
+        let number = parse::parse_pr_number(&out)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse PR number from '{out}'")))?;
         Ok(PrHandle {
             number,
             branch: pr.head,
@@ -184,8 +213,12 @@ impl Forge for GitHubForge {
     }
 
     async fn ci_status(&self, pr: &PrHandle) -> Result<CiState> {
-        let json = self
-            .gh(&[
+        // `gh pr checks` exits non-zero by design (8 = pending, 1 = a check failed) yet
+        // still prints the JSON on stdout, so read stdout regardless of exit status.
+        // Only a genuine spawn failure falls back to Pending.
+        let json = run_capture(
+            "gh",
+            &[
                 "pr",
                 "checks",
                 &pr.number.to_string(),
@@ -193,9 +226,10 @@ impl Forge for GitHubForge {
                 &self.repo,
                 "--json",
                 "state",
-            ])
-            .await
-            .unwrap_or_else(|_| "[]".into());
+            ],
+        )
+        .await
+        .unwrap_or_else(|_| "[]".into());
         Ok(parse::overall_ci_state(&json))
     }
 
@@ -237,12 +271,24 @@ impl Forge for GitHubForge {
 
 #[cfg(test)]
 mod tests {
+    use super::parse::parse_pr_number;
+
     #[test]
     fn pr_number_parsing_via_open_pr_helper() {
-        // The URL-to-number logic is exercised through parse-like assertions here; the
-        // full open_pr requires a live gh (Task 9). This documents the expected shape.
-        let url = "https://github.com/o/r/pull/123";
-        let number: u64 = url.rsplit('/').next().unwrap().parse().unwrap();
-        assert_eq!(number, 123);
+        // open_pr parses the number from gh's stdout via this shared helper; the full
+        // open_pr requires a live gh (Task 9). Cover a plain URL, a trailing newline,
+        // and a URL preceding a trailing informational line.
+        assert_eq!(
+            parse_pr_number("https://github.com/o/r/pull/123"),
+            Some(123)
+        );
+        assert_eq!(
+            parse_pr_number("https://github.com/o/r/pull/123\n"),
+            Some(123)
+        );
+        assert_eq!(
+            parse_pr_number("Creating pull request...\nhttps://github.com/o/r/pull/9\n"),
+            Some(9)
+        );
     }
 }

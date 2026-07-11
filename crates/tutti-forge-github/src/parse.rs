@@ -44,6 +44,14 @@ fn to_issue(g: GhIssue) -> Issue {
     }
 }
 
+/// Parse the PR number from `gh pr create` output. gh prints the PR URL, sometimes
+/// followed by an informational line, so take the last non-empty line and then its last
+/// `/`-segment. Returns None if no line yields a numeric trailing segment.
+pub fn parse_pr_number(out: &str) -> Option<u64> {
+    let line = out.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+    line.rsplit('/').next()?.trim().parse::<u64>().ok()
+}
+
 /// Map `gh pr checks --json state` output to a single `CiState`: Fail if any failed,
 /// Pending if any pending/queued, else Pass. Unknown states are treated as Pending.
 pub fn overall_ci_state(json: &str) -> CiState {
@@ -122,5 +130,41 @@ mod tests {
     #[test]
     fn ci_empty_is_pending() {
         assert_eq!(overall_ci_state("[]"), CiState::Pending);
+    }
+
+    #[test]
+    fn pr_number_simple_url() {
+        assert_eq!(
+            parse_pr_number("https://github.com/o/r/pull/123"),
+            Some(123)
+        );
+    }
+
+    #[test]
+    fn pr_number_trailing_newline() {
+        assert_eq!(
+            parse_pr_number("https://github.com/o/r/pull/123\n"),
+            Some(123)
+        );
+    }
+
+    #[test]
+    fn pr_number_multiline_with_info_line() {
+        // gh sometimes prints an informational line after the URL; the URL is not last.
+        let out = "https://github.com/o/r/pull/456\nWarning: some notice\n";
+        // The last non-empty line is not a URL, so this must fail to parse rather than
+        // silently returning a wrong number.
+        assert_eq!(parse_pr_number(out), None);
+    }
+
+    #[test]
+    fn pr_number_url_is_last_nonempty_line() {
+        let out = "Creating pull request for feat/x into main\nhttps://github.com/o/r/pull/789\n\n";
+        assert_eq!(parse_pr_number(out), Some(789));
+    }
+
+    #[test]
+    fn pr_number_garbage_is_none() {
+        assert_eq!(parse_pr_number("not a url"), None);
     }
 }

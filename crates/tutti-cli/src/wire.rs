@@ -22,6 +22,7 @@ pub fn build(cfg: &Config, repo: &str, repo_root: PathBuf) -> LiveAdapters {
             ready_label: cfg.select.require_label.clone(),
             in_progress_label: "status:in-progress".into(),
             done_label: "status:done".into(),
+            repo_root: repo_root.clone(),
         },
         backend: ClaudeBackend::default(),
         workspace: GitWorkspace::new(repo_root),
@@ -61,5 +62,6 @@ mod tests {
         let a = build(&cfg(), "o/r", PathBuf::from("."));
         assert_eq!(a.forge.repo, "o/r");
         assert_eq!(a.forge.ready_label, "status:ready");
+        assert_eq!(a.forge.repo_root, PathBuf::from("."));
     }
 }
