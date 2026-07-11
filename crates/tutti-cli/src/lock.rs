@@ -40,7 +40,14 @@ impl PidLock {
             return false;
         };
         // Signal 0 probes existence without killing.
-        unsafe { libc_kill(pid, 0) == 0 }
+        if unsafe { libc_kill(pid, 0) } == 0 {
+            return true;
+        }
+        // A live process owned by another user returns -1 with errno EPERM: it exists,
+        // so treat it as alive rather than reclaiming its lock. EPERM is 1 on Linux and
+        // macOS; we compare the numeric value to avoid a libc crate dependency.
+        const EPERM: i32 = 1;
+        std::io::Error::last_os_error().raw_os_error() == Some(EPERM)
     }
 }
 

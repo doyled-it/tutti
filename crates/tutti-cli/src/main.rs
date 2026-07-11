@@ -21,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Drain ready issues once (or repeatedly with --loop).
+    /// Drain ready issues once. Schedule repeated runs externally (cron/launchd).
     Run {
         #[arg(long, default_value = "tutti.toml")]
         config: PathBuf,
