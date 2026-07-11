@@ -9,6 +9,7 @@ pub mod gate;
 pub mod message;
 pub mod routing;
 pub mod testing;
+pub mod tracking;
 pub mod traits;
 pub mod workspace;
 
