@@ -87,6 +87,7 @@ impl ClaudeBackend {
                 status: AgentStatus::Error,
                 handoff: None,
                 review: None,
+                plan: None,
                 summary: "usage/rate limit".into(),
                 usage,
                 blocked_reason: Some("usage/rate limit".into()),
@@ -109,6 +110,7 @@ impl ClaudeBackend {
                     status: AgentStatus::Error,
                     handoff: None,
                     review: None,
+                    plan: None,
                     summary: reason.clone(),
                     usage,
                     blocked_reason: Some(reason),
@@ -116,7 +118,7 @@ impl ClaudeBackend {
             }
         }
 
-        // (3) A present handoff/review artifact is the ship signal.
+        // (3) A present handoff/review/plan artifact is the ship signal.
         if task.playbook.role == Role::Reviewer {
             let review = artifact::read_review(out_path)?;
             if review.is_some() {
@@ -124,6 +126,7 @@ impl ClaudeBackend {
                     status: AgentStatus::ReadyToShip,
                     handoff: None,
                     review,
+                    plan: None,
                     summary: "review complete".into(),
                     usage,
                     blocked_reason: None,
@@ -136,12 +139,33 @@ impl ClaudeBackend {
                 usage,
             ));
         }
+        if task.playbook.role == Role::Planner {
+            let plan = artifact::read_plan(out_path)?;
+            if plan.is_some() {
+                return Ok(AgentOutcome {
+                    status: AgentStatus::ReadyToShip,
+                    handoff: None,
+                    review: None,
+                    plan,
+                    summary: "plan complete".into(),
+                    usage,
+                    blocked_reason: None,
+                });
+            }
+            return Ok(no_artifact_outcome(
+                exit_success,
+                stderr,
+                "plan complete",
+                usage,
+            ));
+        }
         let handoff = artifact::read_handoff(out_path)?;
         if handoff.is_some() {
             return Ok(AgentOutcome {
                 status: AgentStatus::ReadyToShip,
                 handoff,
                 review: None,
+                plan: None,
                 summary: "run complete".into(),
                 usage,
                 blocked_reason: None,
@@ -172,6 +196,7 @@ fn no_artifact_outcome(
             status: AgentStatus::Blocked,
             handoff: None,
             review: None,
+            plan: None,
             summary: summary.into(),
             usage,
             blocked_reason: Some("agent produced no handoff".into()),
@@ -183,6 +208,7 @@ fn no_artifact_outcome(
         status: AgentStatus::Error,
         handoff: None,
         review: None,
+        plan: None,
         summary: reason.clone(),
         usage,
         blocked_reason: Some(reason),
@@ -357,6 +383,42 @@ mod outcome_tests {
         assert_eq!(out.status, AgentStatus::ReadyToShip);
         assert_eq!(out.usage.input_tokens, 2);
         assert_eq!(out.usage.output_tokens, 4);
+    }
+
+    #[test]
+    fn planner_present_plan_maps_to_ready_and_carries_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("plan.json");
+        std::fs::write(
+            &p,
+            r#"{"action":"NextIssue","rationale":"go","needs_human":false}"#,
+        )
+        .unwrap();
+        let be = ClaudeBackend::default();
+        let out = be
+            .outcome_from(&task(Role::Planner), &p, None, false, "ok", true, "")
+            .unwrap();
+        assert_eq!(out.status, AgentStatus::ReadyToShip);
+        assert!(out.plan.is_some());
+    }
+
+    #[test]
+    fn planner_missing_plan_maps_to_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = ClaudeBackend::default();
+        let out = be
+            .outcome_from(
+                &task(Role::Planner),
+                &dir.path().join("plan.json"),
+                None,
+                false,
+                "ok",
+                true,
+                "",
+            )
+            .unwrap();
+        assert_eq!(out.status, AgentStatus::Blocked);
+        assert!(out.plan.is_none());
     }
 
     #[test]

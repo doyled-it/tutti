@@ -23,6 +23,10 @@ pub enum EngineError {
     Guardrail(String),
     #[error("gate failed:\n{0}")]
     Gate(String),
+    /// A capability a forge adapter cannot provide (e.g. a glab/tea adapter that does not
+    /// support sub-issues), distinct from a real operational error.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -74,6 +78,31 @@ pub trait Forge: Send + Sync {
     async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()>;
     /// Mark done, append decision log, unblock dependents.
     async fn record(&self, issue: IssueId, outcome: &ShipRecord) -> Result<()>;
+
+    // --- tracking reads ---
+    async fn list_milestones(&self) -> Result<Vec<crate::tracking::Milestone>>;
+    /// The issues belonging to a milestone (for a verifiable drain check).
+    async fn milestone_children(&self, id: crate::tracking::MilestoneId) -> Result<Vec<Issue>>;
+    async fn list_epics(&self) -> Result<Vec<crate::tracking::Epic>>;
+    async fn roadmap(&self) -> Result<crate::tracking::Roadmap>;
+    // --- tracking writes ---
+    async fn create_milestone(
+        &self,
+        title: &str,
+        due: Option<&str>,
+        description: &str,
+    ) -> Result<crate::tracking::Milestone>;
+    async fn close_milestone(&self, id: crate::tracking::MilestoneId) -> Result<()>;
+    async fn create_epic(&self, title: &str, body: &str) -> Result<crate::tracking::Epic>;
+    async fn link_sub_issue(&self, parent: IssueId, child: IssueId) -> Result<()>;
+    /// Create an issue, optionally under a milestone and/or epic. The method the
+    /// planner's CreateIssues has always needed.
+    async fn create_issue(
+        &self,
+        new: &crate::message::NewIssue,
+        milestone: Option<crate::tracking::MilestoneId>,
+        epic: Option<crate::tracking::EpicId>,
+    ) -> Result<Issue>;
 }
 
 /// Decides one thing: where an issue's work merges. NEVER returns the trunk.

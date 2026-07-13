@@ -196,13 +196,45 @@ impl<'a> Engine<'a> {
         };
         match exec.ship(&handoff).await? {
             // record() already flipped the label to done.
-            ShipResult::Merged(_) => Ok(IterOutcome::Shipped),
+            ShipResult::Merged(_) => {
+                self.maybe_close_milestone(issue).await?;
+                Ok(IterOutcome::Shipped)
+            }
             // Leave the issue in-progress and the PR open for a human.
             ShipResult::CiNotGreen(_, _) => Ok(IterOutcome::StoppedCiRed),
         }
     }
 
-    /// Drain up to `max_issues_per_run` issues, then run the planning hook once.
+    /// After a ship, close the shipped issue's milestone iff it is verifiably drained:
+    /// resolve the milestone by title, read its children fresh at close time, and close
+    /// only when that child set is NON-EMPTY and every child carries `status:done`.
+    /// A milestone with no milestone on the issue, an unresolvable title, an empty child
+    /// set, or any remaining open work is left untouched. The check is read live (never a
+    /// cached count) so a stale rollup can never trigger a close.
+    async fn maybe_close_milestone(&self, issue: &Issue) -> Result<()> {
+        let Some(title) = issue.milestone.as_deref() else {
+            return Ok(());
+        };
+        let Some(milestone) = self
+            .forge
+            .list_milestones()
+            .await?
+            .into_iter()
+            .find(|m| m.title == title)
+        else {
+            return Ok(());
+        };
+        let children = self.forge.milestone_children(milestone.id).await?;
+        let drained = !children.is_empty() && children.iter().all(|c| c.has_label("status:done"));
+        if drained {
+            self.forge.close_milestone(milestone.id).await?;
+        }
+        Ok(())
+    }
+
+    /// Drain up to `max_issues_per_run` issues, then run the planning hook once and
+    /// execute whatever it decided (subject to the whitelist). Returns the number of
+    /// issues shipped and the planner's decision (if the planner ran at all).
     pub async fn drain(&self) -> Result<(u32, Option<PlanDecision>)> {
         let mut shipped = 0;
         for _ in 0..self.cfg.max_issues_per_run {
@@ -214,24 +246,103 @@ impl<'a> Engine<'a> {
             }
         }
         let plan = if shipped > 0 {
-            Some(self.plan().await?)
+            let decision = self.plan().await?;
+            self.execute_plan(&decision).await?;
+            Some(decision)
         } else {
             None
         };
         Ok((shipped, plan))
     }
 
-    /// The planning hook. GUARDRAIL #3: only whitelisted, non-human actions execute;
-    /// everything else is returned for a human to action.
+    /// Build a compact tracking snapshot for the planner: milestones with their progress
+    /// rollups, plus a ready-issue count. Titles and progress only, never issue bodies, so
+    /// the prompt stays small.
+    async fn plan_snapshot(&self) -> Result<String> {
+        let milestones = self.forge.list_milestones().await?;
+        // epics omitted from the snapshot to avoid an N+1 in the planning hot path;
+        // revisit when list_epics is cheap.
+
+        // Count ready issues across the tracked milestones (best effort: the Forge trait
+        // exposes issues only via milestone children and the single-issue selector). This
+        // is a size hint for the planner, not an exact global inventory.
+        let mut ready_issues = 0u32;
+        for m in &milestones {
+            for child in self.forge.milestone_children(m.id).await? {
+                if child.has_label(&self.cfg.select.require_label) {
+                    ready_issues += 1;
+                }
+            }
+        }
+
+        let mut s = String::from("Project tracking snapshot.\n\nMilestones:\n");
+        if milestones.is_empty() {
+            s.push_str("  (none)\n");
+        }
+        for m in &milestones {
+            s.push_str(&format!(
+                "  - {} [{:?}] progress {}/{}\n",
+                m.title, m.state, m.progress.done, m.progress.total
+            ));
+        }
+        s.push_str(&format!("Ready issues: {ready_issues}\n"));
+        Ok(s)
+    }
+
+    /// The planning hook. Runs the Planner role against the live tracking snapshot and
+    /// returns its `PlanDecision`. The planner needs no isolated worktree, so it runs in
+    /// the repo/working dir. If the planner produced no decision, default to `Stop` so the
+    /// loop halts safely rather than acting on nothing.
     async fn plan(&self) -> Result<PlanDecision> {
-        // Slice 2: the live planner executes whitelisted actions; slice 1 only proposes.
-        // A real planner is an agent run; slice-1 default is deterministic "NextIssue".
-        // (The Planner role + agent wiring lands with the live backend.)
-        Ok(PlanDecision {
-            action: PlanAction::NextIssue,
-            rationale: "drain next ready issue".into(),
+        let snapshot = self.plan_snapshot().await?;
+        // A synthetic issue carries the snapshot as context; id 0 is the planner sentinel.
+        let planner_issue = Issue {
+            id: crate::domain::IssueId(0),
+            title: "Plan the next action for this project".into(),
+            body: snapshot,
+            labels: vec![],
+            milestone: None,
+        };
+        let workdir = self.cfg.gate.working_dir.as_path();
+        let workdir = if workdir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            workdir
+        };
+        let outcome = self
+            .run_role(Role::Planner, &planner_issue, None, workdir)
+            .await?;
+        Ok(outcome.plan.unwrap_or(PlanDecision {
+            action: PlanAction::Stop,
+            rationale: "planner produced no decision".into(),
             needs_human: false,
-        })
+        }))
+    }
+
+    /// Execute a plan decision through GUARDRAIL #3. Only whitelisted, non-human actions
+    /// run: `NextIssue` (the drain loop already continues) and `CreateIssues` (created via
+    /// the forge). `CloseMilestone` and any `needs_human` decision are surfaced (returned to
+    /// the caller in the drain result), never auto-executed here: milestone auto-close is
+    /// owned exclusively by the verified-drain path (`maybe_close_milestone`).
+    async fn execute_plan(&self, decision: &PlanDecision) -> Result<()> {
+        if !plan_is_auto_executable(decision) {
+            // Surfaced, not executed. The decision is returned to the caller for a human.
+            return Ok(());
+        }
+        match &decision.action {
+            PlanAction::NextIssue => {}
+            PlanAction::CreateIssues(list) => {
+                for new in list {
+                    // Slice 3A: NewIssue carries no milestone/epic hints yet, so new issues
+                    // are created at the top level (None/None). Milestone/epic placement is
+                    // a later enhancement.
+                    self.forge.create_issue(new, None, None).await?;
+                }
+            }
+            // Non-whitelisted actions never reach here (guarded by plan_is_auto_executable).
+            PlanAction::CloseMilestone(_) | PlanAction::Stop => {}
+        }
+        Ok(())
     }
 }
 
@@ -254,6 +365,7 @@ mod tests {
     use crate::gate::Gate;
     use crate::message::*;
     use crate::testing::{FakeBackend, FakeForge};
+    use crate::tracking::TrackState;
 
     fn cfg() -> Config {
         Config {
@@ -267,6 +379,7 @@ mod tests {
             select: SelectFilter {
                 require_label: "status:ready".into(),
                 skip_labels: vec!["status:needs-human".into()],
+                milestone: None,
             },
             gate: Gate {
                 commands: vec!["true".into()],
@@ -303,6 +416,7 @@ mod tests {
                 decision_note: None,
             }),
             review: None,
+            plan: None,
             summary: "ok".into(),
             usage: Usage::default(),
             blocked_reason: None,
@@ -317,6 +431,7 @@ mod tests {
                 findings: vec![],
                 verdict: Verdict::Approve,
             }),
+            plan: None,
             summary: "lgtm".into(),
             usage: Usage::default(),
             blocked_reason: None,
@@ -361,6 +476,7 @@ mod tests {
                 }],
                 verdict: Verdict::RequestChanges,
             }),
+            plan: None,
             summary: "changes".into(),
             usage: Usage::default(),
             blocked_reason: None,
@@ -387,6 +503,7 @@ mod tests {
             status: AgentStatus::Blocked,
             handoff: None,
             review: None,
+            plan: None,
             summary: "needs hardware".into(),
             usage: Usage::default(),
             blocked_reason: Some("needs a device".into()),
@@ -465,6 +582,7 @@ mod tests {
                 }],
                 verdict: Verdict::RequestChanges,
             }),
+            plan: None,
             summary: "changes".into(),
             usage: Usage::default(),
             blocked_reason: None,
@@ -473,6 +591,7 @@ mod tests {
             status: AgentStatus::Blocked,
             handoff: None,
             review: None,
+            plan: None,
             summary: "could not apply fix".into(),
             usage: Usage::default(),
             blocked_reason: Some("cannot fix".into()),
@@ -713,6 +832,218 @@ mod tests {
         assert!(forge
             .labels_of(IssueId(1))
             .contains(&"status:ready".to_string()));
+    }
+
+    fn new_issue(title: &str) -> NewIssue {
+        NewIssue {
+            title: title.into(),
+            body: String::new(),
+            labels: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn milestone_auto_closes_when_all_issues_done() {
+        // Seed a milestone with two ready issues under it, then ship both. Once the
+        // second ship drains the milestone (both children status:done), it must close.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let ms = forge.create_milestone("v0.1", None, "").await.unwrap();
+        let a = forge
+            .create_issue(&new_issue("a"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let b = forge
+            .create_issue(&new_issue("b"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(a.id.0))
+            .script(Role::Reviewer, clean_review())
+            .script(Role::Implementer, ship_outcome(b.id.0))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        // First ship leaves one child still open: milestone stays open.
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Open);
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        // Second ship drains the milestone: verified all-done, non-empty, closed now.
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Closed);
+    }
+
+    #[tokio::test]
+    async fn milestone_stays_open_with_remaining_work() {
+        // Two issues in the milestone, ship only one: the drain is not verified, so the
+        // milestone must remain open.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let ms = forge.create_milestone("v0.1", None, "").await.unwrap();
+        let a = forge
+            .create_issue(&new_issue("a"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let _b = forge
+            .create_issue(&new_issue("b"), Some(ms.id), None)
+            .await
+            .unwrap();
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(a.id.0))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Open);
+    }
+
+    #[tokio::test]
+    async fn next_ready_issue_honors_milestone_scope() {
+        // One ready issue in "v0.1", one ready issue with no milestone. A scoped filter
+        // returns only the in-milestone issue; an unscoped filter returns the first ready.
+        let scoped_issue = Issue {
+            id: IssueId(1),
+            title: "scoped".into(),
+            body: String::new(),
+            labels: vec!["status:ready".into()],
+            milestone: Some("v0.1".into()),
+        };
+        let unscoped_issue = Issue {
+            id: IssueId(2),
+            title: "unscoped".into(),
+            body: String::new(),
+            labels: vec!["status:ready".into()],
+            milestone: None,
+        };
+        let forge = FakeForge::new(
+            vec![unscoped_issue.clone(), scoped_issue.clone()],
+            CiState::Pass,
+        );
+
+        let scoped = SelectFilter {
+            require_label: "status:ready".into(),
+            skip_labels: vec![],
+            milestone: Some("v0.1".into()),
+        };
+        let got = forge.next_ready_issue(&scoped).await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(1));
+
+        let unscoped = SelectFilter {
+            require_label: "status:ready".into(),
+            skip_labels: vec![],
+            milestone: None,
+        };
+        // With no scope, selection order is unchanged: the first seeded ready issue.
+        let got = forge.next_ready_issue(&unscoped).await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
+    }
+
+    /// A scripted Planner outcome carrying `decision`.
+    fn planned(decision: PlanDecision) -> AgentOutcome {
+        AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: None,
+            plan: Some(decision),
+            summary: "planned".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn planner_create_issues_are_created_via_forge() {
+        // Ship one standalone issue so the planner runs, then have the planner ask to
+        // create a follow-up issue. The engine must create it through the forge.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        assert_eq!(forge.issue_count(), 1);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review())
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::CreateIssues(vec![new_issue("follow-up work")]),
+                    rationale: "spotted a gap".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (shipped, plan) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 1);
+        // The forge grew by exactly the one created issue, and it carries the title.
+        assert_eq!(forge.issue_count(), 2);
+        assert!(forge.issue_titles().contains(&"follow-up work".to_string()));
+        assert!(matches!(plan.unwrap().action, PlanAction::CreateIssues(_)));
+    }
+
+    #[tokio::test]
+    async fn planner_close_milestone_is_surfaced_not_executed() {
+        // A milestone with an unfinished child must stay open even when the planner asks to
+        // close it: CloseMilestone is surfaced (returned) but never auto-executed here.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let ms = forge.create_milestone("Phase 2", None, "").await.unwrap();
+        let open_child = forge
+            .create_issue(&new_issue("unfinished"), Some(ms.id), None)
+            .await
+            .unwrap();
+        // Claim the milestone's child so it stays out of the ready pool (in-progress, not
+        // done): the milestone has unfinished work and cannot be verifiably drained.
+        let _guard = forge.claim(open_child.id).await.unwrap();
+        // A separate standalone issue is what actually ships (no milestone, so the
+        // verified-drain path cannot close anything on its own).
+        let shippable = forge
+            .create_issue(&new_issue("standalone"), None, None)
+            .await
+            .unwrap();
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(shippable.id.0))
+            .script(Role::Reviewer, clean_review())
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::CloseMilestone("Phase 2".into()),
+                    rationale: "looks done to me".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (shipped, plan) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 1);
+        // The planner path did NOT close the milestone.
+        assert_eq!(forge.milestone_state(ms.id), TrackState::Open);
+        // The decision is surfaced to the caller for a human to action.
+        assert_eq!(
+            plan.unwrap().action,
+            PlanAction::CloseMilestone("Phase 2".into())
+        );
     }
 
     #[tokio::test]

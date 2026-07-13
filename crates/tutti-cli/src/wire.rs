@@ -46,6 +46,7 @@ mod tests {
             select: SelectFilter {
                 require_label: "status:ready".into(),
                 skip_labels: vec![],
+                milestone: None,
             },
             gate: Gate {
                 commands: vec!["true".into()],

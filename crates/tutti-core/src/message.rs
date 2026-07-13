@@ -64,6 +64,9 @@ pub struct AgentOutcome {
     pub handoff: Option<Handoff>,
     /// Present when a review stage ran.
     pub review: Option<ReviewReport>,
+    /// Present when a Planner stage ran and produced a decision (carried back as a
+    /// `.tutti/plan.json` artifact, mirroring the handoff/review protocol).
+    pub plan: Option<PlanDecision>,
     pub summary: String,
     pub usage: Usage,
     /// Human-readable reason when `status == Blocked`.

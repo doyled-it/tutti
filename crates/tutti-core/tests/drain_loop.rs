@@ -20,6 +20,7 @@ fn cfg() -> Config {
         select: SelectFilter {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],
+            milestone: None,
         },
         gate: Gate {
             commands: vec!["true".into()],
@@ -56,6 +57,7 @@ fn ship(id: u64) -> AgentOutcome {
             decision_note: None,
         }),
         review: None,
+        plan: None,
         summary: "ok".into(),
         usage: Usage::default(),
         blocked_reason: None,
@@ -70,7 +72,21 @@ fn approve() -> AgentOutcome {
             findings: vec![],
             verdict: Verdict::Approve,
         }),
+        plan: None,
         summary: "lgtm".into(),
+        usage: Usage::default(),
+        blocked_reason: None,
+    }
+}
+
+/// A scripted Planner outcome carrying `decision`.
+fn planned(decision: PlanDecision) -> AgentOutcome {
+    AgentOutcome {
+        status: AgentStatus::ReadyToShip,
+        handoff: None,
+        review: None,
+        plan: Some(decision),
+        summary: "planned".into(),
         usage: Usage::default(),
         blocked_reason: None,
     }
@@ -86,7 +102,16 @@ async fn drains_two_ready_issues_then_stops() {
         .script(Role::Implementer, ship(1))
         .script(Role::Reviewer, approve())
         .script(Role::Implementer, ship(2))
-        .script(Role::Reviewer, approve());
+        .script(Role::Reviewer, approve())
+        // After the drain ships, the planner runs once: script it to continue.
+        .script(
+            Role::Planner,
+            planned(PlanDecision {
+                action: PlanAction::NextIssue,
+                rationale: "keep going".into(),
+                needs_human: false,
+            }),
+        );
     let engine = Engine::new(
         &cfg,
         &forge,

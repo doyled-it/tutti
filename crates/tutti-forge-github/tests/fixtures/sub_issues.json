@@ -1,0 +1,12 @@
+[
+  {
+    "number": 6,
+    "title": "fixture-child-1",
+    "state": "closed"
+  },
+  {
+    "number": 7,
+    "title": "fixture-child-2",
+    "state": "open"
+  }
+]

@@ -14,6 +14,7 @@ fn skill_command(skill: &str) -> String {
 pub fn output_path(worktree: &Path, role: Role) -> std::path::PathBuf {
     let name = match role {
         Role::Reviewer => "review.json",
+        Role::Planner => "plan.json",
         _ => "handoff.json",
     };
     worktree.join(".tutti").join(name)
@@ -40,6 +41,13 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
     let schema = match task.playbook.role {
         Role::Reviewer => {
             "{\"findings\":[{\"severity\":\"blocking|major|minor\",\"file\":\"...\",\"line\":<int|null>,\"claim\":\"...\"}],\"verdict\":\"Approve|RequestChanges\"}"
+        }
+        Role::Planner => {
+            // A PlanDecision. `action` is one of: \"NextIssue\", \"Stop\", or a tagged object
+            // {\"CreateIssues\":[{\"title\":\"...\",\"body\":\"...\",\"labels\":[\"...\"]}]} or
+            // {\"CloseMilestone\":\"<title>\"}. Only NextIssue and CreateIssues are auto-executed;
+            // CloseMilestone and any needs_human decision are surfaced to a human.
+            "{\"action\":\"NextIssue\"|\"Stop\"|{\"CreateIssues\":[{\"title\":\"...\",\"body\":\"...\",\"labels\":[\"...\"]}]}|{\"CloseMilestone\":\"...\"},\"rationale\":\"...\",\"needs_human\":<bool>}"
         }
         _ => {
             "{\"issue\":<int>,\"branch\":\"...\",\"target\":{\"target\":\"...\",\"create_from\":\"...|null\"},\"pr_title\":\"...\",\"pr_body\":\"...\",\"labels\":[\"...\"],\"decision_note\":\"...|null\"}"
@@ -109,5 +117,10 @@ mod tests {
     fn reviewer_output_path_is_review_json() {
         assert!(output_path(Path::new("/wt"), Role::Reviewer).ends_with(".tutti/review.json"));
         assert!(output_path(Path::new("/wt"), Role::Implementer).ends_with(".tutti/handoff.json"));
+    }
+
+    #[test]
+    fn planner_output_path_is_plan_json() {
+        assert!(output_path(Path::new("/wt"), Role::Planner).ends_with(".tutti/plan.json"));
     }
 }

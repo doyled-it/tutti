@@ -2,7 +2,7 @@
 //! Read the file-based result an agent writes (`.tutti/handoff.json` / `review.json`).
 
 use std::path::Path;
-use tutti_core::message::{Handoff, ReviewReport};
+use tutti_core::message::{Handoff, PlanDecision, ReviewReport};
 use tutti_core::traits::{EngineError, Result};
 
 /// Read and parse a `Handoff` from `path`. `Ok(None)` if the file is absent (the agent
@@ -13,6 +13,11 @@ pub fn read_handoff(path: &Path) -> Result<Option<Handoff>> {
 
 /// Read and parse a `ReviewReport`. `Ok(None)` if absent.
 pub fn read_review(path: &Path) -> Result<Option<ReviewReport>> {
+    read_json(path)
+}
+
+/// Read and parse a `PlanDecision` (the Planner's `.tutti/plan.json`). `Ok(None)` if absent.
+pub fn read_plan(path: &Path) -> Result<Option<PlanDecision>> {
     read_json(path)
 }
 
@@ -52,6 +57,19 @@ mod tests {
         let h = read_handoff(&p).unwrap().unwrap();
         assert_eq!(h.issue.0, 5);
         assert_eq!(h.target.target, "version/v0.1");
+    }
+
+    #[test]
+    fn valid_plan_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("plan.json");
+        std::fs::write(
+            &p,
+            r#"{"action":{"CreateIssues":[{"title":"x","body":"","labels":[]}]},"rationale":"r","needs_human":false}"#,
+        )
+        .unwrap();
+        let plan = read_plan(&p).unwrap().unwrap();
+        assert!(!plan.needs_human);
     }
 
     #[test]
