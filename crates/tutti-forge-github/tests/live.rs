@@ -102,13 +102,25 @@ async fn milestone_and_issue_tracking_round_trip() {
         "created issue should carry the milestone it was filed under"
     );
 
-    let children = forge
-        .milestone_children(milestone.id)
-        .await
-        .expect("milestone_children");
+    // GitHub's issues-by-milestone list index lags a second or two behind issue
+    // creation: the issue object carries the milestone instantly, but the list query
+    // does not reflect it immediately. Poll briefly so the test matches real API
+    // behavior. Production auto-close reads children after SHIPPING an already-indexed
+    // issue, so it never hits this lag.
+    let mut children = Vec::new();
+    for _ in 0..8 {
+        children = forge
+            .milestone_children(milestone.id)
+            .await
+            .expect("milestone_children");
+        if children.iter().any(|i| i.id == issue.id) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+    }
     assert!(
         children.iter().any(|i| i.id == issue.id),
-        "milestone_children should include the issue just created under it"
+        "milestone_children should include the issue created under it (after index settle)"
     );
 
     forge
