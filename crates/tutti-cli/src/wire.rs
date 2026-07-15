@@ -19,7 +19,7 @@ pub fn build(cfg: &Config, repo: &str, repo_root: PathBuf) -> LiveAdapters {
     LiveAdapters {
         forge: GitHubForge {
             repo: repo.to_string(),
-            status_labels: cfg.status.clone(),
+            status_labels: cfg.status_labels(),
             repo_root: repo_root.clone(),
         },
         backend: ClaudeBackend::default(),

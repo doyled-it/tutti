@@ -32,9 +32,13 @@ pub struct Config {
     pub select: SelectFilter,
     pub gate: Gate,
     /// Issue status labels the engine flips (ready -> in-progress -> done).
-    /// Defaults to the `status:*` convention when the `[status]` section is absent.
+    /// When the `[status]` section is absent, `ready` falls back to
+    /// `select.require_label` (so `claim`/`record` strip the very label selection
+    /// gates on, as before 3B) and `in_progress`/`done` use the `status:*`
+    /// convention. The section is all-or-nothing: if present, all three fields are
+    /// required. Read the resolved value via `status_labels()`, not this field.
     #[serde(default)]
-    pub status: StatusLabels,
+    pub status: Option<StatusLabels>,
     /// role -> skill refs. Roles absent here fall back to `default_roles()`.
     #[serde(default)]
     pub roles: HashMap<Role, Vec<String>>,
@@ -106,7 +110,26 @@ impl Config {
                 "integration_branch must not equal trunk".into(),
             ));
         }
+        // Selection gates on `require_label`; `claim`/`record` strip the `ready`
+        // status label. If those disagree, a claimed issue never leaves the ready
+        // set and the drain loop reprocesses it. Enforce that they match.
+        let status = self.status_labels();
+        if status.ready != self.select.require_label {
+            return Err(EngineError::Guardrail(format!(
+                "status.ready ({}) must equal select.require_label ({})",
+                status.ready, self.select.require_label
+            )));
+        }
         Ok(())
+    }
+
+    /// The resolved status labels: the `[status]` section when present, otherwise
+    /// the shipped convention with `ready` taken from `select.require_label`.
+    pub fn status_labels(&self) -> StatusLabels {
+        self.status.clone().unwrap_or_else(|| StatusLabels {
+            ready: self.select.require_label.clone(),
+            ..StatusLabels::default()
+        })
     }
 
     /// The skills for `role`, falling back to the shipped default when the role
@@ -149,7 +172,9 @@ working_dir = ""
         )
         .unwrap();
         let cfg = Config::load(&p).unwrap();
-        assert_eq!(cfg.status, StatusLabels::default());
+        // require_label is the default "status:ready", so the resolved triple is
+        // exactly the shipped default.
+        assert_eq!(cfg.status_labels(), StatusLabels::default());
 
         // Present: overrides.
         let p2 = dir.path().join("tutti2.toml");
@@ -177,8 +202,70 @@ done = "shipped"
         )
         .unwrap();
         let cfg2 = Config::load(&p2).unwrap();
-        assert_eq!(cfg2.status.in_progress, "doing");
-        assert_eq!(cfg2.status.done, "shipped");
+        assert_eq!(cfg2.status_labels().ready, "todo");
+        assert_eq!(cfg2.status_labels().in_progress, "doing");
+        assert_eq!(cfg2.status_labels().done, "shipped");
+    }
+
+    #[test]
+    fn absent_status_takes_ready_from_require_label() {
+        // A custom require_label with no [status] section must still drop claimed
+        // issues out of the ready set: the resolved ready label follows require_label.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "todo"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.status_labels().ready, "todo");
+        assert_eq!(cfg.status_labels().in_progress, "status:in-progress");
+    }
+
+    #[test]
+    fn status_ready_must_match_require_label() {
+        // A [status].ready that disagrees with select.require_label is rejected at
+        // load, so the drain loop cannot silently reprocess a claimed issue.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+
+[status]
+ready = "mismatch"
+in_progress = "doing"
+done = "shipped"
+"#,
+        )
+        .unwrap();
+        assert!(Config::load(&p).is_err());
     }
 
     #[test]
@@ -264,7 +351,7 @@ implementer = ["custom:my-implement-skill"]
                 commands: vec!["true".into()],
                 working_dir: Default::default(),
             },
-            status: StatusLabels::default(),
+            status: None,
             roles: HashMap::new(),
             merge_mode: crate::domain::MergeMode::Merge,
         };

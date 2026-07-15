@@ -26,7 +26,7 @@ fn cfg() -> Config {
             commands: vec!["true".into()],
             working_dir: Default::default(),
         },
-        status: tutti_core::status::StatusLabels::default(),
+        status: None,
         roles: default_roles(),
         merge_mode: tutti_core::domain::MergeMode::Merge,
     }
