@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use tutti_core::domain::{
     CiState, Issue, IssueId, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
 };
+use tutti_core::status::{Status, StatusLabels};
 use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
 use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
@@ -13,10 +14,8 @@ use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 pub struct GitHubForge {
     /// "owner/name".
     pub repo: String,
-    /// The label the engine flips: ready -> in-progress -> done.
-    pub ready_label: String,
-    pub in_progress_label: String,
-    pub done_label: String,
+    /// The labels the engine flips: ready -> in-progress -> done.
+    pub status_labels: StatusLabels,
     /// Working directory for `git` invocations. `gh` uses `--repo` and is
     /// cwd-independent, but `git ls-remote`/`git push` must run inside the repo.
     pub repo_root: std::path::PathBuf,
@@ -30,6 +29,29 @@ impl GitHubForge {
         run("git", args, Some(&self.repo_root)).await
     }
 
+    /// Move an issue to `to` by adding its status label and removing the other two.
+    /// `gh issue edit --add-label/--remove-label` is idempotent, so removing an
+    /// already-absent label is a no-op.
+    async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
+        let n = issue.0.to_string();
+        let t = self.status_labels.transition(to);
+        let mut args: Vec<&str> = vec![
+            "issue",
+            "edit",
+            &n,
+            "--repo",
+            &self.repo,
+            "--add-label",
+            &t.add,
+        ];
+        for r in &t.remove {
+            args.push("--remove-label");
+            args.push(r);
+        }
+        self.gh(&args).await?;
+        Ok(())
+    }
+
     /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
     /// to ready. The CLI calls this once before draining.
     pub async fn recover_stale(&self) -> Result<()> {
@@ -40,7 +62,7 @@ impl GitHubForge {
                 "--repo",
                 &self.repo,
                 "--label",
-                &self.in_progress_label,
+                &self.status_labels.in_progress,
                 "--state",
                 "open",
                 "--json",
@@ -144,37 +166,12 @@ impl Forge for GitHubForge {
     // if the issue is already in-progress, so this is NOT the atomic race-guard the design
     // describes; the single-runner `PidLock` provides that guarantee.
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
-        let n = issue.0.to_string();
-        self.gh(&[
-            "issue",
-            "edit",
-            &n,
-            "--repo",
-            &self.repo,
-            "--add-label",
-            &self.in_progress_label,
-            "--remove-label",
-            &self.ready_label,
-        ])
-        .await?;
+        self.set_status(issue, Status::InProgress).await?;
         Ok(ClaimGuard::new(issue))
     }
 
     async fn release(&self, issue: IssueId) -> Result<()> {
-        let n = issue.0.to_string();
-        self.gh(&[
-            "issue",
-            "edit",
-            &n,
-            "--repo",
-            &self.repo,
-            "--add-label",
-            &self.ready_label,
-            "--remove-label",
-            &self.in_progress_label,
-        ])
-        .await?;
-        Ok(())
+        self.set_status(issue, Status::Ready).await
     }
 
     async fn branch_exists(&self, branch: &str) -> Result<bool> {
@@ -264,20 +261,7 @@ impl Forge for GitHubForge {
     }
 
     async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
-        let n = issue.0.to_string();
-        self.gh(&[
-            "issue",
-            "edit",
-            &n,
-            "--repo",
-            &self.repo,
-            "--add-label",
-            &self.done_label,
-            "--remove-label",
-            &self.in_progress_label,
-        ])
-        .await?;
-        Ok(())
+        self.set_status(issue, Status::Done).await
     }
 
     // --- tracking methods (via `gh api`; parsers are fixture-tested in `parse`) ---
