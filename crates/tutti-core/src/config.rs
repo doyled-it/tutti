@@ -4,6 +4,7 @@
 use crate::domain::SelectFilter;
 use crate::gate::Gate;
 use crate::message::Role;
+use crate::status::StatusLabels;
 use crate::traits::{EngineError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +31,10 @@ pub struct Config {
     pub poll_delay_secs: u64,
     pub select: SelectFilter,
     pub gate: Gate,
+    /// Issue status labels the engine flips (ready -> in-progress -> done).
+    /// Defaults to the `status:*` convention when the `[status]` section is absent.
+    #[serde(default)]
+    pub status: StatusLabels,
     /// role -> skill refs. Roles absent here fall back to `default_roles()`.
     #[serde(default)]
     pub roles: HashMap<Role, Vec<String>>,
@@ -119,6 +124,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_defaults_when_absent_and_overrides_when_present() {
+        use crate::status::StatusLabels;
+
+        // Absent: falls back to the shipped default triple.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.status, StatusLabels::default());
+
+        // Present: overrides.
+        let p2 = dir.path().join("tutti2.toml");
+        std::fs::write(
+            &p2,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "todo"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+
+[status]
+ready = "todo"
+in_progress = "doing"
+done = "shipped"
+"#,
+        )
+        .unwrap();
+        let cfg2 = Config::load(&p2).unwrap();
+        assert_eq!(cfg2.status.in_progress, "doing");
+        assert_eq!(cfg2.status.done, "shipped");
+    }
+
+    #[test]
     fn loads_and_fills_default_roles() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tutti.toml");
@@ -201,6 +264,7 @@ implementer = ["custom:my-implement-skill"]
                 commands: vec!["true".into()],
                 working_dir: Default::default(),
             },
+            status: StatusLabels::default(),
             roles: HashMap::new(),
             merge_mode: crate::domain::MergeMode::Merge,
         };
