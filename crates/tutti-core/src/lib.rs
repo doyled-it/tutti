@@ -8,6 +8,7 @@ pub mod executor;
 pub mod gate;
 pub mod message;
 pub mod routing;
+pub mod status;
 pub mod testing;
 pub mod tracking;
 pub mod traits;
