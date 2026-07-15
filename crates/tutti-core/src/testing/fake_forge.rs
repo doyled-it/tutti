@@ -324,7 +324,7 @@ impl Forge for FakeForge {
         let id = IssueId(number);
         let mut labels = new.labels.clone();
         let ready = StatusLabels::default().ready;
-        if !labels.iter().any(|l| *l == ready) {
+        if !labels.contains(&ready) {
             labels.push(ready);
         }
         let issue = Issue {
