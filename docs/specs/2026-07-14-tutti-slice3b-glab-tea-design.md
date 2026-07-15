@@ -73,9 +73,11 @@ Pure JSON parsing stays separated from shelling (as in slices 2 and 3A) so every
 
 ## Plan split (three focused PRs, never squashed)
 
-1. **3B-status** (this branch): the unified `Status` + `StatusLabels` in `tutti-core`, a
-   shared label-transition helper, and the GitHub adapter retrofitted onto it
+1. **3B-status** (DONE, this branch): the unified `Status` + `StatusLabels` in `tutti-core`,
+   a shared label-transition helper, and the GitHub adapter retrofitted onto it
    (behavior-preserving). Hermetic only. Small, so the two adapters build on a stable core.
+   `FakeForge` and the CLI wiring were moved onto the same mapping; a `[status]` config
+   section (defaulted to the `status:*` convention) makes the label triple overridable.
 2. **3B-tea**: the Gitea/Codeberg adapter (`tea`), milestones + `epic:<slug>` degradation
    + `create_issue` + the label-based status via the shared helper. Parser fixtures +
    an opt-in live tier that runs now against a throwaway Codeberg repo.
