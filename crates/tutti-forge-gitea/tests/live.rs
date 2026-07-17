@@ -77,10 +77,7 @@ async fn tracking_and_status_round_trip() {
             "icesight-engine",
             "-X",
             "PATCH",
-            &format!(
-                "repos/workslocally/tutti-tea-sandbox/issues/{}",
-                issue.id.0
-            ),
+            &format!("repos/workslocally/tutti-tea-sandbox/issues/{}", issue.id.0),
             "-d",
             "{\"state\":\"closed\"}",
         ])

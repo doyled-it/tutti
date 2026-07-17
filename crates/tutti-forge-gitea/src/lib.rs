@@ -47,7 +47,9 @@ impl GiteaForge {
     /// Resolve label names to Gitea's numeric label ids (issue-label and issue-create
     /// endpoints take ids, not names). Unknown names are skipped by the caller.
     async fn label_ids(&self) -> Result<Vec<(String, i64)>> {
-        let json = self.api("GET", &self.endpoint("labels?limit=100"), None).await?;
+        let json = self
+            .api("GET", &self.endpoint("labels?limit=100"), None)
+            .await?;
         Ok(parse::parse_label_ids(&json))
     }
 
@@ -231,7 +233,11 @@ impl Forge for GiteaForge {
             None => serde_json::json!({"title": title, "description": description}),
         };
         let json = self
-            .api("POST", &self.endpoint("milestones"), Some(&body.to_string()))
+            .api(
+                "POST",
+                &self.endpoint("milestones"),
+                Some(&body.to_string()),
+            )
             .await?;
         parse::parse_milestone(&json)
             .ok_or_else(|| EngineError::Forge(format!("could not parse created milestone: {json}")))
@@ -286,7 +292,11 @@ impl Forge for GiteaForge {
         let label_id = self.ensure_label(&label, "5319e7").await?;
         let issue_body = serde_json::json!({"title": title, "body": body});
         let json = self
-            .api("POST", &self.endpoint("issues"), Some(&issue_body.to_string()))
+            .api(
+                "POST",
+                &self.endpoint("issues"),
+                Some(&issue_body.to_string()),
+            )
             .await?;
         let issue = parse::parse_created_issue(&json).ok_or_else(|| {
             EngineError::Forge(format!("could not parse created epic issue: {json}"))
@@ -312,7 +322,10 @@ impl Forge for GiteaForge {
             .iter()
             .find(|l| l.starts_with("epic:"))
             .ok_or_else(|| {
-                EngineError::Forge(format!("issue {} is not an epic (no epic: label)", parent.0))
+                EngineError::Forge(format!(
+                    "issue {} is not an epic (no epic: label)",
+                    parent.0
+                ))
             })?;
         let map = self.label_ids().await?;
         let id = Self::id_for(&map, epic_label)
