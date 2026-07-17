@@ -126,7 +126,63 @@ impl Forge for GitLabForge {
         Ok(Roadmap { milestones })
     }
 
-    // ... remaining methods added in Tasks 5-7 ...
+    async fn create_milestone(
+        &self,
+        title: &str,
+        due: Option<&str>,
+        description: &str,
+    ) -> Result<Milestone> {
+        let mut fields: Vec<(&str, &str)> =
+            vec![("title", title), ("description", description)];
+        if let Some(d) = due {
+            fields.push(("due_date", d));
+        }
+        let json = self
+            .api("POST", &self.endpoint("milestones"), &fields)
+            .await?;
+        parse::parse_milestone(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created milestone: {json}")))
+    }
+
+    async fn close_milestone(&self, id: MilestoneId) -> Result<()> {
+        self.api(
+            "PUT",
+            &self.endpoint(&format!("milestones/{}", id.0)),
+            &[("state_event", "close")],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn create_issue(
+        &self,
+        new: &tutti_core::message::NewIssue,
+        milestone: Option<MilestoneId>,
+        epic: Option<EpicId>,
+    ) -> Result<Issue> {
+        // GitLab takes labels by name as a comma-joined string.
+        let labels = new.labels.join(",");
+        let milestone_id;
+        let mut fields: Vec<(&str, &str)> = vec![
+            ("title", &new.title),
+            ("description", &new.body),
+            ("labels", &labels),
+        ];
+        if let Some(m) = milestone {
+            milestone_id = m.0.to_string();
+            fields.push(("milestone_id", &milestone_id));
+        }
+        let json = self.api("POST", &self.endpoint("issues"), &fields).await?;
+        let issue = parse::parse_created_issue(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created issue: {json}")))?;
+        // Link under an epic if requested (group-level; errors if epics are unavailable).
+        if let Some(e) = epic {
+            self.link_sub_issue(IssueId(e.0), issue.id).await?;
+        }
+        Ok(issue)
+    }
+
+    // ... remaining methods added in Tasks 6-7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
