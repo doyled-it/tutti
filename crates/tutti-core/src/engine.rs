@@ -386,6 +386,7 @@ mod tests {
                 working_dir: Default::default(),
             },
             status: None,
+            forge: Default::default(),
             roles: crate::config::default_roles(),
             merge_mode: crate::domain::MergeMode::Merge,
         }

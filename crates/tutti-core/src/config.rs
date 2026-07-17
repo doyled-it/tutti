@@ -10,6 +10,42 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Which forge adapter the CLI drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeKind {
+    #[default]
+    GitHub,
+    Gitea,
+    GitLab,
+}
+
+impl std::str::FromStr for ForgeKind {
+    type Err = EngineError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "github" => Ok(ForgeKind::GitHub),
+            "gitea" => Ok(ForgeKind::Gitea),
+            "gitlab" => Ok(ForgeKind::GitLab),
+            other => Err(EngineError::Forge(format!(
+                "unknown forge kind '{other}' (expected github, gitea, or gitlab)"
+            ))),
+        }
+    }
+}
+
+/// Forge selection and connection config (the `[forge]` section).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ForgeConfig {
+    #[serde(default)]
+    pub kind: ForgeKind,
+    /// The `tea` login for Gitea/Codeberg (encodes the host). Required for `kind = gitea`;
+    /// ignored for GitHub (ambient `gh` auth) and GitLab (ambient `glab` token).
+    #[serde(default)]
+    pub login: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// The protected trunk the engine never merges into.
@@ -39,6 +75,9 @@ pub struct Config {
     /// required. Read the resolved value via `status_labels()`, not this field.
     #[serde(default)]
     pub status: Option<StatusLabels>,
+    /// Which forge to drive and how to authenticate. Defaults to GitHub when absent.
+    #[serde(default)]
+    pub forge: ForgeConfig,
     /// role -> skill refs. Roles absent here fall back to `default_roles()`.
     #[serde(default)]
     pub roles: HashMap<Role, Vec<String>>,
@@ -352,6 +391,7 @@ implementer = ["custom:my-implement-skill"]
                 working_dir: Default::default(),
             },
             status: None,
+            forge: Default::default(),
             roles: HashMap::new(),
             merge_mode: crate::domain::MergeMode::Merge,
         };
@@ -427,5 +467,74 @@ working_dir = ""
         .unwrap();
         let cfg2 = Config::load(&p2).unwrap();
         assert_eq!(cfg2.merge_mode, crate::domain::MergeMode::Merge);
+    }
+
+    #[test]
+    fn forge_defaults_to_github_when_absent() {
+        use crate::config::ForgeKind;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.forge.kind, ForgeKind::GitHub);
+        assert_eq!(cfg.forge.login, None);
+    }
+
+    #[test]
+    fn forge_section_parses_kind_and_login() {
+        use crate::config::ForgeKind;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status::ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+
+[forge]
+kind = "gitea"
+login = "icesight-engine"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.forge.kind, ForgeKind::Gitea);
+        assert_eq!(cfg.forge.login.as_deref(), Some("icesight-engine"));
+    }
+
+    #[test]
+    fn forge_kind_from_str() {
+        use crate::config::ForgeKind;
+        assert_eq!("github".parse::<ForgeKind>().unwrap(), ForgeKind::GitHub);
+        assert_eq!("gitea".parse::<ForgeKind>().unwrap(), ForgeKind::Gitea);
+        assert_eq!("gitlab".parse::<ForgeKind>().unwrap(), ForgeKind::GitLab);
+        assert!("bogus".parse::<ForgeKind>().is_err());
     }
 }
