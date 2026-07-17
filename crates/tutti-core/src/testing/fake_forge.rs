@@ -5,6 +5,7 @@ use crate::domain::{
     CiState, Issue, IssueId, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
 };
 use crate::message::NewIssue;
+use crate::status::{Status, StatusLabels};
 use crate::tracking::{Epic, EpicId, Milestone, MilestoneId, Progress, Roadmap, TrackState};
 use crate::traits::{ClaimGuard, EngineError, Forge, Result};
 use async_trait::async_trait;
@@ -110,11 +111,14 @@ impl FakeForge {
             .collect()
     }
 
-    fn set_labels(st: &mut State, issue: IssueId, add: &str, remove: &str) {
+    /// Apply a status transition using the default label mapping: add the target
+    /// label, remove the other two.
+    fn apply_status(st: &mut State, issue: IssueId, to: Status) {
+        let t = StatusLabels::default().transition(to);
         if let Some(i) = st.issues.iter_mut().find(|i| i.id == issue) {
-            i.labels.retain(|l| l != remove);
-            if !i.labels.iter().any(|l| l == add) {
-                i.labels.push(add.to_string());
+            i.labels.retain(|l| !t.remove.contains(l));
+            if !i.labels.contains(&t.add) {
+                i.labels.push(t.add.clone());
             }
         }
     }
@@ -142,12 +146,11 @@ impl Forge for FakeForge {
         let mut st = self.state.lock().unwrap();
         let i = st.issues.iter().find(|i| i.id == issue).cloned();
         match i {
-            Some(i) if i.has_label("status:in-progress") => Err(EngineError::Forge(format!(
-                "issue {} already claimed",
-                issue.0
-            ))),
+            Some(i) if i.has_label(&StatusLabels::default().in_progress) => Err(
+                EngineError::Forge(format!("issue {} already claimed", issue.0)),
+            ),
             Some(_) => {
-                Self::set_labels(&mut st, issue, "status:in-progress", "status:ready");
+                Self::apply_status(&mut st, issue, Status::InProgress);
                 Ok(ClaimGuard::new(issue))
             }
             None => Err(EngineError::Forge(format!("no such issue {}", issue.0))),
@@ -156,7 +159,7 @@ impl Forge for FakeForge {
 
     async fn release(&self, issue: IssueId) -> Result<()> {
         let mut st = self.state.lock().unwrap();
-        Self::set_labels(&mut st, issue, "status:ready", "status:in-progress");
+        Self::apply_status(&mut st, issue, Status::Ready);
         Ok(())
     }
 
@@ -219,7 +222,7 @@ impl Forge for FakeForge {
 
     async fn record(&self, issue: IssueId, outcome: &ShipRecord) -> Result<()> {
         let mut st = self.state.lock().unwrap();
-        Self::set_labels(&mut st, issue, "status:done", "status:in-progress");
+        Self::apply_status(&mut st, issue, Status::Done);
         st.done.insert(issue);
         st.records.push((issue, outcome.clone()));
         Ok(())
@@ -320,8 +323,9 @@ impl Forge for FakeForge {
         st.next_issue += 1;
         let id = IssueId(number);
         let mut labels = new.labels.clone();
-        if !labels.iter().any(|l| l == "status:ready") {
-            labels.push("status:ready".to_string());
+        let ready = StatusLabels::default().ready;
+        if !labels.contains(&ready) {
+            labels.push(ready);
         }
         let issue = Issue {
             id,

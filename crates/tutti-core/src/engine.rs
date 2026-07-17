@@ -385,6 +385,7 @@ mod tests {
                 commands: vec!["true".into()],
                 working_dir: Default::default(),
             },
+            status: None,
             roles: crate::config::default_roles(),
             merge_mode: crate::domain::MergeMode::Merge,
         }

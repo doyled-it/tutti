@@ -67,9 +67,11 @@ impl Drop for Cleanup {
 async fn milestone_and_issue_tracking_round_trip() {
     let forge = GitHubForge {
         repo: SANDBOX_REPO.to_string(),
-        ready_label: "status:ready".to_string(),
-        in_progress_label: "status:in-progress".to_string(),
-        done_label: "status:done".to_string(),
+        status_labels: tutti_core::status::StatusLabels {
+            ready: "status:ready".into(),
+            in_progress: "status:in-progress".into(),
+            done: "status:done".into(),
+        },
         repo_root: std::path::PathBuf::from("."),
     };
 

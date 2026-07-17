@@ -19,9 +19,7 @@ pub fn build(cfg: &Config, repo: &str, repo_root: PathBuf) -> LiveAdapters {
     LiveAdapters {
         forge: GitHubForge {
             repo: repo.to_string(),
-            ready_label: cfg.select.require_label.clone(),
-            in_progress_label: "status:in-progress".into(),
-            done_label: "status:done".into(),
+            status_labels: cfg.status_labels(),
             repo_root: repo_root.clone(),
         },
         backend: ClaudeBackend::default(),
@@ -56,6 +54,7 @@ mod tests {
             ci_max_polls: 40,
             poll_delay_secs: 0,
             merge_mode: tutti_core::domain::MergeMode::Merge,
+            status: Default::default(),
         }
     }
 
@@ -63,7 +62,7 @@ mod tests {
     fn build_uses_config_labels_and_repo() {
         let a = build(&cfg(), "o/r", PathBuf::from("."));
         assert_eq!(a.forge.repo, "o/r");
-        assert_eq!(a.forge.ready_label, "status:ready");
+        assert_eq!(a.forge.status_labels.ready, "status:ready");
         assert_eq!(a.forge.repo_root, PathBuf::from("."));
     }
 }
