@@ -137,20 +137,25 @@ impl GiteaForge {
         ));
         let json = self.api("GET", &ep, None).await?;
         let issues = parse::parse_issue_list(&json);
+        if issues.is_empty() {
+            return Ok(());
+        }
+        // Gitea has no head-branch filter on the pulls list, so fetch the open PRs once
+        // and match head refs client-side. Fetching once (not per issue) avoids an N*M
+        // re-download. Note the `limit=100` ceiling: a repo with more than 100 open PRs
+        // could page a PR out of view and wrongly release its still-active issue; if the
+        // PR list cannot be read at all, skip every issue (the safe choice, never release).
+        let heads = match self
+            .api("GET", &self.endpoint("pulls?state=open&limit=100"), None)
+            .await
+        {
+            Ok(body) => pr_heads(&body),
+            Err(_) => return Ok(()),
+        };
         for i in issues {
-            // Gitea's pulls list filtered by head branch: `?state=open`. There is no
-            // head-branch query, so list open PRs and match the head ref name.
             let head = format!("feat/issue-{}", i.id.0);
-            let prs = self
-                .api("GET", &self.endpoint("pulls?state=open&limit=100"), None)
-                .await;
-            match prs {
-                Err(_) => continue,
-                Ok(body) => {
-                    if !pr_heads(&body).iter().any(|h| h == &head) {
-                        let _ = self.release(i.id).await;
-                    }
-                }
+            if !heads.iter().any(|h| h == &head) {
+                let _ = self.release(i.id).await;
             }
         }
         Ok(())
@@ -344,6 +349,11 @@ impl Forge for GiteaForge {
                 name
             ));
             let json = self.api("GET", &ep, None).await?;
+            // NOTE: the epic tracking issue itself carries the `epic:*` label (so
+            // link_sub_issue can rediscover it), so it appears here as one of its own
+            // children. Progress therefore asymptotes at N/(N+1) and never reaches 100%.
+            // Harmless while list_epics is omitted from the planner snapshot; revisit
+            // (exclude the tracker) if a caller consumes epic progress.
             let children = parse::parse_issue_list(&json);
             let done = children
                 .iter()
@@ -405,8 +415,18 @@ impl Forge for GiteaForge {
     }
 
     async fn ci_status(&self, pr: &PrHandle) -> Result<CiState> {
-        // Gitea reports a combined status per commit; query the PR head branch ref.
-        let ep = self.endpoint(&format!("commits/{}/status", pr.branch));
+        // Gitea reports a combined status per commit. Resolve the PR head SHA first: the
+        // head branch (`feat/issue-N`) contains a slash, and a slashed ref in the
+        // commit-status route is ambiguous, so query by the unambiguous commit SHA.
+        let pj = self
+            .api("GET", &self.endpoint(&format!("pulls/{}", pr.number)), None)
+            .await?;
+        let sha = match parse::parse_pr_head_sha(&pj) {
+            Some(s) => s,
+            // No SHA yet (PR just opened, head not resolved): treat as not-yet-reported.
+            None => return Ok(CiState::Pending),
+        };
+        let ep = self.endpoint(&format!("commits/{sha}/status"));
         let json = self
             .api("GET", &ep, None)
             .await

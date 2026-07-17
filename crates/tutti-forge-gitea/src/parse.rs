@@ -132,6 +132,23 @@ pub fn parse_created_pr_number(json: &str) -> Option<u64> {
     serde_json::from_str::<Pr>(json).ok().map(|p| p.number)
 }
 
+/// Parse a PR's head commit SHA from a `GET pulls/{index}` response. Used to query the
+/// combined commit status by SHA rather than by a slashed branch ref.
+pub fn parse_pr_head_sha(json: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Head {
+        #[serde(default)]
+        sha: String,
+    }
+    #[derive(Deserialize)]
+    struct Pr {
+        #[serde(default)]
+        head: Option<Head>,
+    }
+    let pr: Pr = serde_json::from_str(json).ok()?;
+    pr.head.map(|h| h.sha).filter(|s| !s.is_empty())
+}
+
 /// Map a Gitea combined commit status (`GET commits/{ref}/status`) to a `CiState`.
 /// Gitea's combined `state` is one of success|pending|failure|error|warning.
 pub fn combined_ci_state(json: &str) -> tutti_core::domain::CiState {
@@ -232,6 +249,17 @@ mod tests {
         assert_eq!(issue.body, "fixture body");
         assert!(issue.labels.is_empty());
         assert_eq!(issue.milestone, None);
+    }
+
+    #[test]
+    fn pr_head_sha_parses_and_rejects_empty() {
+        assert_eq!(
+            parse_pr_head_sha(r#"{"number":7,"head":{"ref":"feat/issue-7","sha":"abc123"}}"#),
+            Some("abc123".to_string())
+        );
+        // An empty or missing sha yields None (treated as not-yet-reported by ci_status).
+        assert_eq!(parse_pr_head_sha(r#"{"number":7,"head":{"sha":""}}"#), None);
+        assert_eq!(parse_pr_head_sha(r#"{"number":7}"#), None);
     }
 
     #[test]
