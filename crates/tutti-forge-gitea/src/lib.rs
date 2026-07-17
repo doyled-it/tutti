@@ -112,7 +112,44 @@ impl Forge for GiteaForge {
         self.set_status(issue, Status::Done).await
     }
 
-    // ... remaining methods added in Tasks 4-7 ...
+    async fn list_milestones(&self) -> Result<Vec<Milestone>> {
+        let json = self
+            .api(
+                "GET",
+                &self.endpoint("milestones?state=all&limit=100"),
+                None,
+            )
+            .await?;
+        Ok(parse::parse_milestones(&json))
+    }
+
+    async fn milestone_children(&self, id: MilestoneId) -> Result<Vec<Issue>> {
+        // Gitea filters issues by milestone via `?milestones=<id>` (id or name).
+        let ep = self.endpoint(&format!(
+            "issues?state=all&type=issues&milestones={}&limit=100",
+            id.0
+        ));
+        let json = self.api("GET", &ep, None).await?;
+        Ok(parse::parse_issue_list(&json))
+    }
+
+    async fn roadmap(&self) -> Result<Roadmap> {
+        let mut milestones: Vec<Milestone> = self
+            .list_milestones()
+            .await?
+            .into_iter()
+            .filter(|m| m.state == TrackState::Open)
+            .collect();
+        milestones.sort_by(|a, b| match (&a.due, &b.due) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        Ok(Roadmap { milestones })
+    }
+
+    // ... remaining methods added in Tasks 5-7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
