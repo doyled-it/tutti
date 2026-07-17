@@ -1,7 +1,8 @@
 # Tutti: design (CLI forge selection)
 
 Date: 2026-07-17
-Status: approved design, pre-implementation
+Status: implemented. All three forges (GitHub, Gitea/Codeberg, GitLab) are now selectable
+from the CLI via `[forge].kind` in `tutti.toml` or the `--forge` flag.
 Builds on: slice 3B (three forge adapters on `main`: `tutti-forge-github`, `tutti-forge-gitea`, `tutti-forge-gitlab`).
 
 ## What this slice is

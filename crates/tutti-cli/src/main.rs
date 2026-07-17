@@ -26,7 +26,8 @@ enum Cmd {
     Run {
         #[arg(long, default_value = "tutti.toml")]
         config: PathBuf,
-        /// The GitHub repo "owner/name".
+        /// The target: "owner/name" for GitHub and Gitea, a project id or URL-encoded
+        /// path ("group%2Fproject") for GitLab.
         #[arg(long)]
         repo: String,
         /// Repo root on disk (where worktrees are created).
