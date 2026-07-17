@@ -78,9 +78,14 @@ Pure JSON parsing stays separated from shelling (as in slices 2 and 3A) so every
    (behavior-preserving). Hermetic only. Small, so the two adapters build on a stable core.
    `FakeForge` and the CLI wiring were moved onto the same mapping; a `[status]` config
    section (defaulted to the `status:*` convention) makes the label triple overridable.
-2. **3B-tea**: the Gitea/Codeberg adapter (`tea`), milestones + `epic:<slug>` degradation
-   + `create_issue` + the label-based status via the shared helper. Parser fixtures +
-   an opt-in live tier that runs now against a throwaway Codeberg repo.
+2. **3B-tea** (DONE): the Gitea/Codeberg adapter, crate `tutti-forge-gitea`, driven by
+   `tea api` (the Gitea REST v1 passthrough, NOT the lossy `tea <entity> --output json`
+   projection). Milestones + `epic:<slug>` degradation + `create_issue` + the label-based
+   status via the shared `StatusLabels` helper. Gitea issue-create and label add/remove
+   take numeric label IDs, so the adapter resolves label names to IDs. Parser fixtures
+   captured from Codeberg + an opt-in live tier that PASSED against `workslocally/tutti-tea-sandbox`.
+   CLI forge-selection is DEFERRED to a post-glab wiring pass (a shared `dyn Forge`/enum
+   refactor that also owns the inherent `recover_stale`), so `tutti-cli` is untouched here.
 3. **3B-glab**: the GitLab adapter (`glab`), native group epics + native/scoped-label
    status + `create_issue`. Parser fixtures; live tier written but `#[ignore]`d pending
    `glab auth login`.

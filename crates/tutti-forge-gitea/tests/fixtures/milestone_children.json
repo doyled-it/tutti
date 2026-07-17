@@ -1,0 +1,34 @@
+[
+  {
+    "id": 6340702,
+    "number": 1,
+    "title": "first sandbox issue",
+    "body": "hello",
+    "labels": [
+      {
+        "id": 1993204,
+        "name": "status:in-progress",
+        "color": "ffff00"
+      }
+    ],
+    "milestone": {
+      "id": 135433,
+      "title": "Phase 1"
+    },
+    "state": "open",
+    "pull_request": null
+  },
+  {
+    "id": 0,
+    "number": 0,
+    "title": "SYNTHETIC: a pull request assigned to the milestone, not a real captured issue",
+    "body": "not a child",
+    "labels": [],
+    "milestone": {
+      "id": 135433,
+      "title": "Phase 1"
+    },
+    "state": "open",
+    "pull_request": { "merged": false }
+  }
+]

@@ -495,6 +495,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-forge-gitea"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tutti-core",
+]
+
+[[package]]
 name = "tutti-forge-github"
 version = "0.0.0"
 dependencies = [

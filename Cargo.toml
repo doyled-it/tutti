@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tutti-core", "crates/tutti-git", "crates/tutti-backend-claude", "crates/tutti-forge-github", "crates/tutti-cli"]
+members = ["crates/tutti-core", "crates/tutti-git", "crates/tutti-backend-claude", "crates/tutti-forge-github", "crates/tutti-forge-gitea", "crates/tutti-cli"]
 resolver = "2"
 
 [workspace.package]
