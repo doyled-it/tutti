@@ -26,12 +26,19 @@ enum Cmd {
     Run {
         #[arg(long, default_value = "tutti.toml")]
         config: PathBuf,
-        /// The GitHub repo "owner/name".
+        /// The target: "owner/name" for GitHub and Gitea, a project id or URL-encoded
+        /// path ("group%2Fproject") for GitLab.
         #[arg(long)]
         repo: String,
         /// Repo root on disk (where worktrees are created).
         #[arg(long, default_value = ".")]
         repo_root: PathBuf,
+        /// Forge kind: github (default) | gitea | gitlab. Overrides [forge].kind in config.
+        #[arg(long)]
+        forge: Option<String>,
+        /// Forge login (the `tea` login for gitea). Overrides [forge].login in config.
+        #[arg(long)]
+        login: Option<String>,
     },
 }
 
@@ -43,7 +50,9 @@ async fn main() -> std::process::ExitCode {
             config,
             repo,
             repo_root,
-        } => match run(config, repo, repo_root).await {
+            forge,
+            login,
+        } => match run(config, repo, repo_root, forge, login).await {
             Ok((n, plan)) => {
                 println!("tutti: shipped {n} issue(s)");
                 report_plan(plan.as_ref());
@@ -85,12 +94,24 @@ async fn run(
     config: PathBuf,
     repo: String,
     repo_root: PathBuf,
+    forge: Option<String>,
+    login: Option<String>,
 ) -> Result<(u32, Option<PlanDecision>), String> {
+    use std::str::FromStr;
     let cfg = Config::load(&config).map_err(|e| e.to_string())?;
+
+    // CLI overrides config; config supplies the default; ForgeKind defaults to GitHub.
+    let kind = match forge {
+        Some(s) => tutti_core::config::ForgeKind::from_str(&s).map_err(|e| e.to_string())?,
+        None => cfg.forge.kind,
+    };
+    let login = login.or_else(|| cfg.forge.login.clone());
+
     let _lock = lock::PidLock::acquire(repo_root.join(".tutti").join("run.lock.d"))
         .map_err(|e| format!("could not acquire run lock: {e}"))?;
 
-    let adapters = wire::build(&cfg, &repo, repo_root.clone());
+    let adapters = wire::build(&cfg, kind, login.as_deref(), &repo, repo_root.clone())
+        .map_err(|e| e.to_string())?;
     // Recover any issues a prior crash left in-progress, then prune stale worktrees.
     let _ = adapters.forge.recover_stale().await;
     use tutti_core::workspace::Workspace;
@@ -98,7 +119,7 @@ async fn run(
 
     let engine = Engine::new(
         &cfg,
-        &adapters.forge,
+        adapters.forge.as_ref(),
         &adapters.backend,
         Box::new(adapters.workspace),
     )

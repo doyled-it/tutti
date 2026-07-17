@@ -13,6 +13,8 @@ tutti-core = { path = "../tutti-core" }
 tutti-git = { path = "../tutti-git" }
 tutti-backend-claude = { path = "../tutti-backend-claude" }
 tutti-forge-github = { path = "../tutti-forge-github" }
+tutti-forge-gitea = { path = "../tutti-forge-gitea" }
+tutti-forge-gitlab = { path = "../tutti-forge-gitlab" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
 

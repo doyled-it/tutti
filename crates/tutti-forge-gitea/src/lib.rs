@@ -127,10 +127,37 @@ impl GiteaForge {
         .await?;
         Ok(())
     }
+}
+
+#[async_trait]
+impl Forge for GiteaForge {
+    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
+        let json = self
+            .api(
+                "GET",
+                &self.endpoint("issues?state=open&type=issues&limit=100"),
+                None,
+            )
+            .await?;
+        Ok(parse::first_ready_issue(&json, filter))
+    }
+
+    async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
+        self.set_status(issue, Status::InProgress).await?;
+        Ok(ClaimGuard::new(issue))
+    }
+
+    async fn release(&self, issue: IssueId) -> Result<()> {
+        self.set_status(issue, Status::Ready).await
+    }
+
+    async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
+        self.set_status(issue, Status::Done).await
+    }
 
     /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
     /// to ready. Mirrors the GitHub adapter. `tea api` is used for the reads.
-    pub async fn recover_stale(&self) -> Result<()> {
+    async fn recover_stale(&self) -> Result<()> {
         let ep = self.endpoint(&format!(
             "issues?state=open&type=issues&labels={}&limit=100",
             self.status_labels.in_progress
@@ -159,33 +186,6 @@ impl GiteaForge {
             }
         }
         Ok(())
-    }
-}
-
-#[async_trait]
-impl Forge for GiteaForge {
-    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
-        let json = self
-            .api(
-                "GET",
-                &self.endpoint("issues?state=open&type=issues&limit=100"),
-                None,
-            )
-            .await?;
-        Ok(parse::first_ready_issue(&json, filter))
-    }
-
-    async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
-        self.set_status(issue, Status::InProgress).await?;
-        Ok(ClaimGuard::new(issue))
-    }
-
-    async fn release(&self, issue: IssueId) -> Result<()> {
-        self.set_status(issue, Status::Ready).await
-    }
-
-    async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
-        self.set_status(issue, Status::Done).await
     }
 
     async fn list_milestones(&self) -> Result<Vec<Milestone>> {
