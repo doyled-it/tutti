@@ -77,7 +77,10 @@ async fn tracking_and_status_round_trip() {
     // runs against a real Premium group.
     let epic_err = f.create_epic("live-epic", "x").await;
     assert!(
-        matches!(epic_err, Err(tutti_core::traits::EngineError::Unsupported(_))),
+        matches!(
+            epic_err,
+            Err(tutti_core::traits::EngineError::Unsupported(_))
+        ),
         "expected Unsupported for epics without a group, got {epic_err:?}"
     );
     // list_epics degrades to an empty list, never an error.

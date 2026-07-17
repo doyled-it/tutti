@@ -166,12 +166,10 @@ pub fn parse_created_epic(json: &str) -> Option<EpicHeader> {
         iid: u64,
         title: String,
     }
-    serde_json::from_str::<E>(json)
-        .ok()
-        .map(|e| EpicHeader {
-            iid: e.iid,
-            title: e.title,
-        })
+    serde_json::from_str::<E>(json).ok().map(|e| EpicHeader {
+        iid: e.iid,
+        title: e.title,
+    })
 }
 
 /// Read an issue's GLOBAL id from a `GET projects/{id}/issues/{iid}` response. GitLab's
@@ -258,9 +256,18 @@ mod tests {
 
     #[test]
     fn ci_states_map() {
-        assert_eq!(mr_ci_state(r#"{"pipeline":{"status":"success"}}"#), CiState::Pass);
-        assert_eq!(mr_ci_state(r#"{"pipeline":{"status":"failed"}}"#), CiState::Fail);
-        assert_eq!(mr_ci_state(r#"{"pipeline":{"status":"running"}}"#), CiState::Pending);
+        assert_eq!(
+            mr_ci_state(r#"{"pipeline":{"status":"success"}}"#),
+            CiState::Pass
+        );
+        assert_eq!(
+            mr_ci_state(r#"{"pipeline":{"status":"failed"}}"#),
+            CiState::Fail
+        );
+        assert_eq!(
+            mr_ci_state(r#"{"pipeline":{"status":"running"}}"#),
+            CiState::Pending
+        );
         assert_eq!(mr_ci_state(r#"{"pipeline":null}"#), CiState::Pending);
     }
 
@@ -290,9 +297,6 @@ mod tests {
         assert_eq!(children.len(), 1);
         assert!(children[0].has_label("status::done"));
         // Epic-issue linking uses the global id, resolved from a single-issue GET.
-        assert_eq!(
-            parse_issue_global_id(r#"{"iid":13,"id":55}"#),
-            Some(55)
-        );
+        assert_eq!(parse_issue_global_id(r#"{"iid":13,"id":55}"#), Some(55));
     }
 }

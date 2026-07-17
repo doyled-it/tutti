@@ -25,7 +25,11 @@ pub struct GitLabForge {
 impl GitLabForge {
     /// `projects/<project>/<suffix>`, the common REST endpoint prefix.
     fn endpoint(&self, suffix: &str) -> String {
-        format!("projects/{}/{}", self.project, suffix.trim_start_matches('/'))
+        format!(
+            "projects/{}/{}",
+            self.project,
+            suffix.trim_start_matches('/')
+        )
     }
 
     /// Run `glab api` against a REST endpoint. `fields` become `-f key=value` form
@@ -84,7 +88,11 @@ impl GitLabForge {
         // Note the per_page=100 ceiling: a project with more than 100 open MRs could page
         // one out of view. If the MR list cannot be read, skip every issue (never release).
         let heads = match self
-            .api("GET", &self.endpoint("merge_requests?state=opened&per_page=100"), &[])
+            .api(
+                "GET",
+                &self.endpoint("merge_requests?state=opened&per_page=100"),
+                &[],
+            )
             .await
         {
             Ok(body) => mr_source_branches(&body),
@@ -104,7 +112,11 @@ impl GitLabForge {
 impl Forge for GitLabForge {
     async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
         let json = self
-            .api("GET", &self.endpoint("issues?state=opened&per_page=100"), &[])
+            .api(
+                "GET",
+                &self.endpoint("issues?state=opened&per_page=100"),
+                &[],
+            )
             .await?;
         Ok(parse::first_ready_issue(&json, filter))
     }
@@ -124,7 +136,11 @@ impl Forge for GitLabForge {
 
     async fn list_milestones(&self) -> Result<Vec<Milestone>> {
         let json = self
-            .api("GET", &self.endpoint("milestones?state=all&per_page=100"), &[])
+            .api(
+                "GET",
+                &self.endpoint("milestones?state=all&per_page=100"),
+                &[],
+            )
             .await?;
         Ok(parse::parse_milestones(&json))
     }
@@ -142,7 +158,9 @@ impl Forge for GitLabForge {
         let json = self
             .api(
                 "GET",
-                &self.endpoint(&format!("issues?state=all&milestone={encoded}&per_page=100")),
+                &self.endpoint(&format!(
+                    "issues?state=all&milestone={encoded}&per_page=100"
+                )),
                 &[],
             )
             .await?;
@@ -171,8 +189,7 @@ impl Forge for GitLabForge {
         due: Option<&str>,
         description: &str,
     ) -> Result<Milestone> {
-        let mut fields: Vec<(&str, &str)> =
-            vec![("title", title), ("description", description)];
+        let mut fields: Vec<(&str, &str)> = vec![("title", title), ("description", description)];
         if let Some(d) = due {
             fields.push(("due_date", d));
         }
@@ -229,7 +246,11 @@ impl Forge for GitLabForge {
         // A free-tier group returns 403 here; treat any read failure as "no epics" so a
         // tracking read never hard-fails on epic availability.
         let json = match self
-            .api("GET", &format!("groups/{gid}/epics?state=all&per_page=100"), &[])
+            .api(
+                "GET",
+                &format!("groups/{gid}/epics?state=all&per_page=100"),
+                &[],
+            )
             .await
         {
             Ok(j) => j,
@@ -267,9 +288,7 @@ impl Forge for GitLabForge {
 
     async fn create_epic(&self, title: &str, body: &str) -> Result<Epic> {
         let gid = self.group_id().await?.ok_or_else(|| {
-            EngineError::Unsupported(
-                "GitLab epics require the project to belong to a group".into(),
-            )
+            EngineError::Unsupported("GitLab epics require the project to belong to a group".into())
         })?;
         let json = self
             .api(
@@ -351,13 +370,20 @@ impl Forge for GitLabForge {
             .await?;
         let iid = parse::parse_created_mr_iid(&json)
             .ok_or_else(|| EngineError::Forge(format!("could not parse created MR: {json}")))?;
-        Ok(PrHandle { number: iid, branch: pr.head })
+        Ok(PrHandle {
+            number: iid,
+            branch: pr.head,
+        })
     }
 
     async fn ci_status(&self, pr: &PrHandle) -> Result<CiState> {
         // The MR object carries its head pipeline's status.
         let json = self
-            .api("GET", &self.endpoint(&format!("merge_requests/{}", pr.number)), &[])
+            .api(
+                "GET",
+                &self.endpoint(&format!("merge_requests/{}", pr.number)),
+                &[],
+            )
             .await
             .unwrap_or_else(|_| "{}".into());
         Ok(parse::mr_ci_state(&json))
