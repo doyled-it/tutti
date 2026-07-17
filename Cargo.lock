@@ -517,6 +517,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-forge-gitlab"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tutti-core",
+]
+
+[[package]]
 name = "tutti-git"
 version = "0.0.0"
 dependencies = [
