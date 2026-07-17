@@ -59,6 +59,15 @@ impl GitLabForge {
         .await?;
         Ok(())
     }
+
+    /// Resolve the project's parent GROUP id, or None if the project is in a user
+    /// namespace (no group -> epics unavailable). GitLab epics are group-level.
+    async fn group_id(&self) -> Result<Option<u64>> {
+        let json = self
+            .api("GET", &format!("projects/{}", self.project), &[])
+            .await?;
+        Ok(parse::parse_group_id(&json))
+    }
 }
 
 #[async_trait]
@@ -182,7 +191,98 @@ impl Forge for GitLabForge {
         Ok(issue)
     }
 
-    // ... remaining methods added in Tasks 6-7 ...
+    async fn list_epics(&self) -> Result<Vec<Epic>> {
+        // Epics live on the parent group. No group -> no epics (graceful empty read).
+        let Some(gid) = self.group_id().await? else {
+            return Ok(Vec::new());
+        };
+        // A free-tier group returns 403 here; treat any read failure as "no epics" so a
+        // tracking read never hard-fails on epic availability.
+        let json = match self
+            .api("GET", &format!("groups/{gid}/epics?state=all&per_page=100"), &[])
+            .await
+        {
+            Ok(j) => j,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut epics = Vec::new();
+        for h in parse::parse_epics(&json) {
+            // Children are the epic's issues; progress counts those carrying the done
+            // status label (consistent with the milestone drain semantics).
+            let cj = self
+                .api(
+                    "GET",
+                    &format!("groups/{gid}/epics/{}/issues?per_page=100", h.iid),
+                    &[],
+                )
+                .await
+                .unwrap_or_else(|_| "[]".into());
+            let children = parse::parse_issue_list(&cj);
+            let done = children
+                .iter()
+                .filter(|i| i.has_label(&self.status_labels.done))
+                .count();
+            epics.push(Epic {
+                id: EpicId(h.iid),
+                title: h.title,
+                children: children.iter().map(|i| i.id).collect(),
+                progress: tutti_core::tracking::Progress {
+                    total: children.len() as u32,
+                    done: done as u32,
+                },
+            });
+        }
+        Ok(epics)
+    }
+
+    async fn create_epic(&self, title: &str, body: &str) -> Result<Epic> {
+        let gid = self.group_id().await?.ok_or_else(|| {
+            EngineError::Unsupported(
+                "GitLab epics require the project to belong to a group".into(),
+            )
+        })?;
+        let json = self
+            .api(
+                "POST",
+                &format!("groups/{gid}/epics"),
+                &[("title", title), ("description", body)],
+            )
+            .await?;
+        let h = parse::parse_created_epic(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created epic: {json}")))?;
+        Ok(Epic {
+            id: EpicId(h.iid),
+            title: h.title,
+            children: Vec::new(),
+            progress: tutti_core::tracking::Progress::default(),
+        })
+    }
+
+    async fn link_sub_issue(&self, parent: IssueId, child: IssueId) -> Result<()> {
+        // `parent` carries the epic iid (the trait reuses IssueId for the epic handle,
+        // matching how create_issue calls this). The link endpoint takes the child's
+        // GLOBAL issue id, so resolve it from a single-issue GET.
+        let gid = self.group_id().await?.ok_or_else(|| {
+            EngineError::Unsupported(
+                "GitLab epic linking requires the project to belong to a group".into(),
+            )
+        })?;
+        let cj = self
+            .api("GET", &self.endpoint(&format!("issues/{}", child.0)), &[])
+            .await?;
+        let global = parse::parse_issue_global_id(&cj).ok_or_else(|| {
+            EngineError::Forge(format!("could not resolve global id for issue {}", child.0))
+        })?;
+        self.api(
+            "POST",
+            &format!("groups/{gid}/epics/{}/issues/{global}", parent.0),
+            &[],
+        )
+        .await?;
+        Ok(())
+    }
+
+    // ... remaining methods added in Task 7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
