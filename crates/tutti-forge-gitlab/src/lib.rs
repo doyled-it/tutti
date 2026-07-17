@@ -68,6 +68,36 @@ impl GitLabForge {
             .await?;
         Ok(parse::parse_group_id(&json))
     }
+
+    /// Reclaim issues abandoned by a crash: in-progress issues with no open MR go back
+    /// to ready. Fetches open MRs once and matches source branches client-side.
+    pub async fn recover_stale(&self) -> Result<()> {
+        let ep = self.endpoint(&format!(
+            "issues?state=opened&labels={}&per_page=100",
+            self.status_labels.in_progress.replace(' ', "%20")
+        ));
+        let json = self.api("GET", &ep, &[]).await?;
+        let issues = parse::parse_issue_list(&json);
+        if issues.is_empty() {
+            return Ok(());
+        }
+        // Note the per_page=100 ceiling: a project with more than 100 open MRs could page
+        // one out of view. If the MR list cannot be read, skip every issue (never release).
+        let heads = match self
+            .api("GET", &self.endpoint("merge_requests?state=opened&per_page=100"), &[])
+            .await
+        {
+            Ok(body) => mr_source_branches(&body),
+            Err(_) => return Ok(()),
+        };
+        for i in issues {
+            let head = format!("feat/issue-{}", i.id.0);
+            if !heads.iter().any(|h| h == &head) {
+                let _ = self.release(i.id).await;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -282,7 +312,83 @@ impl Forge for GitLabForge {
         Ok(())
     }
 
-    // ... remaining methods added in Task 7 ...
+    async fn branch_exists(&self, branch: &str) -> Result<bool> {
+        Ok(self
+            .git(&["ls-remote", "--exit-code", "--heads", "origin", branch])
+            .await
+            .is_ok())
+    }
+
+    async fn create_branch(&self, branch: &str, from: &str) -> Result<()> {
+        let _ = self.git(&["fetch", "origin", from]).await;
+        self.git(&[
+            "push",
+            "origin",
+            &format!("origin/{from}:refs/heads/{branch}"),
+        ])
+        .await?;
+        Ok(())
+    }
+
+    async fn push_branch(&self, branch: &str) -> Result<()> {
+        self.git(&["push", "-u", "--force-with-lease", "origin", branch])
+            .await?;
+        Ok(())
+    }
+
+    async fn open_pr(&self, pr: PrRequest) -> Result<PrHandle> {
+        let json = self
+            .api(
+                "POST",
+                &self.endpoint("merge_requests"),
+                &[
+                    ("source_branch", &pr.head),
+                    ("target_branch", &pr.base),
+                    ("title", &pr.title),
+                    ("description", &pr.body),
+                ],
+            )
+            .await?;
+        let iid = parse::parse_created_mr_iid(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created MR: {json}")))?;
+        Ok(PrHandle { number: iid, branch: pr.head })
+    }
+
+    async fn ci_status(&self, pr: &PrHandle) -> Result<CiState> {
+        // The MR object carries its head pipeline's status.
+        let json = self
+            .api("GET", &self.endpoint(&format!("merge_requests/{}", pr.number)), &[])
+            .await
+            .unwrap_or_else(|_| "{}".into());
+        Ok(parse::mr_ci_state(&json))
+    }
+
+    async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()> {
+        // GitLab's MR merge endpoint squashes when squash=true; plain merge otherwise.
+        // Rebase-merge is a separate endpoint, so Rebase maps to a plain merge here.
+        let mut fields: Vec<(&str, &str)> = Vec::new();
+        if let MergeMode::Squash = how {
+            fields.push(("squash", "true"));
+        }
+        self.api(
+            "PUT",
+            &self.endpoint(&format!("merge_requests/{}/merge", pr.number)),
+            &fields,
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// Extract each MR's source branch from a GitLab `GET merge_requests` array.
+fn mr_source_branches(json: &str) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Mr {
+        #[serde(default)]
+        source_branch: String,
+    }
+    let mrs: Vec<Mr> = serde_json::from_str(json).unwrap_or_default();
+    mrs.into_iter().map(|m| m.source_branch).collect()
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
