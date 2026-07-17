@@ -125,6 +125,34 @@ impl GiteaForge {
         .await?;
         Ok(())
     }
+
+    /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
+    /// to ready. Mirrors the GitHub adapter. `tea api` is used for the reads.
+    pub async fn recover_stale(&self) -> Result<()> {
+        let ep = self.endpoint(&format!(
+            "issues?state=open&type=issues&labels={}&limit=100",
+            self.status_labels.in_progress
+        ));
+        let json = self.api("GET", &ep, None).await?;
+        let issues = parse::parse_issue_list(&json);
+        for i in issues {
+            // Gitea's pulls list filtered by head branch: `?state=open`. There is no
+            // head-branch query, so list open PRs and match the head ref name.
+            let head = format!("feat/issue-{}", i.id.0);
+            let prs = self
+                .api("GET", &self.endpoint("pulls?state=open&limit=100"), None)
+                .await;
+            match prs {
+                Err(_) => continue,
+                Ok(body) => {
+                    if !pr_heads(&body).iter().any(|h| h == &head) {
+                        let _ = self.release(i.id).await;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -324,7 +352,89 @@ impl Forge for GiteaForge {
         Ok(epics)
     }
 
-    // ... remaining methods added in Task 7 ...
+    async fn branch_exists(&self, branch: &str) -> Result<bool> {
+        Ok(self
+            .git(&["ls-remote", "--exit-code", "--heads", "origin", branch])
+            .await
+            .is_ok())
+    }
+
+    async fn create_branch(&self, branch: &str, from: &str) -> Result<()> {
+        let _ = self.git(&["fetch", "origin", from]).await;
+        self.git(&[
+            "push",
+            "origin",
+            &format!("origin/{from}:refs/heads/{branch}"),
+        ])
+        .await?;
+        Ok(())
+    }
+
+    async fn push_branch(&self, branch: &str) -> Result<()> {
+        self.git(&["push", "-u", "--force-with-lease", "origin", branch])
+            .await?;
+        Ok(())
+    }
+
+    async fn open_pr(&self, pr: PrRequest) -> Result<PrHandle> {
+        let body = serde_json::json!({
+            "title": pr.title, "body": pr.body, "head": pr.head, "base": pr.base,
+        });
+        let json = self
+            .api("POST", &self.endpoint("pulls"), Some(&body.to_string()))
+            .await?;
+        let number = parse::parse_created_pr_number(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created PR: {json}")))?;
+        Ok(PrHandle {
+            number,
+            branch: pr.head,
+        })
+    }
+
+    async fn ci_status(&self, pr: &PrHandle) -> Result<CiState> {
+        // Gitea reports a combined status per commit; query the PR head branch ref.
+        let ep = self.endpoint(&format!("commits/{}/status", pr.branch));
+        let json = self
+            .api("GET", &ep, None)
+            .await
+            .unwrap_or_else(|_| "{}".into());
+        Ok(parse::combined_ci_state(&json))
+    }
+
+    async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()> {
+        // Gitea merge styles: "merge" | "rebase" | "squash". Map MergeMode.
+        let style = match how {
+            MergeMode::Squash => "squash",
+            MergeMode::Merge => "merge",
+            MergeMode::Rebase => "rebase",
+        };
+        let body = serde_json::json!({"Do": style, "delete_branch_after_merge": true});
+        self.api(
+            "POST",
+            &self.endpoint(&format!("pulls/{}/merge", pr.number)),
+            Some(&body.to_string()),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// Extract each PR's head branch ref from a Gitea `GET pulls` array.
+fn pr_heads(json: &str) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Head {
+        #[serde(default, rename = "ref")]
+        r#ref: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Pr {
+        #[serde(default)]
+        head: Option<Head>,
+    }
+    let prs: Vec<Pr> = serde_json::from_str(json).unwrap_or_default();
+    prs.into_iter()
+        .filter_map(|p| p.head.map(|h| h.r#ref))
+        .collect()
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
