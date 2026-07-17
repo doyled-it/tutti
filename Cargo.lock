@@ -478,7 +478,9 @@ dependencies = [
  "tokio",
  "tutti-backend-claude",
  "tutti-core",
+ "tutti-forge-gitea",
  "tutti-forge-github",
+ "tutti-forge-gitlab",
  "tutti-git",
 ]
 
