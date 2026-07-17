@@ -78,6 +78,11 @@ pub trait Forge: Send + Sync {
     async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()>;
     /// Mark done, append decision log, unblock dependents.
     async fn record(&self, issue: IssueId, outcome: &ShipRecord) -> Result<()>;
+    /// Reclaim issues abandoned by a crash (in-progress with no open PR/MR -> ready).
+    /// The default is a no-op; real adapters override it. Called once before draining.
+    async fn recover_stale(&self) -> Result<()> {
+        Ok(())
+    }
 
     // --- tracking reads ---
     async fn list_milestones(&self) -> Result<Vec<crate::tracking::Milestone>>;

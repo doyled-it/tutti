@@ -51,61 +51,6 @@ impl GitHubForge {
         self.gh(&args).await?;
         Ok(())
     }
-
-    /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
-    /// to ready. The CLI calls this once before draining.
-    pub async fn recover_stale(&self) -> Result<()> {
-        let json = self
-            .gh(&[
-                "issue",
-                "list",
-                "--repo",
-                &self.repo,
-                "--label",
-                &self.status_labels.in_progress,
-                "--state",
-                "open",
-                "--json",
-                "number",
-                "--jq",
-                ".",
-            ])
-            .await?;
-        #[derive(serde::Deserialize)]
-        struct N {
-            number: u64,
-        }
-        #[derive(serde::Deserialize)]
-        struct Pr {
-            #[allow(dead_code)]
-            number: u64,
-        }
-        let issues: Vec<N> = serde_json::from_str(&json).unwrap_or_default();
-        for i in issues {
-            // Match the PR by its head branch (this repo's convention is
-            // `feat/issue-<N>`). `linked:issue-N` is not a valid gh search qualifier,
-            // so an empty result there would falsely release issues that already have
-            // an open PR, producing duplicate PRs.
-            let head = format!("feat/issue-{}", i.number);
-            let prs = self
-                .gh(&[
-                    "pr", "list", "--repo", &self.repo, "--state", "open", "--head", &head,
-                    "--json", "number",
-                ])
-                .await;
-            match prs {
-                // Spawn/auth failure: cannot tell whether a PR exists, so skip (safest).
-                Err(_) => continue,
-                Ok(body) => {
-                    let open_prs: Vec<Pr> = serde_json::from_str(body.trim()).unwrap_or_default();
-                    if open_prs.is_empty() {
-                        let _ = self.release(IssueId(i.number)).await;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit. Used for the mutating
@@ -262,6 +207,61 @@ impl Forge for GitHubForge {
 
     async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
         self.set_status(issue, Status::Done).await
+    }
+
+    /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
+    /// to ready. The CLI calls this once before draining.
+    async fn recover_stale(&self) -> Result<()> {
+        let json = self
+            .gh(&[
+                "issue",
+                "list",
+                "--repo",
+                &self.repo,
+                "--label",
+                &self.status_labels.in_progress,
+                "--state",
+                "open",
+                "--json",
+                "number",
+                "--jq",
+                ".",
+            ])
+            .await?;
+        #[derive(serde::Deserialize)]
+        struct N {
+            number: u64,
+        }
+        #[derive(serde::Deserialize)]
+        struct Pr {
+            #[allow(dead_code)]
+            number: u64,
+        }
+        let issues: Vec<N> = serde_json::from_str(&json).unwrap_or_default();
+        for i in issues {
+            // Match the PR by its head branch (this repo's convention is
+            // `feat/issue-<N>`). `linked:issue-N` is not a valid gh search qualifier,
+            // so an empty result there would falsely release issues that already have
+            // an open PR, producing duplicate PRs.
+            let head = format!("feat/issue-{}", i.number);
+            let prs = self
+                .gh(&[
+                    "pr", "list", "--repo", &self.repo, "--state", "open", "--head", &head,
+                    "--json", "number",
+                ])
+                .await;
+            match prs {
+                // Spawn/auth failure: cannot tell whether a PR exists, so skip (safest).
+                Err(_) => continue,
+                Ok(body) => {
+                    let open_prs: Vec<Pr> = serde_json::from_str(body.trim()).unwrap_or_default();
+                    if open_prs.is_empty() {
+                        let _ = self.release(IssueId(i.number)).await;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     // --- tracking methods (via `gh api`; parsers are fixture-tested in `parse`) ---

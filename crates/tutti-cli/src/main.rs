@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use tutti_core::config::Config;
 use tutti_core::engine::Engine;
 use tutti_core::message::{PlanAction, PlanDecision};
+use tutti_core::traits::Forge;
 
 #[derive(Parser)]
 #[command(

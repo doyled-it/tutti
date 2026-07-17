@@ -72,10 +72,37 @@ impl GitLabForge {
             .await?;
         Ok(parse::parse_group_id(&json))
     }
+}
+
+#[async_trait]
+impl Forge for GitLabForge {
+    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
+        let json = self
+            .api(
+                "GET",
+                &self.endpoint("issues?state=opened&per_page=100"),
+                &[],
+            )
+            .await?;
+        Ok(parse::first_ready_issue(&json, filter))
+    }
+
+    async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
+        self.set_status(issue, Status::InProgress).await?;
+        Ok(ClaimGuard::new(issue))
+    }
+
+    async fn release(&self, issue: IssueId) -> Result<()> {
+        self.set_status(issue, Status::Ready).await
+    }
+
+    async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
+        self.set_status(issue, Status::Done).await
+    }
 
     /// Reclaim issues abandoned by a crash: in-progress issues with no open MR go back
     /// to ready. Fetches open MRs once and matches source branches client-side.
-    pub async fn recover_stale(&self) -> Result<()> {
+    async fn recover_stale(&self) -> Result<()> {
         let ep = self.endpoint(&format!(
             "issues?state=opened&labels={}&per_page=100",
             encode_query(&self.status_labels.in_progress)
@@ -105,33 +132,6 @@ impl GitLabForge {
             }
         }
         Ok(())
-    }
-}
-
-#[async_trait]
-impl Forge for GitLabForge {
-    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
-        let json = self
-            .api(
-                "GET",
-                &self.endpoint("issues?state=opened&per_page=100"),
-                &[],
-            )
-            .await?;
-        Ok(parse::first_ready_issue(&json, filter))
-    }
-
-    async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
-        self.set_status(issue, Status::InProgress).await?;
-        Ok(ClaimGuard::new(issue))
-    }
-
-    async fn release(&self, issue: IssueId) -> Result<()> {
-        self.set_status(issue, Status::Ready).await
-    }
-
-    async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
-        self.set_status(issue, Status::Done).await
     }
 
     async fn list_milestones(&self) -> Result<Vec<Milestone>> {
