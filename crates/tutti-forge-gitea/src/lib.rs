@@ -149,7 +149,69 @@ impl Forge for GiteaForge {
         Ok(Roadmap { milestones })
     }
 
-    // ... remaining methods added in Tasks 5-7 ...
+    async fn create_milestone(
+        &self,
+        title: &str,
+        due: Option<&str>,
+        description: &str,
+    ) -> Result<Milestone> {
+        let body = match due {
+            Some(d) => {
+                serde_json::json!({"title": title, "description": description, "due_on": d})
+            }
+            None => serde_json::json!({"title": title, "description": description}),
+        };
+        let json = self
+            .api("POST", &self.endpoint("milestones"), Some(&body.to_string()))
+            .await?;
+        parse::parse_milestone(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created milestone: {json}")))
+    }
+
+    async fn close_milestone(&self, id: MilestoneId) -> Result<()> {
+        let body = serde_json::json!({"state": "closed"});
+        self.api(
+            "PATCH",
+            &self.endpoint(&format!("milestones/{}", id.0)),
+            Some(&body.to_string()),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn create_issue(
+        &self,
+        new: &tutti_core::message::NewIssue,
+        milestone: Option<MilestoneId>,
+        epic: Option<EpicId>,
+    ) -> Result<Issue> {
+        // Gitea's create-issue takes label IDs; resolve the requested label names.
+        let map = self.label_ids().await?;
+        let label_ids: Vec<i64> = new
+            .labels
+            .iter()
+            .filter_map(|name| Self::id_for(&map, name))
+            .collect();
+        let mut body = serde_json::json!({
+            "title": new.title,
+            "body": new.body,
+            "labels": label_ids,
+        });
+        if let Some(m) = milestone {
+            body["milestone"] = serde_json::json!(m.0);
+        }
+        let json = self
+            .api("POST", &self.endpoint("issues"), Some(&body.to_string()))
+            .await?;
+        let issue = parse::parse_created_issue(&json)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse created issue: {json}")))?;
+        if let Some(epic) = epic {
+            self.link_sub_issue(IssueId(epic.0), issue.id).await?;
+        }
+        Ok(issue)
+    }
+
+    // ... remaining methods added in Tasks 6-7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
