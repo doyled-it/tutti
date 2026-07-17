@@ -83,7 +83,50 @@ impl Forge for GitLabForge {
         self.set_status(issue, Status::Done).await
     }
 
-    // ... remaining methods added in Tasks 4-7 ...
+    async fn list_milestones(&self) -> Result<Vec<Milestone>> {
+        let json = self
+            .api("GET", &self.endpoint("milestones?state=all&per_page=100"), &[])
+            .await?;
+        Ok(parse::parse_milestones(&json))
+    }
+
+    async fn milestone_children(&self, id: MilestoneId) -> Result<Vec<Issue>> {
+        // GitLab filters issues by milestone TITLE, so resolve the title first.
+        let mj = self
+            .api("GET", &self.endpoint(&format!("milestones/{}", id.0)), &[])
+            .await?;
+        let title = parse::parse_milestone_title(&mj)
+            .ok_or_else(|| EngineError::Forge(format!("milestone {} has no title: {mj}", id.0)))?;
+        // URL-encode the title into the query (spaces -> %20). Only encode what a title
+        // realistically contains; a minimal space-encode is enough for typical titles.
+        let encoded = title.replace(' ', "%20");
+        let json = self
+            .api(
+                "GET",
+                &self.endpoint(&format!("issues?state=all&milestone={encoded}&per_page=100")),
+                &[],
+            )
+            .await?;
+        Ok(parse::parse_issue_list(&json))
+    }
+
+    async fn roadmap(&self) -> Result<Roadmap> {
+        let mut milestones: Vec<Milestone> = self
+            .list_milestones()
+            .await?
+            .into_iter()
+            .filter(|m| m.state == TrackState::Open)
+            .collect();
+        milestones.sort_by(|a, b| match (&a.due, &b.due) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        Ok(Roadmap { milestones })
+    }
+
+    // ... remaining methods added in Tasks 5-7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
