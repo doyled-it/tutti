@@ -78,7 +78,7 @@ impl GitLabForge {
     pub async fn recover_stale(&self) -> Result<()> {
         let ep = self.endpoint(&format!(
             "issues?state=opened&labels={}&per_page=100",
-            self.status_labels.in_progress.replace(' ', "%20")
+            encode_query(&self.status_labels.in_progress)
         ));
         let json = self.api("GET", &ep, &[]).await?;
         let issues = parse::parse_issue_list(&json);
@@ -152,9 +152,9 @@ impl Forge for GitLabForge {
             .await?;
         let title = parse::parse_milestone_title(&mj)
             .ok_or_else(|| EngineError::Forge(format!("milestone {} has no title: {mj}", id.0)))?;
-        // URL-encode the title into the query (spaces -> %20). Only encode what a title
-        // realistically contains; a minimal space-encode is enough for typical titles.
-        let encoded = title.replace(' ', "%20");
+        // Percent-encode the title into the query so a title with `&`, `+`, `#`, etc.
+        // cannot inject a spurious parameter or truncate the value.
+        let encoded = encode_query(&title);
         let json = self
             .api(
                 "GET",
@@ -240,6 +240,13 @@ impl Forge for GitLabForge {
 
     async fn list_epics(&self) -> Result<Vec<Epic>> {
         // Epics live on the parent group. No group -> no epics (graceful empty read).
+        // NOTE: these methods use the legacy group-epics REST API, which GitLab is
+        // migrating to Work Items (deprecated on GitLab 17+/18+); the iid semantics may
+        // shift under work-items. Validated against the documented shapes; run against a
+        // real Premium group to confirm on newer instances.
+        // NOTE: in a multi-project group an epic's children can span projects, but their
+        // iids are per-project; this adapter targets a single project under the group, so
+        // the collected child ids are unambiguous in that setup.
         let Some(gid) = self.group_id().await? else {
             return Ok(Vec::new());
         };
@@ -406,6 +413,22 @@ impl Forge for GitLabForge {
     }
 }
 
+/// Percent-encode a value for safe interpolation into a URL query component. Encodes
+/// everything outside the RFC 3986 unreserved set, so titles/labels containing `&`,
+/// `+`, `#`, `:`, or spaces cannot inject a parameter or truncate the value.
+fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Extract each MR's source branch from a GitLab `GET merge_requests` array.
 fn mr_source_branches(json: &str) -> Vec<String> {
     #[derive(serde::Deserialize)]
@@ -436,4 +459,23 @@ async fn run(program: &str, args: &[&str], cwd: Option<&std::path::Path>) -> Res
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_query;
+
+    #[test]
+    fn encode_query_escapes_reserved_chars() {
+        // Spaces, ampersands, and colons in a milestone title or scoped label must not
+        // leak into the query structure.
+        assert_eq!(encode_query("Phase 1"), "Phase%201");
+        assert_eq!(encode_query("A&B=C"), "A%26B%3DC");
+        assert_eq!(
+            encode_query("status::in-progress"),
+            "status%3A%3Ain-progress"
+        );
+        // Unreserved characters pass through unchanged.
+        assert_eq!(encode_query("a-b_c.d~e"), "a-b_c.d~e");
+    }
 }

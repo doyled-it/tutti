@@ -182,8 +182,9 @@ pub fn parse_issue_global_id(json: &str) -> Option<u64> {
     serde_json::from_str::<I>(json).ok().map(|i| i.id)
 }
 
-/// Map a merge request's `pipeline.status` (from `GET merge_requests/{iid}`) to a
-/// `CiState`. A missing pipeline is treated as not-yet-reported (Pending).
+/// Map a merge request's pipeline status (from `GET merge_requests/{iid}`) to a
+/// `CiState`. Prefers `pipeline`, falling back to `head_pipeline` when the former is
+/// absent. A missing pipeline is treated as not-yet-reported (Pending).
 pub fn mr_ci_state(json: &str) -> CiState {
     #[derive(Deserialize)]
     struct Pipeline {
@@ -194,12 +195,14 @@ pub fn mr_ci_state(json: &str) -> CiState {
     struct Mr {
         #[serde(default)]
         pipeline: Option<Pipeline>,
+        #[serde(default)]
+        head_pipeline: Option<Pipeline>,
     }
     let mr: Mr = match serde_json::from_str(json) {
         Ok(m) => m,
         Err(_) => return CiState::Pending,
     };
-    match mr.pipeline {
+    match mr.pipeline.or(mr.head_pipeline) {
         None => CiState::Pending,
         Some(p) => match p.status.as_str() {
             "success" => CiState::Pass,
@@ -269,6 +272,21 @@ mod tests {
             CiState::Pending
         );
         assert_eq!(mr_ci_state(r#"{"pipeline":null}"#), CiState::Pending);
+        // Falls back to head_pipeline when pipeline is absent.
+        assert_eq!(
+            mr_ci_state(r#"{"pipeline":null,"head_pipeline":{"status":"success"}}"#),
+            CiState::Pass
+        );
+    }
+
+    #[test]
+    fn issue_list_reads_real_capture() {
+        // The real captured issues array (one open issue under Phase 1, labeled ready).
+        let json = include_str!("../tests/fixtures/issues.json");
+        let issues = parse_issue_list(json);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, IssueId(1));
+        assert!(issues[0].has_label("status::ready"));
     }
 
     #[test]
