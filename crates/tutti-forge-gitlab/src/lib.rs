@@ -2,8 +2,13 @@
 //! The GitLab `Forge`: drives `glab api` (REST v4 + GraphQL) and `git`.
 pub mod parse;
 
-use tutti_core::status::StatusLabels;
-use tutti_core::traits::{EngineError, Result};
+use async_trait::async_trait;
+use tutti_core::domain::{
+    CiState, Issue, IssueId, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
+};
+use tutti_core::status::{Status, StatusLabels};
+use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
+use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
 /// Drives a GitLab project via `glab api` and `git`.
 pub struct GitLabForge {
@@ -39,6 +44,46 @@ impl GitLabForge {
     async fn git(&self, args: &[&str]) -> Result<String> {
         run("git", args, Some(&self.repo_root)).await
     }
+
+    /// Move an issue to `to` by adding its scoped status label and removing the other
+    /// two in one update. GitLab does NOT auto-exclude scoped labels via the API, so the
+    /// removal is explicit; removing an absent label is tolerated.
+    async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
+        let t = self.status_labels.transition(to);
+        let remove = t.remove.join(",");
+        self.api(
+            "PUT",
+            &self.endpoint(&format!("issues/{}", issue.0)),
+            &[("add_labels", &t.add), ("remove_labels", &remove)],
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Forge for GitLabForge {
+    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
+        let json = self
+            .api("GET", &self.endpoint("issues?state=opened&per_page=100"), &[])
+            .await?;
+        Ok(parse::first_ready_issue(&json, filter))
+    }
+
+    async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
+        self.set_status(issue, Status::InProgress).await?;
+        Ok(ClaimGuard::new(issue))
+    }
+
+    async fn release(&self, issue: IssueId) -> Result<()> {
+        self.set_status(issue, Status::Ready).await
+    }
+
+    async fn record(&self, issue: IssueId, _outcome: &ShipRecord) -> Result<()> {
+        self.set_status(issue, Status::Done).await
+    }
+
+    // ... remaining methods added in Tasks 4-7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
