@@ -84,6 +84,47 @@ impl GiteaForge {
         }
         Ok(())
     }
+
+    /// Derive the `epic:<slug>` label name for an epic title (lowercase, non-alnum -> '-').
+    fn epic_label(title: &str) -> String {
+        let slug: String = title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let slug = slug.trim_matches('-').to_string();
+        format!("epic:{slug}")
+    }
+
+    /// Ensure a label exists, returning its id. Creates it if absent.
+    async fn ensure_label(&self, name: &str, color: &str) -> Result<i64> {
+        let map = self.label_ids().await?;
+        if let Some(id) = Self::id_for(&map, name) {
+            return Ok(id);
+        }
+        let body = serde_json::json!({"name": name, "color": color});
+        let json = self
+            .api("POST", &self.endpoint("labels"), Some(&body.to_string()))
+            .await?;
+        #[derive(serde::Deserialize)]
+        struct L {
+            id: i64,
+        }
+        serde_json::from_str::<L>(&json)
+            .map(|l| l.id)
+            .map_err(|_| EngineError::Forge(format!("could not parse created label: {json}")))
+    }
+
+    /// Add a label id to an issue.
+    async fn add_label(&self, issue: IssueId, label_id: i64) -> Result<()> {
+        self.api(
+            "POST",
+            &self.endpoint(&format!("issues/{}/labels", issue.0)),
+            Some(&format!("{{\"labels\":[{label_id}]}}")),
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -211,7 +252,79 @@ impl Forge for GiteaForge {
         Ok(issue)
     }
 
-    // ... remaining methods added in Tasks 6-7 ...
+    async fn create_epic(&self, title: &str, body: &str) -> Result<Epic> {
+        // Create the epic label, then a tracking issue carrying it.
+        let label = Self::epic_label(title);
+        let label_id = self.ensure_label(&label, "5319e7").await?;
+        let issue_body = serde_json::json!({"title": title, "body": body});
+        let json = self
+            .api("POST", &self.endpoint("issues"), Some(&issue_body.to_string()))
+            .await?;
+        let issue = parse::parse_created_issue(&json).ok_or_else(|| {
+            EngineError::Forge(format!("could not parse created epic issue: {json}"))
+        })?;
+        self.add_label(issue.id, label_id).await?;
+        Ok(Epic {
+            id: EpicId(issue.id.0),
+            title: title.to_string(),
+            children: Vec::new(),
+            progress: tutti_core::tracking::Progress::default(),
+        })
+    }
+
+    async fn link_sub_issue(&self, parent: IssueId, child: IssueId) -> Result<()> {
+        // The parent is an epic tracking issue; find its `epic:*` label and tag the child.
+        let pj = self
+            .api("GET", &self.endpoint(&format!("issues/{}", parent.0)), None)
+            .await?;
+        let parent_issue = parse::parse_created_issue(&pj)
+            .ok_or_else(|| EngineError::Forge(format!("could not parse parent issue: {pj}")))?;
+        let epic_label = parent_issue
+            .labels
+            .iter()
+            .find(|l| l.starts_with("epic:"))
+            .ok_or_else(|| {
+                EngineError::Forge(format!("issue {} is not an epic (no epic: label)", parent.0))
+            })?;
+        let map = self.label_ids().await?;
+        let id = Self::id_for(&map, epic_label)
+            .ok_or_else(|| EngineError::Forge(format!("epic label {epic_label} not found")))?;
+        self.add_label(child, id).await
+    }
+
+    async fn list_epics(&self) -> Result<Vec<Epic>> {
+        // An epic is any `epic:*` label; its children are issues carrying it, its title
+        // the label's slug, its progress the closed/total of those issues.
+        let map = self.label_ids().await?;
+        let mut epics = Vec::new();
+        for (name, _id) in map.iter().filter(|(n, _)| n.starts_with("epic:")) {
+            let ep = self.endpoint(&format!(
+                "issues?state=all&type=issues&labels={}&limit=100",
+                name
+            ));
+            let json = self.api("GET", &ep, None).await?;
+            let children = parse::parse_issue_list(&json);
+            let done = children
+                .iter()
+                .filter(|i| i.has_label(&self.status_labels.done))
+                .count();
+            // The epic's own id is not tracked separately here; use the first child's id
+            // as a stable-enough handle is WRONG, so use 0 to signal "derived". The
+            // planner reasons over milestones; epic ids are not addressed by the whitelist.
+            epics.push(Epic {
+                id: EpicId(0),
+                title: name.clone(),
+                children: children.iter().map(|i| i.id).collect(),
+                progress: tutti_core::tracking::Progress {
+                    total: children.len() as u32,
+                    done: done as u32,
+                },
+            });
+        }
+        Ok(epics)
+    }
+
+    // ... remaining methods added in Task 7 ...
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit.
