@@ -86,9 +86,17 @@ Pure JSON parsing stays separated from shelling (as in slices 2 and 3A) so every
    captured from Codeberg + an opt-in live tier that PASSED against `workslocally/tutti-tea-sandbox`.
    CLI forge-selection is DEFERRED to a post-glab wiring pass (a shared `dyn Forge`/enum
    refactor that also owns the inherent `recover_stale`), so `tutti-cli` is untouched here.
-3. **3B-glab**: the GitLab adapter (`glab`), native group epics + native/scoped-label
-   status + `create_issue`. Parser fixtures; live tier written but `#[ignore]`d pending
-   `glab auth login`.
+3. **3B-glab** (DONE): the GitLab adapter, crate `tutti-forge-gitlab`, driven by `glab api`
+   (REST v4). Status uses scoped `status::<name>` labels added AND explicitly removed (the
+   spike proved the API does not auto-exclude scoped labels, and there is no native STATUS
+   work-item widget on the target tier). Milestones (children filtered by title, close via
+   `state_event`), `create_issue`, and REAL group-level epics: the adapter resolves the
+   project's parent group and does create/list/link, degrading to `Unsupported` (writes) /
+   empty (reads) when there is no group or epics are disabled. This pass was live-validated
+   against gitlab.com (tracking + status round-trip, and the epic-degradation path) because
+   glab was authenticated; the epic SUCCESS path is built to GitLab's documented epic REST
+   shapes (unrunnable on the free sandbox) and runs for real against a Premium group. GitLab
+   IDs differ: issues use `iid`, milestone `id` in the path, labels are strings.
 
 Each is a separate PR merged (never squashed) before the next starts.
 
