@@ -1,0 +1,80 @@
+[
+    {
+        "id": 6340702,
+        "url": "https://codeberg.org/api/v1/repos/workslocally/tutti-tea-sandbox/issues/1",
+        "html_url": "https://codeberg.org/workslocally/tutti-tea-sandbox/issues/1",
+        "number": 1,
+        "user": {
+            "id": 838316,
+            "login": "workslocally",
+            "login_name": "",
+            "source_id": 0,
+            "full_name": "",
+            "email": "workslocally@proton.me",
+            "avatar_url": "https://codeberg.org/avatars/13a23f209a4f110573995cd8bdd422aed1b4f780dda1a36a95fd5885d559075f",
+            "html_url": "https://codeberg.org/workslocally",
+            "language": "en-US",
+            "is_admin": false,
+            "last_login": "2026-07-03T17:39:07+02:00",
+            "created": "2026-02-10T07:00:19+01:00",
+            "restricted": false,
+            "active": true,
+            "prohibit_login": false,
+            "location": "",
+            "pronouns": "",
+            "website": "",
+            "description": "",
+            "visibility": "public",
+            "followers_count": 0,
+            "following_count": 0,
+            "starred_repos_count": 0,
+            "username": "workslocally"
+        },
+        "original_author": "",
+        "original_author_id": 0,
+        "title": "first sandbox issue",
+        "body": "hello",
+        "ref": "",
+        "assets": [],
+        "labels": [
+            {
+                "id": 1993204,
+                "name": "status:in-progress",
+                "exclusive": false,
+                "is_archived": false,
+                "color": "ffff00",
+                "description": "",
+                "url": "https://codeberg.org/api/v1/repos/workslocally/tutti-tea-sandbox/labels/1993204"
+            }
+        ],
+        "milestone": {
+            "id": 135433,
+            "title": "Phase 1",
+            "description": "first milestone",
+            "state": "open",
+            "open_issues": 1,
+            "closed_issues": 0,
+            "created_at": "2026-07-17T09:14:34+02:00",
+            "updated_at": "2026-07-17T09:15:09+02:00",
+            "closed_at": null,
+            "due_on": null
+        },
+        "assignee": null,
+        "assignees": null,
+        "state": "open",
+        "is_locked": false,
+        "comments": 0,
+        "created_at": "2026-07-17T09:13:54+02:00",
+        "updated_at": "2026-07-17T09:14:35+02:00",
+        "closed_at": null,
+        "due_date": null,
+        "pull_request": null,
+        "repository": {
+            "id": 2284717,
+            "name": "tutti-tea-sandbox",
+            "owner": "workslocally",
+            "full_name": "workslocally/tutti-tea-sandbox"
+        },
+        "pin_order": 0
+    }
+]

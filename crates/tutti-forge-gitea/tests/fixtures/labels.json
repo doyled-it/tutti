@@ -1,0 +1,29 @@
+[
+    {
+        "id": 1993207,
+        "name": "status:done",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "0000ff",
+        "description": "",
+        "url": "https://codeberg.org/api/v1/repos/workslocally/tutti-tea-sandbox/labels/1993207"
+    },
+    {
+        "id": 1993204,
+        "name": "status:in-progress",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "ffff00",
+        "description": "",
+        "url": "https://codeberg.org/api/v1/repos/workslocally/tutti-tea-sandbox/labels/1993204"
+    },
+    {
+        "id": 1993201,
+        "name": "status:ready",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "00ff00",
+        "description": "",
+        "url": "https://codeberg.org/api/v1/repos/workslocally/tutti-tea-sandbox/labels/1993201"
+    }
+]
