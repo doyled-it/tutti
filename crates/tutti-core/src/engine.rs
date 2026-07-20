@@ -4,6 +4,7 @@
 
 use crate::config::Config;
 use crate::domain::Issue;
+use crate::events::{EngineEvent, EngineHooks};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
     AgentEvent, AgentOutcome, AgentStatus, AgentTask, PlanAction, PlanDecision, ReviewReport, Role,
@@ -82,7 +83,15 @@ impl<'a> Engine<'a> {
     }
 
     /// Run one issue end-to-end. Returns the iteration outcome. Never merges to trunk.
+    /// Back-compatible entry point: no hooks, so behavior is unchanged for existing
+    /// callers (the CLI, existing tests).
     pub async fn run_one(&self) -> Result<IterOutcome> {
+        self.run_one_hooked(&EngineHooks::default()).await
+    }
+
+    /// `run_one` with lifecycle emission. Identical control flow to `run_one`; only
+    /// adds hook calls at claim, ship, and release.
+    async fn run_one_hooked(&self, hooks: &EngineHooks) -> Result<IterOutcome> {
         // GUARDRAIL #1: selection skips needs-human etc. via SelectFilter.
         let Some(issue) = self.forge.next_ready_issue(&self.cfg.select).await? else {
             return Ok(IterOutcome::NoReadyWork);
@@ -91,9 +100,14 @@ impl<'a> Engine<'a> {
         // iteration, even though nothing observes it: release-on-error below is
         // what actually resolves the claim on failure.
         let _guard = self.forge.claim(issue.id).await?;
-        let result = self.run_claimed(&issue).await;
+        hooks.emit(EngineEvent::IssueClaimed {
+            id: issue.id.0,
+            title: issue.title.clone(),
+        });
+        let result = self.run_claimed(&issue, hooks).await;
         if result.is_err() {
             // Best-effort release so a transient failure does not strand the claim.
+            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
             let _ = self.forge.release(issue.id).await;
         }
         result
@@ -101,8 +115,8 @@ impl<'a> Engine<'a> {
 
     /// The claimed body of one iteration. Creates an isolated worktree per issue,
     /// runs the stages there, and removes the worktree on every terminal path.
-    /// Any unexpected `Err` propagates and `run_one` releases the claim.
-    async fn run_claimed(&self, issue: &Issue) -> Result<IterOutcome> {
+    /// Any unexpected `Err` propagates and `run_one_hooked` releases the claim.
+    async fn run_claimed(&self, issue: &Issue, hooks: &EngineHooks) -> Result<IterOutcome> {
         // Routing is pure in the issue, so decide the target branch up front and use it
         // to pick the worktree base.
         let plan = self.routing.target_branch(issue)?;
@@ -116,7 +130,7 @@ impl<'a> Engine<'a> {
         let handle = self.workspace.create(issue.id, &base).await?;
 
         // Run the stages, then always remove the workspace (Ok or Err).
-        let result = self.run_stages(issue, &handle, plan).await;
+        let result = self.run_stages(issue, &handle, plan, hooks).await;
         let _ = self.workspace.remove(&handle).await;
         result
     }
@@ -127,18 +141,21 @@ impl<'a> Engine<'a> {
         issue: &Issue,
         handle: &WorkspaceHandle,
         plan: crate::domain::BranchPlan,
+        hooks: &EngineHooks,
     ) -> Result<IterOutcome> {
         let wt = handle.path.as_path();
 
         // Stage: implement.
         let impl_out = self.run_role(Role::Implementer, issue, None, wt).await?;
         if impl_out.status != AgentStatus::ReadyToShip {
+            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
             self.forge.release(issue.id).await?;
             return Ok(IterOutcome::Blocked(
                 impl_out.blocked_reason.unwrap_or_default(),
             ));
         }
         let Some(mut handoff) = impl_out.handoff else {
+            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
             self.forge.release(issue.id).await?;
             return Ok(IterOutcome::Blocked(
                 "agent reported ReadyToShip but produced no handoff".into(),
@@ -158,12 +175,14 @@ impl<'a> Engine<'a> {
                 .run_role(Role::FixApplier, issue, Some(report), wt)
                 .await?;
             if fix_out.status != AgentStatus::ReadyToShip {
+                hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
                 self.forge.release(issue.id).await?;
                 return Ok(IterOutcome::Blocked(
                     fix_out.blocked_reason.unwrap_or_default(),
                 ));
             }
             let Some(fix_handoff) = fix_out.handoff else {
+                hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
                 self.forge.release(issue.id).await?;
                 return Ok(IterOutcome::Blocked(
                     "fix applier reported ReadyToShip but produced no handoff".into(),
@@ -179,6 +198,7 @@ impl<'a> Engine<'a> {
         // stage above reads the uncommitted tree, which is fine. If the agent produced
         // nothing to commit, there is no work to ship: release and stop clean.
         if !self.workspace.commit_all(handle, &handoff.pr_title).await? {
+            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
             self.forge.release(issue.id).await?;
             return Ok(IterOutcome::Blocked(
                 "agent produced no file changes to commit".into(),
@@ -198,6 +218,7 @@ impl<'a> Engine<'a> {
             // record() already flipped the label to done.
             ShipResult::Merged(_) => {
                 self.maybe_close_milestone(issue).await?;
+                hooks.emit(EngineEvent::IssueShipped { id: issue.id.0 });
                 Ok(IterOutcome::Shipped)
             }
             // Leave the issue in-progress and the PR open for a human.
@@ -235,10 +256,21 @@ impl<'a> Engine<'a> {
     /// Drain up to `max_issues_per_run` issues, then run the planning hook once and
     /// execute whatever it decided (subject to the whitelist). Returns the number of
     /// issues shipped and the planner's decision (if the planner ran at all).
+    /// Back-compatible entry point (no hooks).
     pub async fn drain(&self) -> Result<(u32, Option<PlanDecision>)> {
+        self.drain_with(&EngineHooks::default()).await
+    }
+
+    /// Drain with live event + cancel hooks. Emits `DrainStarted`/`DrainComplete` around
+    /// the loop and checks cancellation between issues (finish-then-stop).
+    pub async fn drain_with(&self, hooks: &EngineHooks) -> Result<(u32, Option<PlanDecision>)> {
+        hooks.emit(EngineEvent::DrainStarted);
         let mut shipped = 0;
         for _ in 0..self.cfg.max_issues_per_run {
-            match self.run_one().await? {
+            if hooks.cancelled() {
+                break;
+            }
+            match self.run_one_hooked(hooks).await? {
                 IterOutcome::Shipped => shipped += 1,
                 IterOutcome::NoReadyWork => break,
                 // Any stop condition halts the drain so a human can look.
@@ -252,6 +284,7 @@ impl<'a> Engine<'a> {
         } else {
             None
         };
+        hooks.emit(EngineEvent::DrainComplete { shipped });
         Ok((shipped, plan))
     }
 
@@ -1066,5 +1099,88 @@ mod tests {
         assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
         assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(removed.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn drain_emits_lifecycle_events() {
+        use crate::events::EngineEvent;
+        // Two ready issues, CI green so both ship.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1), ready(2)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review())
+            .script(Role::Implementer, ship_outcome(2))
+            .script(Role::Reviewer, clean_review())
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::Stop,
+                    rationale: "nothing left".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hooks = EngineHooks {
+            sink: Some(tx),
+            cancel: None,
+        };
+        let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
+        assert_eq!(shipped, 2);
+
+        let mut evs = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            evs.push(ev);
+        }
+        assert_eq!(evs.first(), Some(&EngineEvent::DrainStarted));
+        assert!(matches!(
+            evs.last(),
+            Some(EngineEvent::DrainComplete { shipped: 2 })
+        ));
+        assert_eq!(
+            evs.iter()
+                .filter(|e| matches!(e, EngineEvent::IssueShipped { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_after_current_issue() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1), ready(2)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review())
+            .script(Role::Implementer, ship_outcome(2))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        // Set before the loop starts: cancel is observed at the top of the first
+        // iteration, so nothing ships.
+        let cancel = Arc::new(AtomicBool::new(true));
+        let hooks = EngineHooks {
+            sink: None,
+            cancel: Some(cancel),
+        };
+        let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
+        assert_eq!(shipped, 0);
     }
 }
