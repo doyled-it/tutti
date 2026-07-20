@@ -61,6 +61,9 @@ export function applyEvent(
     case "issue_released":
       return { board: move(ev.id, "ready"), run: { ...r, current: undefined } };
     case "drain_complete":
-      return { board: b, run: { ...r, state: "idle", current: undefined } };
+      // A per-pass completion, not the end of the run: the continuous loop drains again
+      // until nothing is ready, so this must NOT flip the UI to idle (that would flicker
+      // between passes). The run's true end arrives via engine://run-ended.
+      return { board: b, run: r };
   }
 }

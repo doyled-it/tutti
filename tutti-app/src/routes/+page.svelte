@@ -65,6 +65,9 @@
   async function run() {
     try {
       await api.startRun();
+      // Optimistic + per-run reset: show running immediately and zero the shipped count
+      // for this run (the backend confirms via DrainStarted, and ends via run-ended).
+      runStatus.set({ state: "running", shipped: 0 });
     } catch (e) {
       loadError = String(e);
     }
@@ -79,7 +82,7 @@
   }
 
   onMount(() => {
-    const unlistenPromise = api.onProgress(async (ev) => {
+    const progressPromise = api.onProgress(async (ev) => {
       const { board: nb, run: nr } = applyEvent($board, $runStatus, ev);
       board.set(nb);
       runStatus.set(nr);
@@ -91,8 +94,19 @@
         }
       }
     });
+    // The run's true end (any exit path, including an engine error): leave the running
+    // state and reconcile the board one last time against forge truth.
+    const endedPromise = api.onRunEnded(async () => {
+      runStatus.update((r) => ({ ...r, state: "idle", current: undefined }));
+      try {
+        board.set(await api.getBoard($board?.selected_milestone ?? undefined));
+      } catch {
+        // No project loaded, or the read failed; the current board state stands.
+      }
+    });
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      progressPromise.then((unlisten) => unlisten());
+      endedPromise.then((unlisten) => unlisten());
     };
   });
 </script>

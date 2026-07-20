@@ -54,17 +54,24 @@ pub async fn start(app: tauri::AppHandle, state: &tauri::State<'_, AppState>) ->
         run_loop(config, repo, repo_root, run_cancel, tx).await;
 
         let st = app_run.state::<AppState>();
-        let mut run = st.run.lock().await;
-        run.state = RunState::Idle;
-        run.cancel = None;
+        {
+            let mut run = st.run.lock().await;
+            run.state = RunState::Idle;
+            run.cancel = None;
+        }
+        // A guaranteed terminal signal for the UI, emitted on every exit path (including
+        // an engine error, where `drain_with` returns before its own DrainComplete). The
+        // frontend drives run-state off this, not off the per-pass DrainComplete, so a
+        // failed run never leaves the UI stuck in "running".
+        let _ = app_run.emit("engine://run-ended", ());
     });
 
     Ok(())
 }
 
 /// Build the adapters and drain repeatedly until no work is ready or `cancel` fires.
-/// `drain_with` already emits `DrainStarted`/`DrainComplete` per pass, so no synthetic
-/// completion event is added here.
+/// `drain_with` emits `DrainStarted`/`DrainComplete` per pass (used by the UI to reconcile
+/// the board); the run's own start/end is signalled separately by the caller.
 async fn run_loop(
     config: Config,
     repo: String,

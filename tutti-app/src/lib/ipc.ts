@@ -64,4 +64,7 @@ export const api = {
   pauseRun: () => invoke<void>("pause_run"),
   onProgress: (cb: (ev: EngineEvent) => void) =>
     listen<EngineEvent>("engine://progress", (e) => cb(e.payload)),
+  // Fired once when a whole run ends (any exit path, including error), so the UI can
+  // leave the running state even when no terminal DrainComplete was emitted.
+  onRunEnded: (cb: () => void) => listen("engine://run-ended", () => cb()),
 };
