@@ -1,7 +1,10 @@
 # Tutti: design (desktop app, increment 1 - shell + board + live run)
 
 Date: 2026-07-20
-Status: approved design, pre-implementation
+Status: implemented. The `tutti-app` Tauri + Svelte app ships the shell, the tracking
+board, and a live continuous run (engine event/cancel hooks + `tutti-app-core` board
+assembly). Increments 2 to 4 (multi-project switching, forge browsing, repo/group creation)
+remain the rest of the desktop-app work.
 Builds on: the full backend on `main` (engine + three forge adapters + unified status + CLI forge selection).
 
 ## The desktop app, and where increment 1 sits
