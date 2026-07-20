@@ -4,7 +4,55 @@
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tauri + SvelteKit + Typescript App</title>
+    <title>Tutti</title>
+    <style>
+      :root {
+        --bg: #f6f6f7;
+        --bg-panel: #ffffff;
+        --border: rgba(15, 15, 15, 0.12);
+        --text: #17181c;
+        --text-dim: rgba(23, 24, 28, 0.6);
+        --text-faint: rgba(23, 24, 28, 0.38);
+        --accent: #3b82f6;
+        --accent-bg: rgba(59, 130, 246, 0.1);
+        --accent-border: rgba(59, 130, 246, 0.5);
+        --done: #22c55e;
+        --hover: rgba(15, 15, 15, 0.05);
+        --active: rgba(59, 130, 246, 0.15);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1c1d21;
+          --bg-panel: #232428;
+          --border: rgba(255, 255, 255, 0.12);
+          --text: #f2f2f3;
+          --text-dim: rgba(242, 242, 243, 0.62);
+          --text-faint: rgba(242, 242, 243, 0.4);
+          --accent: #5b9bf7;
+          --accent-bg: rgba(91, 155, 247, 0.14);
+          --accent-border: rgba(91, 155, 247, 0.55);
+          --done: #34d399;
+          --hover: rgba(255, 255, 255, 0.06);
+          --active: rgba(91, 155, 247, 0.18);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Avenir, Helvetica, Arial,
+          sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        background: var(--bg);
+      }
+      button,
+      input {
+        font-family: inherit;
+      }
+    </style>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

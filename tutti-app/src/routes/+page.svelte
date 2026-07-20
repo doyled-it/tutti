@@ -1,156 +1,171 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- App shell: Sidebar (left) + TopBar/Board-or-Lanes (center) + RoadmapRail (right), with
+     the IssueDrawer sliding in from the right over the rail. Live engine events fold into
+     the board/runStatus stores via applyEvent. -->
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import { api } from "$lib/ipc";
+  import type { IssueDetail } from "$lib/ipc";
+  import {
+    project,
+    board,
+    runStatus,
+    applyEvent,
+    selectedIssueId,
+    view,
+  } from "$lib/stores";
+  import Sidebar from "$lib/components/Sidebar.svelte";
+  import TopBar from "$lib/components/TopBar.svelte";
+  import RoadmapRail from "$lib/components/RoadmapRail.svelte";
+  import BoardView from "$lib/components/BoardView.svelte";
+  import LanesView from "$lib/components/LanesView.svelte";
+  import IssueDrawer from "$lib/components/IssueDrawer.svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let issueDetail = $state<IssueDetail | null>(null);
+  let issueLoading = $state(false);
+  let loadError = $state<string | null>(null);
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  async function openProject(dir: string, repo: string) {
+    loadError = null;
+    try {
+      const summary = await api.loadProject(dir, repo);
+      project.set(summary);
+      board.set(await api.getBoard());
+    } catch (e) {
+      loadError = String(e);
+    }
   }
+
+  async function selectMilestone(id: number) {
+    try {
+      board.set(await api.getBoard(id));
+    } catch (e) {
+      loadError = String(e);
+    }
+  }
+
+  async function selectIssue(id: number) {
+    selectedIssueId.set(id);
+    issueLoading = true;
+    issueDetail = null;
+    try {
+      issueDetail = await api.getIssue(id);
+    } catch (e) {
+      loadError = String(e);
+    } finally {
+      issueLoading = false;
+    }
+  }
+
+  function closeDrawer() {
+    selectedIssueId.set(null);
+    issueDetail = null;
+  }
+
+  async function run() {
+    try {
+      await api.startRun();
+    } catch (e) {
+      loadError = String(e);
+    }
+  }
+
+  async function pause() {
+    try {
+      await api.pauseRun();
+    } catch (e) {
+      loadError = String(e);
+    }
+  }
+
+  onMount(() => {
+    const unlistenPromise = api.onProgress(async (ev) => {
+      const { board: nb, run: nr } = applyEvent($board, $runStatus, ev);
+      board.set(nb);
+      runStatus.set(nr);
+      if (ev.kind === "drain_complete") {
+        try {
+          board.set(await api.getBoard($board?.selected_milestone ?? undefined));
+        } catch {
+          // No project loaded, or the read failed; the live-event board state stands.
+        }
+      }
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div class="shell">
+  <Sidebar project={$project} onOpenProject={openProject} />
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+  <div class="center">
+    <TopBar
+      project={$project}
+      view={$view}
+      runStatus={$runStatus}
+      onViewChange={(v) => view.set(v)}
+      onRun={run}
+      onPause={pause}
+    />
+
+    {#if loadError}
+      <div class="error-banner">{loadError}</div>
+    {/if}
+
+    <div class="work">
+      {#if $board}
+        {#if $view === "board"}
+          <BoardView board={$board} onSelectIssue={selectIssue} />
+        {:else}
+          <LanesView board={$board} onSelectIssue={selectIssue} />
+        {/if}
+        <RoadmapRail
+          milestones={$board.milestones}
+          selected={$board.selected_milestone}
+          onSelect={selectMilestone}
+        />
+        <IssueDrawer issue={issueDetail} loading={issueLoading} onClose={closeDrawer} />
+      {:else}
+        <div class="no-project">Open a project from the sidebar to see its board.</div>
+      {/if}
+    </div>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+</div>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  .shell {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
   }
-
-  a:hover {
-    color: #24c8db;
+  .center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .work {
+    flex: 1;
+    display: flex;
+    position: relative;
+    min-height: 0;
   }
-  button:active {
-    background-color: #0f0f0f69;
+  .no-project {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
+    font-size: 13px;
   }
-}
-
+  .error-banner {
+    font-size: 11px;
+    padding: 6px 14px;
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+    border-bottom: 1px solid var(--border);
+  }
 </style>
