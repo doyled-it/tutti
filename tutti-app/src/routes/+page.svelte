@@ -141,12 +141,15 @@
         {:else}
           <LanesView board={$board} onSelectIssue={selectIssue} />
         {/if}
-        <RoadmapRail
-          milestones={$board.milestones}
-          selected={$board.selected_milestone}
-          onSelect={selectMilestone}
-        />
-        <IssueDrawer issue={issueDetail} loading={issueLoading} onClose={closeDrawer} />
+        {#if $selectedIssueId !== null}
+          <IssueDrawer issue={issueDetail} loading={issueLoading} onClose={closeDrawer} />
+        {:else}
+          <RoadmapRail
+            milestones={$board.milestones}
+            selected={$board.selected_milestone}
+            onSelect={selectMilestone}
+          />
+        {/if}
       {:else}
         <div class="no-project">Open a project from the sidebar to see its board.</div>
       {/if}

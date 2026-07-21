@@ -48,14 +48,17 @@
 <style>
   .board {
     flex: 1;
+    min-width: 0;
     display: flex;
+    align-items: flex-start;
     gap: 16px;
     padding: 16px;
+    /* Scroll left/right when the columns do not fit, and down for long lists. */
     overflow: auto;
   }
   .column {
-    flex: 1;
-    min-width: 180px;
+    /* Fixed-width columns so the board scrolls horizontally instead of squishing. */
+    flex: 0 0 280px;
     display: flex;
     flex-direction: column;
   }
