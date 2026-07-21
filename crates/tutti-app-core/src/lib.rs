@@ -139,6 +139,96 @@ pub fn repo_from_remote(url: &str) -> Option<String> {
     }
 }
 
+/// Guess the forge kind from a git remote URL's host. Returns "github" | "gitlab" |
+/// "gitea", or None for an unknown host (the user picks in that case).
+pub fn forge_kind_from_remote(url: &str) -> Option<String> {
+    let u = url.trim();
+    let host = if let Some(idx) = u.find("://") {
+        let rest = &u[idx + 3..];
+        let rest = rest.rsplit('@').next().unwrap_or(rest); // drop user@
+        rest.split(['/', ':']).next()?
+    } else if let Some(at) = u.find('@') {
+        u[at + 1..].split(':').next()?
+    } else {
+        u.split(':').next()?
+    };
+    let host = host.to_lowercase();
+    if host.contains("github.com") {
+        Some("github".into())
+    } else if host.contains("gitlab.com") {
+        Some("gitlab".into())
+    } else if host.contains("codeberg.org") {
+        Some("gitea".into())
+    } else {
+        None
+    }
+}
+
+/// Parameters for a generated tutti.toml.
+#[derive(Debug, Clone)]
+pub struct InitParams {
+    pub trunk: String,
+    pub routing: String,
+    pub integration_branch: String,
+    pub model: String,
+    pub max_issues_per_run: u32,
+    pub require_label: String,
+    pub skip_labels: Vec<String>,
+    pub gate_commands: Vec<String>,
+    pub forge_kind: String,
+    pub login: Option<String>,
+}
+
+impl Default for InitParams {
+    fn default() -> Self {
+        Self {
+            trunk: "main".into(),
+            routing: "trunk".into(),
+            integration_branch: "staging".into(),
+            model: "claude-sonnet-5".into(),
+            max_issues_per_run: 25,
+            require_label: "status:ready".into(),
+            skip_labels: vec!["status:needs-human".into()],
+            gate_commands: vec!["true".into()],
+            forge_kind: "github".into(),
+            login: None,
+        }
+    }
+}
+
+/// Render a valid tutti.toml. The output must parse and validate via Config::load.
+pub fn render_tutti_toml(p: &InitParams) -> String {
+    let toml_str = |xs: &[String]| {
+        xs.iter()
+            .map(|s| format!("{s:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = String::new();
+    out.push_str(&format!("trunk = {:?}\n", p.trunk));
+    out.push_str(&format!("routing = {:?}\n", p.routing));
+    out.push_str(&format!(
+        "integration_branch = {:?}\n",
+        p.integration_branch
+    ));
+    out.push_str(&format!("model = {:?}\n", p.model));
+    out.push_str(&format!("max_issues_per_run = {}\n", p.max_issues_per_run));
+    out.push_str("\n[select]\n");
+    out.push_str(&format!("require_label = {:?}\n", p.require_label));
+    out.push_str(&format!("skip_labels = [{}]\n", toml_str(&p.skip_labels)));
+    out.push_str("\n[gate]\n");
+    out.push_str(&format!("commands = [{}]\n", toml_str(&p.gate_commands)));
+    out.push_str("working_dir = \"\"\n");
+    out.push_str("\n[forge]\n");
+    out.push_str(&format!("kind = {:?}\n", p.forge_kind));
+    if let Some(login) = &p.login {
+        if !login.is_empty() {
+            out.push_str(&format!("login = {:?}\n", login));
+        }
+    }
+    out
+}
+
 /// A saved project: a local folder (its identity), the resolved repo slug, a display
 /// name, and the forge kind (for the sidebar's colored dot).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,5 +592,84 @@ mod tests {
         assert_eq!(parsed, store);
 
         assert_eq!(ProjectStore::from_json("garbage"), ProjectStore::default());
+    }
+
+    #[test]
+    fn forge_kind_from_remote_detects_github() {
+        assert_eq!(
+            forge_kind_from_remote("git@github.com:doyled-it/tutti.git"),
+            Some("github".to_string())
+        );
+        assert_eq!(
+            forge_kind_from_remote("https://github.com/doyled-it/tutti.git"),
+            Some("github".to_string())
+        );
+    }
+
+    #[test]
+    fn forge_kind_from_remote_detects_gitlab() {
+        assert_eq!(
+            forge_kind_from_remote("git@gitlab.com:group/project.git"),
+            Some("gitlab".to_string())
+        );
+        assert_eq!(
+            forge_kind_from_remote("https://gitlab.com/group/project.git"),
+            Some("gitlab".to_string())
+        );
+    }
+
+    #[test]
+    fn forge_kind_from_remote_detects_codeberg_as_gitea() {
+        assert_eq!(
+            forge_kind_from_remote("git@codeberg.org:owner/repo.git"),
+            Some("gitea".to_string())
+        );
+        assert_eq!(
+            forge_kind_from_remote("https://codeberg.org/owner/repo.git"),
+            Some("gitea".to_string())
+        );
+    }
+
+    #[test]
+    fn forge_kind_from_remote_returns_none_for_unknown_host() {
+        assert_eq!(
+            forge_kind_from_remote("git@example.com:owner/repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn render_tutti_toml_round_trips_defaults_through_config_load() {
+        let params = InitParams::default();
+        let toml_text = render_tutti_toml(&params);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tutti.toml");
+        std::fs::write(&path, &toml_text).unwrap();
+
+        let cfg = tutti_core::config::Config::load(&path).unwrap();
+        assert_eq!(cfg.trunk, params.trunk);
+        assert_eq!(cfg.integration_branch, params.integration_branch);
+        assert_eq!(cfg.forge.kind, tutti_core::config::ForgeKind::GitHub);
+    }
+
+    #[test]
+    fn render_tutti_toml_round_trips_gitea_login_through_config_load() {
+        let params = InitParams {
+            forge_kind: "gitea".into(),
+            login: Some("icesight-engine".into()),
+            ..InitParams::default()
+        };
+        let toml_text = render_tutti_toml(&params);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tutti.toml");
+        std::fs::write(&path, &toml_text).unwrap();
+
+        let cfg = tutti_core::config::Config::load(&path).unwrap();
+        assert_eq!(cfg.trunk, params.trunk);
+        assert_eq!(cfg.integration_branch, params.integration_branch);
+        assert_eq!(cfg.forge.kind, tutti_core::config::ForgeKind::Gitea);
+        assert_eq!(cfg.forge.login.as_deref(), Some("icesight-engine"));
     }
 }
