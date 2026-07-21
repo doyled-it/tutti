@@ -1,7 +1,7 @@
 # Tutti: design (desktop app - initialize an existing local project)
 
 Date: 2026-07-21
-Status: approved design (scope confirmed), pre-implementation
+Status: implemented. Picking a local repo without a tutti.toml opens a guided form that generates one, seeds the status:* labels in the forge, and adds the project.
 Builds on: desktop app increment 2 (multi-project switching) on branch `app-multiproject`.
 
 ## What this is
