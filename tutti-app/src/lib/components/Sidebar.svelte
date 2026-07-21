@@ -4,7 +4,8 @@
      Switching is disabled while a run is active. Resizable via a drag handle on the right
      edge, with the width persisted to localStorage. -->
 <script lang="ts">
-  import type { ProjectEntry } from "$lib/ipc";
+  import { api } from "$lib/ipc";
+  import type { InitForm, ProjectEntry } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
 
   let {
@@ -13,6 +14,7 @@
     runActive,
     onSwitch,
     onAdd,
+    onInit,
     onRemove,
   }: {
     projects: ProjectEntry[];
@@ -20,6 +22,7 @@
     runActive: boolean;
     onSwitch: (dir: string) => void;
     onAdd: (dir: string, repo?: string) => Promise<void>;
+    onInit: (form: InitForm) => Promise<void>;
     onRemove: (dir: string) => void;
   } = $props();
 
@@ -49,30 +52,43 @@
 
   let adding = $state(false);
   let dir = $state("");
-  let repo = $state("");
-  // Only shown once auto-detect fails; the message explains why (no origin remote, or
-  // an unparseable one), so the user knows why they need to type owner/repo.
-  let showManual = $state(false);
+  // Only shown once a folder is picked and probed and has no tutti.toml; the form lets
+  // the user fill in the details init_project needs to write one.
+  let showInit = $state(false);
   let addError = $state<string | null>(null);
+  let initSubmitting = $state(false);
+
+  let initRepo = $state("");
+  let initForgeKind = $state("github");
+  let initLogin = $state("");
+  let initIntegrationBranch = $state("staging");
+  let initModel = $state("claude-sonnet-5");
+  let initGateCommand = $state("true");
 
   function beginAdd() {
     if (runActive) return;
     adding = true;
-    showManual = false;
+    showInit = false;
     addError = null;
   }
 
   function cancelAdd() {
     adding = false;
     dir = "";
-    repo = "";
-    showManual = false;
+    showInit = false;
     addError = null;
+    initSubmitting = false;
+    initRepo = "";
+    initForgeKind = "github";
+    initLogin = "";
+    initIntegrationBranch = "staging";
+    initModel = "claude-sonnet-5";
+    initGateCommand = "true";
   }
 
-  // The common case: pick a folder and try loading with no manual repo. If the folder's
-  // git origin resolves to owner/repo, the project loads immediately with no typing. If
-  // there is no remote (or it can't be parsed), fall back to the manual owner/repo field.
+  // Pick a folder, then probe it. A folder with a tutti.toml loads immediately via the
+  // existing add path. One without shows the guided Initialize form instead of erroring,
+  // pre-filled from whatever the probe could detect (git remote, forge kind).
   async function pickDir() {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ directory: true });
@@ -80,23 +96,40 @@
     dir = picked;
     addError = null;
     try {
-      await onAdd(dir);
-      cancelAdd();
+      const probe = await api.probeProject(dir);
+      if (probe.has_config) {
+        await onAdd(dir, probe.repo ?? undefined);
+        cancelAdd();
+      } else {
+        initRepo = probe.repo ?? "";
+        initForgeKind = probe.forge_kind ?? "github";
+        showInit = true;
+      }
     } catch (e) {
       addError = String(e);
-      showManual = true;
     }
   }
 
-  async function submitManual(e: Event) {
+  async function submitInit(e: Event) {
     e.preventDefault();
-    if (!dir || !repo) return;
+    if (!dir || !initRepo || runActive) return;
     addError = null;
+    initSubmitting = true;
     try {
-      await onAdd(dir, repo);
+      await onInit({
+        dir,
+        repo: initRepo,
+        forge_kind: initForgeKind,
+        login: initForgeKind === "gitea" ? initLogin || null : null,
+        integration_branch: initIntegrationBranch,
+        model: initModel,
+        gate_command: initGateCommand,
+      });
       cancelAdd();
     } catch (e) {
       addError = String(e);
+    } finally {
+      initSubmitting = false;
     }
   }
 
@@ -157,20 +190,41 @@
 
       {#if adding}
         <div class="add-form">
-          {#if !showManual}
+          {#if !showInit}
             <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
+            {#if addError}
+              <div class="add-error">{addError}</div>
+            {/if}
             <div class="add-actions">
               <button type="button" onclick={cancelAdd}>Cancel</button>
             </div>
           {:else}
-            <form class="manual-form" onsubmit={submitManual}>
+            <form class="init-form" onsubmit={submitInit}>
               <div class="picked-dir">{dir}</div>
+              <div class="init-hint">No tutti.toml here. Initialize one:</div>
               {#if addError}
                 <div class="add-error">{addError}</div>
               {/if}
-              <input class="repo-input" placeholder="owner/repo" bind:value={repo} />
+              <input class="repo-input" placeholder="owner/repo" bind:value={initRepo} />
+              <select class="forge-select" bind:value={initForgeKind}>
+                <option value="github">github</option>
+                <option value="gitea">gitea</option>
+                <option value="gitlab">gitlab</option>
+              </select>
+              {#if initForgeKind === "gitea"}
+                <input class="repo-input" placeholder="login" bind:value={initLogin} />
+              {/if}
+              <input
+                class="repo-input"
+                placeholder="integration branch"
+                bind:value={initIntegrationBranch}
+              />
+              <input class="repo-input" placeholder="model" bind:value={initModel} />
+              <input class="repo-input" placeholder="gate command" bind:value={initGateCommand} />
               <div class="add-actions">
-                <button type="submit" class="primary">Load</button>
+                <button type="submit" class="primary" disabled={runActive || initSubmitting}
+                  >Create</button
+                >
                 <button type="button" onclick={cancelAdd}>Cancel</button>
               </div>
             </form>
@@ -325,13 +379,19 @@
     border-radius: 6px;
     margin-top: 2px;
   }
-  .manual-form {
+  .init-form {
     display: flex;
     flex-direction: column;
     gap: 5px;
   }
+  .init-hint {
+    font-size: 10px;
+    color: var(--text-faint);
+    line-height: 1.4;
+  }
   .pick,
-  .repo-input {
+  .repo-input,
+  .forge-select {
     font-size: 11px;
     padding: 5px 6px;
     border-radius: 5px;

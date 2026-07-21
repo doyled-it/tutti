@@ -57,6 +57,22 @@ export interface ProjectList {
   active: string | null;
 }
 
+export interface Probe {
+  has_config: boolean;
+  repo: string | null;
+  forge_kind: string | null;
+}
+
+export interface InitForm {
+  dir: string;
+  repo: string;
+  forge_kind: string;
+  login: string | null;
+  integration_branch: string;
+  model: string;
+  gate_command: string;
+}
+
 // Discriminated union mirroring EngineEvent (serde tag = "kind", snake_case).
 export type EngineEvent =
   | { kind: "drain_started" }
@@ -70,6 +86,8 @@ export const api = {
   addProject: (dir: string, repo?: string) =>
     invoke<ProjectEntry>("add_project", { dir, repo: repo ?? null }),
   switchProject: (dir: string) => invoke<void>("switch_project", { dir }),
+  probeProject: (dir: string) => invoke<Probe>("probe_project", { dir }),
+  initProject: (form: InitForm) => invoke<ProjectEntry>("init_project", { form }),
   removeProject: (dir: string) => invoke<void>("remove_project", { dir }),
   getBoard: (milestone?: number) =>
     invoke<Board>("get_board", { milestone: milestone ?? null }),

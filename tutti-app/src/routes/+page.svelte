@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { api } from "$lib/ipc";
-  import type { IssueDetail } from "$lib/ipc";
+  import type { InitForm, IssueDetail } from "$lib/ipc";
   import {
     projects,
     activeDir,
@@ -65,6 +65,25 @@
       activeDir.set(entry.dir);
       // The board is now a different project; close any open issue drawer so it does not
       // show the previous project's issue over the new board.
+      selectedIssueId.set(null);
+      issueDetail = null;
+      board.set(await api.getBoard());
+    } catch (e) {
+      loadError = String(e);
+      throw e;
+    }
+  }
+
+  // Called by the sidebar's Initialize form when the picked folder has no tutti.toml.
+  // Writes the config on the backend, then activates and loads the new project the same
+  // way onAdd does for an existing one.
+  async function onInit(form: InitForm) {
+    loadError = null;
+    try {
+      const entry = await api.initProject(form);
+      const list = await api.listProjects();
+      projects.set(list.projects);
+      activeDir.set(entry.dir);
       selectedIssueId.set(null);
       issueDetail = null;
       board.set(await api.getBoard());
@@ -195,6 +214,7 @@
     runActive={$runStatus.state !== "idle"}
     onSwitch={onSwitch}
     onAdd={onAdd}
+    onInit={onInit}
     onRemove={onRemove}
   />
 
