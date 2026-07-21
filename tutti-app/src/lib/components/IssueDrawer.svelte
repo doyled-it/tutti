@@ -3,6 +3,10 @@
      the roadmap rail's place while an issue is selected. Closing clears the selection. -->
 <script lang="ts">
   import type { IssueDetail } from "$lib/ipc";
+  import { marked } from "marked";
+  import DOMPurify from "dompurify";
+  import { browser } from "$app/environment";
+  import { openUrl } from "@tauri-apps/plugin-opener";
 
   let {
     issue,
@@ -54,6 +58,30 @@
     if (s > 0 && s + 1 < name.length) return { scope: name.slice(0, s), value: name.slice(s + 1) };
     return null;
   }
+
+  // Render the issue body as markdown, sanitized before it ever touches {@html}. DOMPurify
+  // needs a DOM, which does not exist during SvelteKit's static build/prerender, so skip
+  // sanitizing (and rendering) outside the browser rather than risk unsanitized output.
+  function renderMarkdown(md: string): string {
+    if (!md) return "";
+    const raw = marked.parse(md, { async: false, gfm: true, breaks: true }) as string;
+    return browser ? DOMPurify.sanitize(raw) : "";
+  }
+
+  // Links inside rendered markdown must open in the user's external browser, not navigate
+  // the Tauri webview away from the app.
+  function externalLinks(node: HTMLElement) {
+    const handler = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement)?.closest("a");
+      const href = a?.getAttribute("href");
+      if (a && href) {
+        e.preventDefault();
+        void openUrl(href);
+      }
+    };
+    node.addEventListener("click", handler);
+    return { destroy: () => node.removeEventListener("click", handler) };
+  }
 </script>
 
 <aside class="drawer">
@@ -97,7 +125,11 @@
       <div class="kv"><b>Branch</b>{issue.branch}</div>
 
       <div class="col-h">Description</div>
-      <div class="body-text">{issue.body || "No description."}</div>
+      {#if issue.body}
+        <div class="body-md" use:externalLinks>{@html renderMarkdown(issue.body)}</div>
+      {:else}
+        <div class="body-text">No description.</div>
+      {/if}
     </div>
   {/if}
 </aside>
@@ -226,5 +258,83 @@
     line-height: 1.6;
     color: var(--text);
     white-space: pre-wrap;
+  }
+  .body-md {
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .body-md :global(h1),
+  .body-md :global(h2),
+  .body-md :global(h3),
+  .body-md :global(h4) {
+    font-weight: 600;
+    margin: 12px 0 6px;
+    line-height: 1.35;
+  }
+  .body-md :global(h1) {
+    font-size: 15px;
+  }
+  .body-md :global(h2) {
+    font-size: 14px;
+  }
+  .body-md :global(h3) {
+    font-size: 12.5px;
+  }
+  .body-md :global(h4) {
+    font-size: 11.5px;
+  }
+  .body-md :global(p) {
+    margin: 6px 0;
+  }
+  .body-md :global(ul),
+  .body-md :global(ol) {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+  .body-md :global(li) {
+    margin: 2px 0;
+  }
+  .body-md :global(code) {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    background: var(--hover);
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  .body-md :global(pre) {
+    background: var(--hover);
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .body-md :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+  .body-md :global(blockquote) {
+    margin: 8px 0;
+    padding-left: 10px;
+    border-left: 3px solid var(--border);
+    color: var(--text-dim);
+  }
+  .body-md :global(a) {
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .body-md :global(img) {
+    max-width: 100%;
+    border-radius: 4px;
+  }
+  .body-md :global(table) {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 10.5px;
+  }
+  .body-md :global(th),
+  .body-md :global(td) {
+    border: 1px solid var(--border);
+    padding: 3px 8px;
   }
 </style>
