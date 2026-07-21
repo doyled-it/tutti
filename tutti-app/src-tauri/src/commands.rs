@@ -118,6 +118,11 @@ pub async fn add_project(
     repo: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<ProjectEntry, String> {
+    // Adding a project makes it active, which is a switch: block it during a run so the
+    // active project cannot change out from under the running engine.
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before adding a project".into());
+    }
     let entry = activate(&dir, repo, &state).await?;
     let mut store = load_store(&app)?;
     store.upsert(entry.clone());
@@ -147,6 +152,10 @@ pub async fn remove_project(
     dir: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    // Never drop a project (possibly the active one) while a run is in flight.
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before removing a project".into());
+    }
     let mut store = load_store(&app)?;
     let was_active = store.active.as_deref() == Some(dir.as_str());
     store.remove(&dir);

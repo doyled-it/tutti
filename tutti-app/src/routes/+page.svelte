@@ -63,6 +63,10 @@
       const list = await api.listProjects();
       projects.set(list.projects);
       activeDir.set(entry.dir);
+      // The board is now a different project; close any open issue drawer so it does not
+      // show the previous project's issue over the new board.
+      selectedIssueId.set(null);
+      issueDetail = null;
       board.set(await api.getBoard());
     } catch (e) {
       loadError = String(e);
@@ -79,6 +83,8 @@
       if (dir === get(activeDir)) {
         board.set(null);
         activeDir.set(null);
+        selectedIssueId.set(null);
+        issueDetail = null;
       }
     } catch (e) {
       loadError = String(e);

@@ -56,6 +56,7 @@
   let addError = $state<string | null>(null);
 
   function beginAdd() {
+    if (runActive) return;
     adding = true;
     showManual = false;
     addError = null;
@@ -176,7 +177,12 @@
           {/if}
         </div>
       {:else}
-        <button class="add" onclick={beginAdd}>+ Add project</button>
+        <button
+          class="add"
+          onclick={beginAdd}
+          disabled={runActive}
+          title={runActive ? "pause the run to add a project" : undefined}>+ Add project</button
+        >
       {/if}
     </div>
 
