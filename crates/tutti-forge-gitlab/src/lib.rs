@@ -87,6 +87,13 @@ impl Forge for GitLabForge {
         Ok(parse::first_ready_issue(&json, filter))
     }
 
+    async fn list_issues(&self) -> Result<Vec<Issue>> {
+        let json = self
+            .api("GET", &self.endpoint("issues?state=all&per_page=100"), &[])
+            .await?;
+        Ok(parse::parse_issue_list(&json))
+    }
+
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         self.set_status(issue, Status::InProgress).await?;
         Ok(ClaimGuard::new(issue))
