@@ -141,6 +141,14 @@ impl Forge for GitHubForge {
         Ok(parse::parse_labels(&json))
     }
 
+    async fn create_label(&self, name: &str, color: &str) -> Result<()> {
+        self.gh(&[
+            "label", "create", name, "--repo", &self.repo, "--color", color,
+        ])
+        .await?;
+        Ok(())
+    }
+
     // Note: `gh issue edit --add-label/--remove-label` is idempotent and does not error
     // if the issue is already in-progress, so this is NOT the atomic race-guard the design
     // describes; the single-runner `PidLock` provides that guarantee.

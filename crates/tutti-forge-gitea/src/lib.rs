@@ -160,6 +160,13 @@ impl Forge for GiteaForge {
         Ok(parse::parse_labels(&json))
     }
 
+    async fn create_label(&self, name: &str, color: &str) -> Result<()> {
+        let body = serde_json::json!({"name": name, "color": format!("#{color}")});
+        self.api("POST", &self.endpoint("labels"), Some(&body.to_string()))
+            .await?;
+        Ok(())
+    }
+
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         self.set_status(issue, Status::InProgress).await?;
         Ok(ClaimGuard::new(issue))
