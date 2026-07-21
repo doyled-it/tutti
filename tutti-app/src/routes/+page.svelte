@@ -36,9 +36,9 @@
     }
   }
 
-  async function selectMilestone(id: number) {
+  async function selectMilestone(id: number | null) {
     try {
-      board.set(await api.getBoard(id));
+      board.set(await api.getBoard(id ?? undefined));
     } catch (e) {
       loadError = String(e);
     }

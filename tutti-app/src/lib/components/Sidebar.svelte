@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Left rail: the loaded project (increment 1 supports one at a time), an "open project"
-     affordance, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders). -->
+     affordance, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders).
+     Resizable via a drag handle on the right edge, with the width persisted to localStorage. -->
 <script lang="ts">
   import type { ProjectSummary } from "$lib/ipc";
+  import Resizer from "./Resizer.svelte";
 
   let {
     project,
@@ -11,6 +13,30 @@
     project: ProjectSummary | null;
     onOpenProject: (dir: string, repo: string) => void;
   } = $props();
+
+  const WIDTH_KEY = "tutti.sidebarWidth";
+  const MIN_WIDTH = 140;
+  const MAX_WIDTH = 360;
+  const DEFAULT_WIDTH = 160;
+
+  let width = $state(DEFAULT_WIDTH);
+
+  function clamp(w: number): number {
+    return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, w));
+  }
+
+  $effect(() => {
+    const stored = localStorage.getItem(WIDTH_KEY);
+    if (stored) {
+      const parsed = Number(stored);
+      if (Number.isFinite(parsed)) width = clamp(parsed);
+    }
+  });
+
+  function onResize(deltaX: number) {
+    width = clamp(width + deltaX);
+    localStorage.setItem(WIDTH_KEY, String(width));
+  }
 
   let adding = $state(false);
   let dir = $state("");
@@ -46,46 +72,53 @@
   }
 </script>
 
-<aside class="sidebar">
-  <div class="section-label">Projects</div>
-  <div class="projects">
-    {#if project}
-      <div class="project on">
-        <span class={dotClass(project.forge)}></span>
-        <span class="name">{project.name}</span>
-      </div>
-    {:else}
-      <div class="empty">No project loaded</div>
-    {/if}
-
-    {#if adding}
-      <form class="add-form" onsubmit={submitAdd}>
-        <button type="button" class="pick" onclick={pickDir}>
-          {dir ? dir : "Choose folder..."}
-        </button>
-        <input class="repo-input" placeholder="owner/repo" bind:value={repo} />
-        <div class="add-actions">
-          <button type="submit" class="primary">Load</button>
-          <button type="button" onclick={cancelAdd}>Cancel</button>
+<div class="sidebar-wrap">
+  <aside class="sidebar" style={`width:${width}px`}>
+    <div class="section-label">Projects</div>
+    <div class="projects">
+      {#if project}
+        <div class="project on">
+          <span class={dotClass(project.forge)}></span>
+          <span class="name">{project.name}</span>
         </div>
-      </form>
-    {:else}
-      <button class="add" onclick={beginAdd}>+ Add project</button>
-    {/if}
-  </div>
+      {:else}
+        <div class="empty">No project loaded</div>
+      {/if}
 
-  <nav class="nav">
-    <div class="nav-item on">Board</div>
-    <div class="nav-item soon">Orchestrator (soon)</div>
-    <div class="nav-item soon">Subsessions (soon)</div>
-  </nav>
-</aside>
+      {#if adding}
+        <form class="add-form" onsubmit={submitAdd}>
+          <button type="button" class="pick" onclick={pickDir}>
+            {dir ? dir : "Choose folder..."}
+          </button>
+          <input class="repo-input" placeholder="owner/repo" bind:value={repo} />
+          <div class="add-actions">
+            <button type="submit" class="primary">Load</button>
+            <button type="button" onclick={cancelAdd}>Cancel</button>
+          </div>
+        </form>
+      {:else}
+        <button class="add" onclick={beginAdd}>+ Add project</button>
+      {/if}
+    </div>
+
+    <nav class="nav">
+      <div class="nav-item on">Board</div>
+      <div class="nav-item soon">Orchestrator (soon)</div>
+      <div class="nav-item soon">Subsessions (soon)</div>
+    </nav>
+  </aside>
+  <Resizer onResize={onResize} ariaLabel="Resize sidebar" />
+</div>
 
 <style>
-  .sidebar {
-    width: 160px;
+  .sidebar-wrap {
     flex: none;
+    display: flex;
     border-right: 1px solid var(--border);
+    height: 100%;
+  }
+  .sidebar {
+    flex: none;
     background: var(--bg-panel);
     padding: 12px 10px;
     display: flex;
