@@ -210,6 +210,114 @@ pub async fn pause_run(state: tauri::State<'_, AppState>) -> Result<(), String> 
     Ok(())
 }
 
+/// The result of probing a folder for an existing tutti.toml and a git remote, used to
+/// pre-fill the Initialize Project form on the frontend.
+#[derive(serde::Serialize)]
+pub struct Probe {
+    pub has_config: bool,
+    pub repo: Option<String>,
+    pub forge_kind: Option<String>,
+}
+
+#[tauri::command]
+pub async fn probe_project(dir: String) -> Result<Probe, String> {
+    let root = std::path::PathBuf::from(&dir);
+    let has_config = root.join("tutti.toml").is_file();
+    // Read the remote once for both repo and forge-kind detection.
+    let remote = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let repo = remote.as_deref().and_then(tutti_app_core::repo_from_remote);
+    let forge_kind = remote
+        .as_deref()
+        .and_then(tutti_app_core::forge_kind_from_remote);
+    Ok(Probe {
+        has_config,
+        repo,
+        forge_kind,
+    })
+}
+
+/// Form payload for `init_project`: the folder to initialize plus the settings the
+/// user picked (or accepted as defaults) to seed the new `tutti.toml`.
+#[derive(serde::Deserialize)]
+pub struct InitForm {
+    pub dir: String,
+    pub repo: String,
+    pub forge_kind: String,
+    pub login: Option<String>,
+    pub integration_branch: String,
+    pub model: String,
+    pub gate_command: String,
+}
+
+#[tauri::command]
+pub async fn init_project(
+    app: tauri::AppHandle,
+    form: InitForm,
+    state: tauri::State<'_, AppState>,
+) -> Result<ProjectEntry, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before initializing a project".into());
+    }
+    let root = PathBuf::from(&form.dir);
+    // 1. Write tutti.toml.
+    let params = tutti_app_core::InitParams {
+        model: form.model.clone(),
+        integration_branch: form.integration_branch.clone(),
+        gate_commands: vec![form.gate_command.clone()],
+        forge_kind: form.forge_kind.clone(),
+        login: form.login.clone(),
+        ..Default::default()
+    };
+    std::fs::write(
+        root.join("tutti.toml"),
+        tutti_app_core::render_tutti_toml(&params),
+    )
+    .map_err(|e| format!("write tutti.toml: {e}"))?;
+    // 2. Activate (loads the new config, builds the forge, sets state.project).
+    let entry = activate(&form.dir, Some(form.repo.clone()), &state).await?;
+    // 3. Seed the status labels that do not exist yet (best effort per label).
+    seed_status_labels(&state).await;
+    // 4. Persist.
+    let mut store = load_store(&app)?;
+    store.upsert(entry.clone());
+    save_store(&app, &store)?;
+    Ok(entry)
+}
+
+/// Diff the four status labels the engine relies on against what the forge already has,
+/// and create whichever are missing with sensible default colors. Best effort: a single
+/// label's create failure (permissions, rate limit, ...) must not abort project init.
+async fn seed_status_labels(state: &tauri::State<'_, AppState>) {
+    let wanted = [
+        ("status:ready", "0e8a16"),
+        ("status:in-progress", "fbca04"),
+        ("status:done", "1d76db"),
+        ("status:needs-human", "b60205"),
+    ];
+    let guard = state.project.lock().await;
+    let Some(p) = guard.as_ref() else { return };
+    let existing: std::collections::HashSet<String> = p
+        .forge
+        .list_labels()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    for (name, color) in wanted {
+        if !existing.contains(name) {
+            let _ = p.forge.create_label(name, color).await;
+        }
+    }
+}
+
 /// Build the concrete forge adapter for `cfg.forge.kind`. A faithful copy of
 /// `crates/tutti-cli/src/wire.rs`'s `build()` match, adapted to return just the forge
 /// (the CLI's `LiveAdapters` also bundles a backend and workspace the app builds
