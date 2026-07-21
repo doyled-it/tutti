@@ -1,7 +1,7 @@
 # Tutti: design (desktop app, increment 2 - multi-project switching)
 
 Date: 2026-07-21
-Status: approved design, pre-implementation
+Status: implemented. The sidebar holds a persisted project list (add by folder, switch, remove); the list and last-active board restore across launches; add/switch/remove are blocked while a run is active.
 Builds on: desktop app increment 1 (shell + board + live run), on `main` (#13).
 
 ## What this increment is
