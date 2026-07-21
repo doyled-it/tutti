@@ -197,33 +197,59 @@ impl Default for InitParams {
 }
 
 /// Render a valid tutti.toml. The output must parse and validate via Config::load.
+/// Quote a value as a valid TOML basic string. Unlike `{:?}` (Rust Debug), which emits
+/// `\u{XX}`-with-braces for non-ASCII and is rejected by TOML, this keeps printable UTF-8
+/// verbatim and escapes only what TOML requires (quote, backslash, control chars).
+fn toml_basic_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                out.push_str(&format!("\\u{:04X}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 pub fn render_tutti_toml(p: &InitParams) -> String {
-    let toml_str = |xs: &[String]| {
+    let list = |xs: &[String]| {
         xs.iter()
-            .map(|s| format!("{s:?}"))
+            .map(|s| toml_basic_string(s))
             .collect::<Vec<_>>()
             .join(", ")
     };
     let mut out = String::new();
-    out.push_str(&format!("trunk = {:?}\n", p.trunk));
-    out.push_str(&format!("routing = {:?}\n", p.routing));
+    out.push_str(&format!("trunk = {}\n", toml_basic_string(&p.trunk)));
+    out.push_str(&format!("routing = {}\n", toml_basic_string(&p.routing)));
     out.push_str(&format!(
-        "integration_branch = {:?}\n",
-        p.integration_branch
+        "integration_branch = {}\n",
+        toml_basic_string(&p.integration_branch)
     ));
-    out.push_str(&format!("model = {:?}\n", p.model));
+    out.push_str(&format!("model = {}\n", toml_basic_string(&p.model)));
     out.push_str(&format!("max_issues_per_run = {}\n", p.max_issues_per_run));
     out.push_str("\n[select]\n");
-    out.push_str(&format!("require_label = {:?}\n", p.require_label));
-    out.push_str(&format!("skip_labels = [{}]\n", toml_str(&p.skip_labels)));
+    out.push_str(&format!(
+        "require_label = {}\n",
+        toml_basic_string(&p.require_label)
+    ));
+    out.push_str(&format!("skip_labels = [{}]\n", list(&p.skip_labels)));
     out.push_str("\n[gate]\n");
-    out.push_str(&format!("commands = [{}]\n", toml_str(&p.gate_commands)));
+    out.push_str(&format!("commands = [{}]\n", list(&p.gate_commands)));
     out.push_str("working_dir = \"\"\n");
     out.push_str("\n[forge]\n");
-    out.push_str(&format!("kind = {:?}\n", p.forge_kind));
+    out.push_str(&format!("kind = {}\n", toml_basic_string(&p.forge_kind)));
     if let Some(login) = &p.login {
         if !login.is_empty() {
-            out.push_str(&format!("login = {:?}\n", login));
+            out.push_str(&format!("login = {}\n", toml_basic_string(login)));
         }
     }
     out
@@ -671,5 +697,25 @@ mod tests {
         assert_eq!(cfg.integration_branch, params.integration_branch);
         assert_eq!(cfg.forge.kind, tutti_core::config::ForgeKind::Gitea);
         assert_eq!(cfg.forge.login.as_deref(), Some("icesight-engine"));
+    }
+
+    #[test]
+    fn render_tutti_toml_escapes_special_characters() {
+        // A value with a quote, a backslash, and a non-ASCII char must still produce a
+        // tutti.toml that Config::load accepts, with the value preserved verbatim.
+        let params = InitParams {
+            gate_commands: vec![r#"echo "café" \ done"#.into()],
+            model: "modèle-5".into(),
+            ..InitParams::default()
+        };
+        let toml_text = render_tutti_toml(&params);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tutti.toml");
+        std::fs::write(&path, &toml_text).unwrap();
+
+        let cfg = tutti_core::config::Config::load(&path).unwrap();
+        assert_eq!(cfg.model, "modèle-5");
+        assert_eq!(cfg.gate.commands, vec![r#"echo "café" \ done"#.to_string()]);
     }
 }

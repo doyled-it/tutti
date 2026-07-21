@@ -275,13 +275,20 @@ pub async fn init_project(
         login: form.login.clone(),
         ..Default::default()
     };
-    std::fs::write(
-        root.join("tutti.toml"),
-        tutti_app_core::render_tutti_toml(&params),
-    )
-    .map_err(|e| format!("write tutti.toml: {e}"))?;
-    // 2. Activate (loads the new config, builds the forge, sets state.project).
-    let entry = activate(&form.dir, Some(form.repo.clone()), &state).await?;
+    let toml_path = root.join("tutti.toml");
+    std::fs::write(&toml_path, tutti_app_core::render_tutti_toml(&params))
+        .map_err(|e| format!("write tutti.toml: {e}"))?;
+    // 2. Activate (loads the new config, builds the forge, sets state.project). On
+    // failure (e.g. gitea without a login, or a bad repo), delete the tutti.toml we just
+    // wrote so a later folder pick still shows the Initialize form instead of routing to
+    // the existing-config path and hiding it behind an unusable file.
+    let entry = match activate(&form.dir, Some(form.repo.clone()), &state).await {
+        Ok(entry) => entry,
+        Err(e) => {
+            let _ = std::fs::remove_file(&toml_path);
+            return Err(e);
+        }
+    };
     // 3. Seed the status labels that do not exist yet (best effort per label).
     seed_status_labels(&state).await;
     // 4. Persist.
