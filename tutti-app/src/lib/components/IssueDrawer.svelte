@@ -40,6 +40,12 @@
     const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return l > 0.6 ? "#1a1a1a" : "#ffffff";
   }
+  // Lighten a color toward white so it stays readable as text on the dark value tint
+  // (a dark label color like deep purple is illegible on the panel otherwise).
+  function lighten([r, g, b]: [number, number, number], amt = 0.55): string {
+    const f = (c: number) => Math.round(c + (255 - c) * amt);
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  }
   function splitScoped(name: string): { scope: string; value: string } | null {
     if (!name) return null;
     const dd = name.indexOf("::");
@@ -76,7 +82,7 @@
                   <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}>{parts.scope}</span>
                   <span
                     class="value"
-                    style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.16);color:${hex};border-color:${hex}`}
+                    style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.18);color:${lighten(rgb)};border-color:${lighten(rgb)}`}
                   >{parts.value}</span>
                 </span>
               {:else}
