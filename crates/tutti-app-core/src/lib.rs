@@ -90,6 +90,35 @@ fn milestone_row(m: &Milestone) -> MilestoneRow {
     }
 }
 
+/// Parse `owner/repo` (or a group/subgroup/project path) from a git remote URL. Handles
+/// scp-style (`git@host:owner/repo.git`), https (`https://host/owner/repo.git`), and
+/// `ssh://` forms. Returns None if no path can be extracted.
+pub fn repo_from_remote(url: &str) -> Option<String> {
+    let u = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let after_host: &str = if let Some(idx) = u.find("://") {
+        // scheme://[user@]host/path
+        let rest = &u[idx + 3..];
+        let slash = rest.find('/')?;
+        &rest[slash + 1..]
+    } else if let Some(at) = u.find('@') {
+        // git@host:owner/repo
+        let after_at = &u[at + 1..];
+        let colon = after_at.find(':')?;
+        &after_at[colon + 1..]
+    } else if let Some(colon) = u.find(':') {
+        // host:owner/repo
+        &u[colon + 1..]
+    } else {
+        return None;
+    };
+    let path = after_host.trim_matches('/');
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
+}
+
 /// Assemble the board for `select` (default: all issues). Reads the milestone list for the
 /// rail, then buckets either the selected milestone's children or every issue by status label.
 pub async fn assemble_board(
@@ -269,5 +298,42 @@ mod tests {
         let forge = FakeForge::new(vec![], CiState::Pass);
         let err = issue_detail(&forge, &cfg(), 999).await.unwrap_err();
         assert!(matches!(err, EngineError::Forge(msg) if msg.contains("999")));
+    }
+
+    #[test]
+    fn repo_from_remote_parses_scp_style() {
+        assert_eq!(
+            repo_from_remote("git@github.com:doyled-it/tutti-live-sandbox.git"),
+            Some("doyled-it/tutti-live-sandbox".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_from_remote_parses_https() {
+        assert_eq!(
+            repo_from_remote("https://github.com/doyled-it/tutti-live-sandbox.git"),
+            Some("doyled-it/tutti-live-sandbox".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_from_remote_parses_https_without_dot_git() {
+        assert_eq!(
+            repo_from_remote("https://github.com/doyled-it/tutti-live-sandbox"),
+            Some("doyled-it/tutti-live-sandbox".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_from_remote_parses_gitlab_nested_path() {
+        assert_eq!(
+            repo_from_remote("git@gitlab.com:group/sub/project.git"),
+            Some("group/sub/project".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_from_remote_returns_none_for_garbage() {
+        assert_eq!(repo_from_remote("not a url"), None);
     }
 }
