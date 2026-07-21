@@ -90,8 +90,8 @@ fn milestone_row(m: &Milestone) -> MilestoneRow {
     }
 }
 
-/// Assemble the board for `select` (default: the earliest open milestone). Reads the
-/// milestone list and the selected milestone's children, bucketed by status label.
+/// Assemble the board for `select` (default: all issues). Reads the milestone list for the
+/// rail, then buckets either the selected milestone's children or every issue by status label.
 pub async fn assemble_board(
     forge: &dyn Forge,
     cfg: &Config,
@@ -101,57 +101,49 @@ pub async fn assemble_board(
     let milestones = forge.list_milestones().await?;
     let rows: Vec<MilestoneRow> = milestones.iter().map(milestone_row).collect();
 
-    // Pick the milestone: the caller's choice, else the first open one, else the first.
-    let selected = select.or_else(|| {
-        milestones
-            .iter()
-            .find(|m| m.state == TrackState::Open)
-            .or_else(|| milestones.first())
-            .map(|m| m.id)
-    });
+    let issues = match select {
+        Some(mid) => forge.milestone_children(mid).await?,
+        None => forge.list_issues().await?,
+    };
 
     let (mut ready, mut in_progress, mut done) = (Vec::new(), Vec::new(), Vec::new());
-    if let Some(mid) = selected {
-        for issue in forge.milestone_children(mid).await? {
-            let c = card(&issue, &labels);
-            match c.status {
-                Status::Ready => ready.push(c),
-                Status::InProgress => in_progress.push(c),
-                Status::Done => done.push(c),
-                Status::Other => ready.push(c), // untriaged shows under Ready
-            }
+    for issue in issues {
+        let c = card(&issue, &labels);
+        match c.status {
+            Status::Ready => ready.push(c),
+            Status::InProgress => in_progress.push(c),
+            Status::Done => done.push(c),
+            Status::Other => ready.push(c), // untriaged shows under Ready
         }
     }
 
     Ok(Board {
         milestones: rows,
-        selected_milestone: selected.map(|m| m.0),
+        selected_milestone: select.map(|m| m.0),
         ready,
         in_progress,
         done,
     })
 }
 
-/// Find `id` among all milestones' children and build its drawer detail. Increment 1 has no
-/// dedicated single-issue Forge read, so this scans every milestone's children.
+/// Find `id` among all issues and build its drawer detail.
 pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<IssueDetail> {
     let labels = cfg.status_labels();
-    for m in forge.list_milestones().await? {
-        for issue in forge.milestone_children(m.id).await? {
-            if issue.id.0 == id {
-                return Ok(IssueDetail {
-                    id,
-                    title: issue.title.clone(),
-                    body: issue.body.clone(),
-                    labels: issue.labels.clone(),
-                    milestone: issue.milestone.clone(),
-                    status: classify(&issue, &labels),
-                    branch: format!("feat/issue-{id}"),
-                });
-            }
-        }
-    }
-    Err(EngineError::Forge(format!("issue {id} not found")))
+    let issue = forge
+        .list_issues()
+        .await?
+        .into_iter()
+        .find(|i| i.id.0 == id)
+        .ok_or_else(|| EngineError::Forge(format!("issue {id} not found")))?;
+    Ok(IssueDetail {
+        id,
+        title: issue.title.clone(),
+        body: issue.body.clone(),
+        labels: issue.labels.clone(),
+        milestone: issue.milestone.clone(),
+        status: classify(&issue, &labels),
+        branch: format!("feat/issue-{id}"),
+    })
 }
 
 #[cfg(test)]
@@ -227,6 +219,23 @@ mod tests {
         assert_eq!(board.in_progress.len(), 1);
         assert_eq!(board.done.len(), 1);
         assert_eq!(board.selected_milestone, Some(m.id.0));
+    }
+
+    #[tokio::test]
+    async fn buckets_all_issues_when_no_milestone_selected() {
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let m1 = forge.create_milestone("Phase 1", None, "").await.unwrap();
+        let m2 = forge.create_milestone("Phase 2", None, "").await.unwrap();
+        seed_issue(&forge, m1.id, "status:ready").await;
+        seed_issue(&forge, m1.id, "status:in-progress").await;
+        seed_issue(&forge, m2.id, "status:done").await;
+
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.ready.len(), 1);
+        assert_eq!(board.in_progress.len(), 1);
+        assert_eq!(board.done.len(), 1);
+        assert_eq!(board.selected_milestone, None);
+        assert_eq!(board.milestones.len(), 2);
     }
 
     #[tokio::test]
