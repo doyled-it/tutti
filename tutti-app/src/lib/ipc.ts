@@ -45,10 +45,16 @@ export interface IssueDetail {
   branch: string;
 }
 
-export interface ProjectSummary {
+export interface ProjectEntry {
+  dir: string;
+  repo: string;
   name: string;
   forge: string;
-  repo: string;
+}
+
+export interface ProjectList {
+  projects: ProjectEntry[];
+  active: string | null;
 }
 
 // Discriminated union mirroring EngineEvent (serde tag = "kind", snake_case).
@@ -60,8 +66,11 @@ export type EngineEvent =
   | { kind: "drain_complete"; shipped: number };
 
 export const api = {
-  loadProject: (dir: string, repo?: string) =>
-    invoke<ProjectSummary>("load_project", { dir, repo: repo ?? null }),
+  listProjects: () => invoke<ProjectList>("list_projects"),
+  addProject: (dir: string, repo?: string) =>
+    invoke<ProjectEntry>("add_project", { dir, repo: repo ?? null }),
+  switchProject: (dir: string) => invoke<void>("switch_project", { dir }),
+  removeProject: (dir: string) => invoke<void>("remove_project", { dir }),
   getBoard: (milestone?: number) =>
     invoke<Board>("get_board", { milestone: milestone ?? null }),
   getIssue: (id: number) => invoke<IssueDetail>("get_issue", { id }),

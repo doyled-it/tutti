@@ -1,17 +1,26 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
-<!-- Left rail: the loaded project (increment 1 supports one at a time), an "open project"
-     affordance, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders).
-     Resizable via a drag handle on the right edge, with the width persisted to localStorage. -->
+<!-- Left rail: the persisted project list, an "add project" affordance, per-row switch and
+     remove, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders).
+     Switching is disabled while a run is active. Resizable via a drag handle on the right
+     edge, with the width persisted to localStorage. -->
 <script lang="ts">
-  import type { ProjectSummary } from "$lib/ipc";
+  import type { ProjectEntry } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
 
   let {
-    project,
-    onOpenProject,
+    projects,
+    activeDir,
+    runActive,
+    onSwitch,
+    onAdd,
+    onRemove,
   }: {
-    project: ProjectSummary | null;
-    onOpenProject: (dir: string, repo?: string) => Promise<void>;
+    projects: ProjectEntry[];
+    activeDir: string | null;
+    runActive: boolean;
+    onSwitch: (dir: string) => void;
+    onAdd: (dir: string, repo?: string) => Promise<void>;
+    onRemove: (dir: string) => void;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
@@ -70,7 +79,7 @@
     dir = picked;
     addError = null;
     try {
-      await onOpenProject(dir);
+      await onAdd(dir);
       cancelAdd();
     } catch (e) {
       addError = String(e);
@@ -83,7 +92,7 @@
     if (!dir || !repo) return;
     addError = null;
     try {
-      await onOpenProject(dir, repo);
+      await onAdd(dir, repo);
       cancelAdd();
     } catch (e) {
       addError = String(e);
@@ -95,19 +104,54 @@
     if (forge === "gitea") return "dot ge";
     return "dot gh";
   }
+
+  function handleSwitch(dir: string) {
+    if (runActive) return;
+    onSwitch(dir);
+  }
+
+  function handleRemove(e: MouseEvent, dir: string) {
+    e.stopPropagation();
+    onRemove(dir);
+  }
 </script>
 
 <div class="sidebar-wrap">
   <aside class="sidebar" style={`width:${width}px`}>
     <div class="section-label">Projects</div>
     <div class="projects">
-      {#if project}
-        <div class="project on">
-          <span class={dotClass(project.forge)}></span>
-          <span class="name">{project.name}</span>
-        </div>
+      {#if projects.length === 0}
+        <div class="empty">No projects yet</div>
       {:else}
-        <div class="empty">No project loaded</div>
+        {#each projects as p (p.dir)}
+          <button
+            type="button"
+            class="project"
+            class:on={p.dir === activeDir}
+            class:disabled={runActive}
+            disabled={runActive}
+            title={runActive ? "pause the run to switch" : undefined}
+            onclick={() => handleSwitch(p.dir)}
+          >
+            <span class={dotClass(p.forge)}></span>
+            <span class="name">{p.name}</span>
+            <span
+              class="remove"
+              role="button"
+              tabindex="0"
+              title="Remove project"
+              onclick={(e) => handleRemove(e, p.dir)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleRemove(e as unknown as MouseEvent, p.dir);
+                }
+              }}
+            >
+              &times;
+            </span>
+          </button>
+        {/each}
       {/if}
 
       {#if adding}
@@ -179,15 +223,58 @@
     gap: 6px;
     padding: 5px 6px;
     border-radius: 6px;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .project:hover {
+    background: var(--hover);
   }
   .project.on {
     background: var(--active);
     font-weight: 600;
   }
+  .project.disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+  .project.disabled:hover {
+    background: none;
+  }
+  .project.disabled.on:hover {
+    background: var(--active);
+  }
   .name {
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .remove {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-faint);
+    opacity: 0;
+    cursor: pointer;
+  }
+  .project:hover .remove {
+    opacity: 1;
+  }
+  .remove:hover {
+    background: var(--hover);
+    color: var(--text);
   }
   .dot {
     width: 7px;

@@ -3,9 +3,14 @@
 // applyEvent reducer is the tested, pure core of the live-update behavior.
 
 import { writable } from "svelte/store";
-import type { Board, EngineEvent, IssueCard, ProjectSummary } from "./ipc";
+import type { Board, EngineEvent, IssueCard, ProjectEntry } from "./ipc";
 
-export const project = writable<ProjectSummary | null>(null);
+/** The full saved project list, restored on launch and kept in sync with the backend. */
+export const projects = writable<ProjectEntry[]>([]);
+
+/** The `dir` of the active project, or null when nothing is active. */
+export const activeDir = writable<string | null>(null);
+
 export const board = writable<Board | null>(null);
 
 export type RunUi = {
