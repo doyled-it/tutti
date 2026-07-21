@@ -55,8 +55,8 @@ export type EngineEvent =
   | { kind: "drain_complete"; shipped: number };
 
 export const api = {
-  loadProject: (dir: string, repo: string) =>
-    invoke<ProjectSummary>("load_project", { dir, repo }),
+  loadProject: (dir: string, repo?: string) =>
+    invoke<ProjectSummary>("load_project", { dir, repo: repo ?? null }),
   getBoard: (milestone?: number) =>
     invoke<Board>("get_board", { milestone: milestone ?? null }),
   getIssue: (id: number) => invoke<IssueDetail>("get_issue", { id }),

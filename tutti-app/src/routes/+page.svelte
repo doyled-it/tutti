@@ -25,7 +25,12 @@
   let issueLoading = $state(false);
   let loadError = $state<string | null>(null);
 
-  async function openProject(dir: string, repo: string) {
+  // Called by the sidebar. On the common path (folder has a detectable git origin) this
+  // is a single call with no repo. When there is no remote, or detection fails, the
+  // sidebar retries with a manually entered repo. Rethrows so the sidebar can decide
+  // whether to reveal the manual-entry fallback; also mirrors the message into the
+  // page-level banner so a hard failure (e.g. a bad manual repo) stays visible.
+  async function openProject(dir: string, repo?: string) {
     loadError = null;
     try {
       const summary = await api.loadProject(dir, repo);
@@ -33,6 +38,7 @@
       board.set(await api.getBoard());
     } catch (e) {
       loadError = String(e);
+      throw e;
     }
   }
 

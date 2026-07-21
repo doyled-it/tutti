@@ -11,7 +11,7 @@
     onOpenProject,
   }: {
     project: ProjectSummary | null;
-    onOpenProject: (dir: string, repo: string) => void;
+    onOpenProject: (dir: string, repo?: string) => Promise<void>;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
@@ -41,28 +41,53 @@
   let adding = $state(false);
   let dir = $state("");
   let repo = $state("");
+  // Only shown once auto-detect fails; the message explains why (no origin remote, or
+  // an unparseable one), so the user knows why they need to type owner/repo.
+  let showManual = $state(false);
+  let addError = $state<string | null>(null);
 
   function beginAdd() {
     adding = true;
+    showManual = false;
+    addError = null;
   }
 
   function cancelAdd() {
     adding = false;
     dir = "";
     repo = "";
+    showManual = false;
+    addError = null;
   }
 
-  function submitAdd(e: Event) {
-    e.preventDefault();
-    if (!dir || !repo) return;
-    onOpenProject(dir, repo);
-    adding = false;
-  }
-
+  // The common case: pick a folder and try loading with no manual repo. If the folder's
+  // git origin resolves to owner/repo, the project loads immediately with no typing. If
+  // there is no remote (or it can't be parsed), fall back to the manual owner/repo field.
   async function pickDir() {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ directory: true });
-    if (typeof picked === "string") dir = picked;
+    if (typeof picked !== "string") return;
+    dir = picked;
+    addError = null;
+    try {
+      await onOpenProject(dir);
+      cancelAdd();
+    } catch (e) {
+      addError = String(e);
+      showManual = true;
+    }
+  }
+
+  async function submitManual(e: Event) {
+    e.preventDefault();
+    if (!dir || !repo) return;
+    addError = null;
+    try {
+      await onOpenProject(dir, repo);
+      cancelAdd();
+    } catch (e) {
+      addError = String(e);
+    }
   }
 
   function dotClass(forge: string): string {
@@ -86,16 +111,26 @@
       {/if}
 
       {#if adding}
-        <form class="add-form" onsubmit={submitAdd}>
-          <button type="button" class="pick" onclick={pickDir}>
-            {dir ? dir : "Choose folder..."}
-          </button>
-          <input class="repo-input" placeholder="owner/repo" bind:value={repo} />
-          <div class="add-actions">
-            <button type="submit" class="primary">Load</button>
-            <button type="button" onclick={cancelAdd}>Cancel</button>
-          </div>
-        </form>
+        <div class="add-form">
+          {#if !showManual}
+            <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
+            <div class="add-actions">
+              <button type="button" onclick={cancelAdd}>Cancel</button>
+            </div>
+          {:else}
+            <form class="manual-form" onsubmit={submitManual}>
+              <div class="picked-dir">{dir}</div>
+              {#if addError}
+                <div class="add-error">{addError}</div>
+              {/if}
+              <input class="repo-input" placeholder="owner/repo" bind:value={repo} />
+              <div class="add-actions">
+                <button type="submit" class="primary">Load</button>
+                <button type="button" onclick={cancelAdd}>Cancel</button>
+              </div>
+            </form>
+          {/if}
+        </div>
       {:else}
         <button class="add" onclick={beginAdd}>+ Add project</button>
       {/if}
@@ -197,6 +232,11 @@
     border-radius: 6px;
     margin-top: 2px;
   }
+  .manual-form {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
   .pick,
   .repo-input {
     font-size: 11px;
@@ -212,6 +252,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .picked-dir {
+    font-size: 11px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .add-error {
+    font-size: 10px;
+    color: #ef4444;
+    line-height: 1.4;
   }
   .add-actions {
     display: flex;

@@ -19,14 +19,34 @@ pub struct ProjectSummary {
     pub repo: String,
 }
 
+/// Shell out to `git remote get-url origin` and parse the owner/repo path from it. Returns
+/// None if there is no `origin` remote or the URL cannot be parsed.
+fn detect_repo(root: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout);
+    tutti_app_core::repo_from_remote(&url)
+}
+
 #[tauri::command]
 pub async fn load_project(
     dir: String,
-    repo: String,
+    repo: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<ProjectSummary, String> {
     let root = PathBuf::from(&dir);
     let cfg = Config::load(&root.join("tutti.toml")).map_err(|e| e.to_string())?;
+    let repo = repo
+        .filter(|r| !r.trim().is_empty())
+        .or_else(|| detect_repo(&root))
+        .ok_or("could not determine the repo from the folder's git remote; enter owner/repo manually")?;
     let forge = build_forge(&cfg, &repo, root.clone()).map_err(|e| e.to_string())?;
     let name = root
         .file_name()
