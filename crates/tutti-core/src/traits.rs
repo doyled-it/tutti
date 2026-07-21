@@ -63,6 +63,12 @@ pub trait AgentBackend: Send + Sync {
 #[async_trait]
 pub trait Forge: Send + Sync {
     async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>>;
+    /// All issues in the repo (open and recently closed, bounded), for the board's
+    /// unscoped view. Excludes pull requests.
+    async fn list_issues(&self) -> Result<Vec<Issue>>;
+    /// All labels in the repo as (name, color). Color is a hex string, WITH or without a
+    /// leading '#', as the forge returns it; callers normalize.
+    async fn list_labels(&self) -> Result<Vec<(String, String)>>;
     /// Flip ready -> in-progress. The label flip is the lock.
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard>;
     /// Flip in-progress -> ready (failure path).

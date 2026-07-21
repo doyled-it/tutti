@@ -122,6 +122,18 @@ pub fn parse_sub_issues(json: &str) -> Vec<IssueId> {
     children.into_iter().map(|c| IssueId(c.number)).collect()
 }
 
+/// Parse `gh label list --json name,color` output (an array) into (name, color) pairs.
+/// `gh` returns color as a hex string without a leading '#'; callers normalize.
+pub fn parse_labels(json: &str) -> Vec<(String, String)> {
+    #[derive(Deserialize)]
+    struct L {
+        name: String,
+        color: String,
+    }
+    let raw: Vec<L> = serde_json::from_str(json).unwrap_or_default();
+    raw.into_iter().map(|l| (l.name, l.color)).collect()
+}
+
 /// Parse an issue's `sub_issues_summary` block into a `Progress` (total children and how
 /// many are completed). Accepts either a full issue object carrying the summary or the
 /// bare summary object.
@@ -336,6 +348,17 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].id, IssueId(11));
         assert!(issues[0].has_label("status:done"));
+    }
+
+    #[test]
+    fn labels_parse_name_and_color() {
+        let json = r#"[{"name":"status:ready","color":"00ff00"},{"name":"bug","color":"d73a4a"}]"#;
+        let labels = parse_labels(json);
+        assert_eq!(labels.len(), 2);
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status:ready" && c == "00ff00"));
+        assert!(labels.iter().any(|(n, c)| n == "bug" && c == "d73a4a"));
     }
 
     #[test]

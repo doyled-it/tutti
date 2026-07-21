@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/tutti-core", "crates/tutti-git", "crates/tutti-backend-claude", "crates/tutti-forge-github", "crates/tutti-forge-gitea", "crates/tutti-forge-gitlab", "crates/tutti-cli"]
+members = ["crates/tutti-core", "crates/tutti-app-core", "crates/tutti-git", "crates/tutti-backend-claude", "crates/tutti-forge-github", "crates/tutti-forge-gitea", "crates/tutti-forge-gitlab", "crates/tutti-cli"]
+exclude = ["tutti-app/src-tauri"]
 resolver = "2"
 
 [workspace.package]

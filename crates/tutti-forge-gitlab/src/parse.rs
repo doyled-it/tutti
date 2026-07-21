@@ -106,6 +106,18 @@ pub fn parse_milestone_title(json: &str) -> Option<String> {
     serde_json::from_str::<M>(json).ok().map(|m| m.title)
 }
 
+/// Parse a `GET labels` array into (name, color) pairs. GitLab returns color WITH a
+/// leading '#' (e.g. "#0000ff"); callers normalize.
+pub fn parse_labels(json: &str) -> Vec<(String, String)> {
+    #[derive(Deserialize)]
+    struct L {
+        name: String,
+        color: String,
+    }
+    let labels: Vec<L> = serde_json::from_str(json).unwrap_or_default();
+    labels.into_iter().map(|l| (l.name, l.color)).collect()
+}
+
 /// Parse the `iid` from a `POST merge_requests` create response.
 pub fn parse_created_mr_iid(json: &str) -> Option<u64> {
     #[derive(Deserialize)]
@@ -299,6 +311,24 @@ mod tests {
             parse_group_id(r#"{"id":1,"namespace":{"kind":"group","id":42}}"#),
             Some(42)
         );
+    }
+
+    #[test]
+    fn labels_parse_name_and_hash_prefixed_color() {
+        // labels.json is hand-authored from GitLab's documented label REST shape (the
+        // spike-tier sandbox has no need for a live capture here); GitLab returns color
+        // WITH a leading '#', unlike GitHub/Gitea.
+        let labels = parse_labels(include_str!("../tests/fixtures/labels.json"));
+        assert_eq!(labels.len(), 3);
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status::ready" && c == "#00ff00"));
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status::in-progress" && c == "#ffff00"));
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status::done" && c == "#0000ff"));
     }
 
     #[test]

@@ -142,6 +142,14 @@ impl Forge for FakeForge {
             .cloned())
     }
 
+    async fn list_issues(&self) -> Result<Vec<Issue>> {
+        Ok(self.state.lock().unwrap().issues.clone())
+    }
+
+    async fn list_labels(&self) -> Result<Vec<(String, String)>> {
+        Ok(Vec::new())
+    }
+
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         let mut st = self.state.lock().unwrap();
         let i = st.issues.iter().find(|i| i.id == issue).cloned();
@@ -382,6 +390,17 @@ mod tests {
             .labels_of(IssueId(1))
             .contains(&"status:in-progress".to_string()));
         assert!(forge.claim(IssueId(1)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_issues_returns_all_seeded_issues() {
+        let forge = FakeForge::new(vec![ready(1), ready(2), ready(3)], CiState::Pass);
+        let all = forge.list_issues().await.unwrap();
+        assert_eq!(all.len(), 3);
+        let ids: Vec<u64> = all.iter().map(|i| i.id.0).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&2));
+        assert!(ids.contains(&3));
     }
 
     #[tokio::test]

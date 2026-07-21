@@ -1,0 +1,347 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Issue detail panel. It sits beside the board (pushing it, not covering it) and takes
+     the roadmap rail's place while an issue is selected. Closing clears the selection. -->
+<script lang="ts">
+  import type { IssueDetail } from "$lib/ipc";
+  import { marked } from "marked";
+  import DOMPurify from "dompurify";
+  import { browser } from "$app/environment";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+
+  let {
+    issue,
+    loading,
+    onClose,
+  }: {
+    issue: IssueDetail | null;
+    loading: boolean;
+    onClose: () => void;
+  } = $props();
+
+  const statusLabel: Record<string, string> = {
+    ready: "ready",
+    in_progress: "in progress",
+    done: "done",
+    other: "untriaged",
+  };
+
+  // Render a label's real forge color as a pill. Scoped labels (GitLab `scope::value`,
+  // or the GitHub/Gitea `scope:value` convention) render as a two-tone pill: a solid
+  // "scope" half and a tinted "value" half, mirroring GitLab's own scoped-label style.
+  function hexToRgb(hex: string): [number, number, number] {
+    const h = (hex || "8b949e").replace(/^#/, "");
+    const full =
+      h.length === 3
+        ? h
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : h.padEnd(6, "0").slice(0, 6);
+    return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+  }
+  function textOn(rgb: [number, number, number]): string {
+    const [r, g, b] = rgb;
+    const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return l > 0.6 ? "#1a1a1a" : "#ffffff";
+  }
+  // Lighten a color toward white so it stays readable as text on the dark value tint
+  // (a dark label color like deep purple is illegible on the panel otherwise).
+  function lighten([r, g, b]: [number, number, number], amt = 0.55): string {
+    const f = (c: number) => Math.round(c + (255 - c) * amt);
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  }
+  function splitScoped(name: string): { scope: string; value: string } | null {
+    if (!name) return null;
+    const dd = name.indexOf("::");
+    if (dd > 0 && dd + 2 < name.length) return { scope: name.slice(0, dd), value: name.slice(dd + 2) };
+    const s = name.indexOf(":");
+    if (s > 0 && s + 1 < name.length) return { scope: name.slice(0, s), value: name.slice(s + 1) };
+    return null;
+  }
+
+  // Render the issue body as markdown, sanitized before it ever touches {@html}. DOMPurify
+  // needs a DOM, which does not exist during SvelteKit's static build/prerender, so skip
+  // sanitizing (and rendering) outside the browser rather than risk unsanitized output.
+  function renderMarkdown(md: string): string {
+    if (!md) return "";
+    const raw = marked.parse(md, { async: false, gfm: true, breaks: true }) as string;
+    return browser ? DOMPurify.sanitize(raw) : "";
+  }
+
+  // Links inside rendered markdown must open in the user's external browser, not navigate
+  // the Tauri webview away from the app.
+  function externalLinks(node: HTMLElement) {
+    const handler = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement)?.closest("a");
+      const href = a?.getAttribute("href");
+      if (a && href) {
+        e.preventDefault();
+        void openUrl(href);
+      }
+    };
+    node.addEventListener("click", handler);
+    // auxclick covers middle-click, which does not fire a normal click event.
+    node.addEventListener("auxclick", handler);
+    return {
+      destroy: () => {
+        node.removeEventListener("click", handler);
+        node.removeEventListener("auxclick", handler);
+      },
+    };
+  }
+</script>
+
+<aside class="drawer">
+  <div class="drawer-top">
+    <button class="close" onclick={onClose} aria-label="Close">Close</button>
+  </div>
+  {#if loading || !issue}
+    <div class="loading">Loading...</div>
+  {:else}
+    <div class="content">
+      <div class="issue-title">#{issue.id} {issue.title}</div>
+      <span class={`badge ${issue.status}`}>{statusLabel[issue.status]}</span>
+
+      <div class="kv"><b>Milestone</b>{issue.milestone ?? "None"}</div>
+      <div class="kv labels-row">
+        <b>Labels</b>
+        {#if issue.labels.length}
+          <span class="chips">
+            {#each issue.labels as lbl, i (i)}
+              {@const color = lbl.color || "8b949e"}
+              {@const hex = `#${color}`}
+              {@const rgb = hexToRgb(color)}
+              {@const parts = splitScoped(lbl.name)}
+              {#if parts}
+                <span class="lbl scoped">
+                  <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}>{parts.scope}</span>
+                  <span
+                    class="value"
+                    style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.18);color:${lighten(rgb)};border-color:${lighten(rgb)}`}
+                  >{parts.value}</span>
+                </span>
+              {:else}
+                <span class="lbl solid" style={`background:${hex};color:${textOn(rgb)}`}>{lbl.name}</span>
+              {/if}
+            {/each}
+          </span>
+        {:else}
+          None
+        {/if}
+      </div>
+      <div class="kv"><b>Branch</b>{issue.branch}</div>
+
+      <div class="col-h">Description</div>
+      {#if issue.body}
+        <div class="body-md" use:externalLinks>{@html renderMarkdown(issue.body)}</div>
+      {:else}
+        <div class="body-text">No description.</div>
+      {/if}
+    </div>
+  {/if}
+</aside>
+
+<style>
+  .drawer {
+    flex: 0 0 340px;
+    min-width: 0;
+    height: 100%;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    animation: slide-in 0.16s ease-out;
+  }
+  @keyframes slide-in {
+    from {
+      transform: translateX(24px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+  .drawer-top {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .close {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .loading {
+    padding: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .content {
+    padding: 14px 16px;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  .issue-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 9px;
+    border-radius: 10px;
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    margin-bottom: 10px;
+  }
+  .badge.done {
+    border-color: var(--done);
+    background: rgba(34, 197, 94, 0.12);
+  }
+  .badge.other {
+    border-color: var(--border);
+    background: var(--hover);
+  }
+  .kv {
+    font-size: 11px;
+    margin: 5px 0;
+  }
+  .kv b {
+    color: var(--text-faint);
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .labels-row {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .lbl {
+    display: inline-flex;
+    align-items: stretch;
+    font-size: 10px;
+    line-height: 1.6;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .lbl.solid {
+    padding: 1px 8px;
+  }
+  .lbl.scoped .scope {
+    padding: 1px 8px;
+    font-weight: 600;
+  }
+  .lbl.scoped .value {
+    padding: 1px 8px;
+    border: 1px solid;
+    border-left: none;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+  }
+  .col-h {
+    font-size: 11px;
+    font-weight: 600;
+    margin-top: 14px;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .body-text {
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+  .body-md {
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .body-md :global(h1),
+  .body-md :global(h2),
+  .body-md :global(h3),
+  .body-md :global(h4) {
+    font-weight: 600;
+    margin: 12px 0 6px;
+    line-height: 1.35;
+  }
+  .body-md :global(h1) {
+    font-size: 15px;
+  }
+  .body-md :global(h2) {
+    font-size: 14px;
+  }
+  .body-md :global(h3) {
+    font-size: 12.5px;
+  }
+  .body-md :global(h4) {
+    font-size: 11.5px;
+  }
+  .body-md :global(p) {
+    margin: 6px 0;
+  }
+  .body-md :global(ul),
+  .body-md :global(ol) {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+  .body-md :global(li) {
+    margin: 2px 0;
+  }
+  .body-md :global(code) {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    background: var(--hover);
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  .body-md :global(pre) {
+    background: var(--hover);
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .body-md :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+  .body-md :global(blockquote) {
+    margin: 8px 0;
+    padding-left: 10px;
+    border-left: 3px solid var(--border);
+    color: var(--text-dim);
+  }
+  .body-md :global(a) {
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .body-md :global(img) {
+    max-width: 100%;
+    border-radius: 4px;
+  }
+  .body-md :global(table) {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 10.5px;
+  }
+  .body-md :global(th),
+  .body-md :global(td) {
+    border: 1px solid var(--border);
+    padding: 3px 8px;
+  }
+</style>
