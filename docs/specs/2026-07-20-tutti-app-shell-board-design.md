@@ -36,7 +36,12 @@ a project, see its board, press Run, watch issues flow to done.
   slice (the subsession view).
 - **Shell layout:** a left **sidebar** (projects + app nav), a **main** pane with a
   `Board | Lanes` segmented toggle, and a **roadmap rail pinned right**. Selecting an issue
-  opens a **slide-in detail drawer** (the board stays visible behind it).
+  opens a **slide-in detail drawer** (the board stays visible behind it). The left sidebar
+  and the right rail are **resizable** (drag handle on the inner edge; widths persisted).
+- **Board scope: all issues by default.** The board lists all of the repo's issues (via
+  `Forge::list_issues`), bucketed by status label; the roadmap rail's milestones (plus an
+  "All issues" entry) are an optional filter. (Earlier drafts scoped the board to a single
+  milestone, which showed nothing for a repo with no milestones.)
 - **Project source (increment 1 only):** a single active project loaded from a local
   directory containing a `tutti.toml`. The sidebar renders it; add/switch/browse/create
   arrive in increments 2 to 4.
