@@ -139,6 +139,61 @@ pub fn repo_from_remote(url: &str) -> Option<String> {
     }
 }
 
+/// A saved project: a local folder (its identity), the resolved repo slug, a display
+/// name, and the forge kind (for the sidebar's colored dot).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectEntry {
+    pub dir: String,
+    pub repo: String,
+    pub name: String,
+    pub forge: String,
+}
+
+/// The persisted project list plus which one is active. Serialized to projects.json.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectStore {
+    #[serde(default)]
+    pub projects: Vec<ProjectEntry>,
+    #[serde(default)]
+    pub active: Option<String>,
+}
+
+impl ProjectStore {
+    /// Parse from JSON; an unreadable/absent store is an empty one (first run).
+    pub fn from_json(s: &str) -> Self {
+        serde_json::from_str(s).unwrap_or_default()
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
+    }
+
+    /// Insert or replace an entry by `dir`, and make it active.
+    pub fn upsert(&mut self, entry: ProjectEntry) {
+        if let Some(existing) = self.projects.iter_mut().find(|p| p.dir == entry.dir) {
+            *existing = entry.clone();
+        } else {
+            self.projects.push(entry.clone());
+        }
+        self.active = Some(entry.dir);
+    }
+
+    /// Remove by `dir`; clears `active` if it pointed at the removed entry.
+    pub fn remove(&mut self, dir: &str) {
+        self.projects.retain(|p| p.dir != dir);
+        if self.active.as_deref() == Some(dir) {
+            self.active = None;
+        }
+    }
+
+    /// Set the active dir if it is a known project.
+    pub fn set_active(&mut self, dir: &str) {
+        if self.projects.iter().any(|p| p.dir == dir) {
+            self.active = Some(dir.to_string());
+        }
+    }
+}
+
 /// Assemble the board for `select` (default: all issues). Reads the milestone list for the
 /// rail, then buckets either the selected milestone's children or every issue by status label.
 pub async fn assemble_board(
@@ -387,5 +442,65 @@ mod tests {
         // so the caller falls back to manual entry rather than a wrong slug.
         assert_eq!(repo_from_remote("https://github.com/owner"), None);
         assert_eq!(repo_from_remote(r"C:\Users\me\project"), None);
+    }
+
+    fn entry(dir: &str) -> ProjectEntry {
+        ProjectEntry {
+            dir: dir.into(),
+            repo: format!("owner/{dir}"),
+            name: dir.into(),
+            forge: "github".into(),
+        }
+    }
+
+    #[test]
+    fn upsert_adds_and_replaces() {
+        let mut store = ProjectStore::default();
+        store.upsert(entry("proj-a"));
+        assert_eq!(store.projects.len(), 1);
+        assert_eq!(store.active.as_deref(), Some("proj-a"));
+
+        store.upsert(entry("proj-b"));
+        assert_eq!(store.projects.len(), 2);
+        assert_eq!(store.active.as_deref(), Some("proj-b"));
+
+        // Re-upserting the same dir replaces the entry in place and keeps len at 2.
+        let mut updated = entry("proj-a");
+        updated.name = "renamed".into();
+        store.upsert(updated);
+        assert_eq!(store.projects.len(), 2);
+        assert_eq!(store.active.as_deref(), Some("proj-a"));
+        let found = store.projects.iter().find(|p| p.dir == "proj-a").unwrap();
+        assert_eq!(found.name, "renamed");
+    }
+
+    #[test]
+    fn remove_drops_and_clears_active() {
+        let mut store = ProjectStore::default();
+        store.upsert(entry("proj-a"));
+        store.upsert(entry("proj-b"));
+        assert_eq!(store.active.as_deref(), Some("proj-b"));
+
+        // Removing a non-active entry leaves `active` alone.
+        store.remove("proj-a");
+        assert_eq!(store.projects.len(), 1);
+        assert_eq!(store.active.as_deref(), Some("proj-b"));
+
+        // Removing the active entry clears `active`.
+        store.remove("proj-b");
+        assert!(store.projects.is_empty());
+        assert_eq!(store.active, None);
+    }
+
+    #[test]
+    fn json_round_trip_and_garbage_defaults() {
+        let mut store = ProjectStore::default();
+        store.upsert(entry("proj-a"));
+
+        let json = store.to_json();
+        let parsed = ProjectStore::from_json(&json);
+        assert_eq!(parsed, store);
+
+        assert_eq!(ProjectStore::from_json("garbage"), ProjectStore::default());
     }
 }
