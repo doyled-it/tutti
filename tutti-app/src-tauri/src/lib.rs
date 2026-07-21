@@ -10,7 +10,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(state::AppState::default())
         .invoke_handler(tauri::generate_handler![
-            commands::load_project,
+            commands::list_projects,
+            commands::add_project,
+            commands::switch_project,
+            commands::remove_project,
             commands::get_board,
             commands::get_issue,
             commands::start_run,
