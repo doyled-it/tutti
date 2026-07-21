@@ -153,6 +153,13 @@ impl Forge for GiteaForge {
         Ok(parse::parse_issue_list(&json))
     }
 
+    async fn list_labels(&self) -> Result<Vec<(String, String)>> {
+        let json = self
+            .api("GET", &self.endpoint("labels?limit=100"), None)
+            .await?;
+        Ok(parse::parse_labels(&json))
+    }
+
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         self.set_status(issue, Status::InProgress).await?;
         Ok(ClaimGuard::new(issue))

@@ -123,6 +123,18 @@ pub fn parse_label_ids(json: &str) -> Vec<(String, i64)> {
     labels.into_iter().map(|l| (l.name, l.id)).collect()
 }
 
+/// Parse a `GET labels` array into (name, color) pairs. Gitea returns color as a hex
+/// string without a leading '#'; callers normalize.
+pub fn parse_labels(json: &str) -> Vec<(String, String)> {
+    #[derive(Deserialize)]
+    struct L {
+        name: String,
+        color: String,
+    }
+    let labels: Vec<L> = serde_json::from_str(json).unwrap_or_default();
+    labels.into_iter().map(|l| (l.name, l.color)).collect()
+}
+
 /// Parse the `number` from a `POST pulls` create response.
 pub fn parse_created_pr_number(json: &str) -> Option<u64> {
     #[derive(Deserialize)]
@@ -226,6 +238,22 @@ mod tests {
         assert!(ids
             .iter()
             .any(|(n, id)| n == "status:done" && *id == 1993207));
+    }
+
+    #[test]
+    fn labels_parse_name_and_color() {
+        let json = include_str!("../tests/fixtures/labels.json");
+        let labels = parse_labels(json);
+        assert_eq!(labels.len(), 3);
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status:ready" && c == "00ff00"));
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status:in-progress" && c == "ffff00"));
+        assert!(labels
+            .iter()
+            .any(|(n, c)| n == "status:done" && c == "0000ff"));
     }
 
     #[test]

@@ -1,0 +1,23 @@
+[
+    {
+        "id": 1,
+        "name": "status::ready",
+        "color": "#00ff00",
+        "description": "",
+        "text_color": "#FFFFFF"
+    },
+    {
+        "id": 2,
+        "name": "status::in-progress",
+        "color": "#ffff00",
+        "description": "",
+        "text_color": "#FFFFFF"
+    },
+    {
+        "id": 3,
+        "name": "status::done",
+        "color": "#0000ff",
+        "description": "",
+        "text_color": "#FFFFFF"
+    }
+]

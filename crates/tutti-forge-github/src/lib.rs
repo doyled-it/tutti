@@ -125,6 +125,22 @@ impl Forge for GitHubForge {
         Ok(parse::parse_issue_list(&json))
     }
 
+    async fn list_labels(&self) -> Result<Vec<(String, String)>> {
+        let json = self
+            .gh(&[
+                "label",
+                "list",
+                "--repo",
+                &self.repo,
+                "--limit",
+                "100",
+                "--json",
+                "name,color",
+            ])
+            .await?;
+        Ok(parse::parse_labels(&json))
+    }
+
     // Note: `gh issue edit --add-label/--remove-label` is idempotent and does not error
     // if the issue is already in-progress, so this is NOT the atomic race-guard the design
     // describes; the single-runner `PidLock` provides that guarantee.
