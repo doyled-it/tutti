@@ -123,11 +123,10 @@ pub fn repo_from_remote(url: &str) -> Option<String> {
         let after_at = &u[at + 1..];
         let colon = after_at.find(':')?;
         &after_at[colon + 1..]
-    } else if let Some(colon) = u.find(':') {
-        // host:owner/repo
-        &u[colon + 1..]
     } else {
-        return None;
+        // host:owner/repo (no scheme, no user@)
+        let colon = u.find(':')?;
+        &u[colon + 1..]
     };
     let path = after_host.trim_matches('/');
     // A real slug is at least owner/repo, so require a '/'. This rejects single-segment
