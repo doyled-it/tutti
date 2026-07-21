@@ -30,11 +30,16 @@ export interface Board {
   done: IssueCard[];
 }
 
+export interface LabelChip {
+  name: string;
+  color: string;
+}
+
 export interface IssueDetail {
   id: number;
   title: string;
   body: string;
-  labels: string[];
+  labels: LabelChip[];
   milestone: string | null;
   status: Status;
   branch: string;

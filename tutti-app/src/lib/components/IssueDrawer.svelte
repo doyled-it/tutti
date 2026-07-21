@@ -21,17 +21,31 @@
     other: "untriaged",
   };
 
-  // Color a status-convention label (status:done / status::in-progress, etc.) to match
-  // the status badge palette; other labels get a neutral chip.
-  function labelKind(name: string): "ready" | "progress" | "done" | "blocked" | "plain" {
-    const m = name.match(/^status::?(.+)$/i);
-    if (!m) return "plain";
-    const v = m[1].toLowerCase();
-    if (v.includes("done")) return "done";
-    if (v.includes("progress")) return "progress";
-    if (v.includes("ready")) return "ready";
-    if (v.includes("need") || v.includes("block")) return "blocked";
-    return "plain";
+  // Render a label's real forge color as a pill. Scoped labels (GitLab `scope::value`,
+  // or the GitHub/Gitea `scope:value` convention) render as a two-tone pill: a solid
+  // "scope" half and a tinted "value" half, mirroring GitLab's own scoped-label style.
+  function hexToRgb(hex: string): [number, number, number] {
+    const h = hex.replace(/^#/, "");
+    const full =
+      h.length === 3
+        ? h
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : h.padEnd(6, "0").slice(0, 6);
+    return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+  }
+  function textOn(rgb: [number, number, number]): string {
+    const [r, g, b] = rgb;
+    const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return l > 0.6 ? "#1a1a1a" : "#ffffff";
+  }
+  function splitScoped(name: string): { scope: string; value: string } | null {
+    const dd = name.indexOf("::");
+    if (dd > 0 && dd + 2 < name.length) return { scope: name.slice(0, dd), value: name.slice(dd + 2) };
+    const s = name.indexOf(":");
+    if (s > 0 && s + 1 < name.length) return { scope: name.slice(0, s), value: name.slice(s + 1) };
+    return null;
   }
 </script>
 
@@ -51,8 +65,21 @@
         <b>Labels</b>
         {#if issue.labels.length}
           <span class="chips">
-            {#each issue.labels as name (name)}
-              <span class={`chip ${labelKind(name)}`}>{name}</span>
+            {#each issue.labels as lbl (lbl.name)}
+              {@const hex = `#${lbl.color}`}
+              {@const rgb = hexToRgb(lbl.color)}
+              {@const parts = splitScoped(lbl.name)}
+              {#if parts}
+                <span class="lbl scoped">
+                  <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}>{parts.scope}</span>
+                  <span
+                    class="value"
+                    style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.16);color:${hex};border-color:${hex}`}
+                  >{parts.value}</span>
+                </span>
+              {:else}
+                <span class="lbl solid" style={`background:${hex};color:${textOn(rgb)}`}>{lbl.name}</span>
+              {/if}
             {/each}
           </span>
         {:else}
@@ -155,29 +182,27 @@
     flex-wrap: wrap;
     gap: 4px;
   }
-  .chip {
+  .lbl {
+    display: inline-flex;
+    align-items: stretch;
     font-size: 10px;
-    padding: 1px 8px;
+    line-height: 1.6;
     border-radius: 10px;
-    border: 1px solid var(--border);
-    background: var(--hover);
-    color: var(--text);
+    overflow: hidden;
   }
-  .chip.ready {
-    border-color: var(--accent-border);
-    background: var(--accent-bg);
+  .lbl.solid {
+    padding: 1px 8px;
   }
-  .chip.progress {
-    border-color: #f59e0b;
-    background: rgba(245, 158, 11, 0.14);
+  .lbl.scoped .scope {
+    padding: 1px 8px;
+    font-weight: 600;
   }
-  .chip.done {
-    border-color: var(--done);
-    background: rgba(34, 197, 94, 0.14);
-  }
-  .chip.blocked {
-    border-color: #ef4444;
-    background: rgba(239, 68, 68, 0.14);
+  .lbl.scoped .value {
+    padding: 1px 8px;
+    border: 1px solid;
+    border-left: none;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
   }
   .col-h {
     font-size: 11px;
