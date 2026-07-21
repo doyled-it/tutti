@@ -130,7 +130,10 @@ pub fn repo_from_remote(url: &str) -> Option<String> {
         return None;
     };
     let path = after_host.trim_matches('/');
-    if path.is_empty() {
+    // A real slug is at least owner/repo, so require a '/'. This rejects single-segment
+    // junk (a bare owner, or a Windows path like C:\Users\... that slipped past the
+    // host:path branch) and falls back to manual entry instead of a wrong slug.
+    if path.is_empty() || !path.contains('/') {
         None
     } else {
         Some(path.to_string())
@@ -182,9 +185,12 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
         .into_iter()
         .find(|i| i.id.0 == id)
         .ok_or_else(|| EngineError::Forge(format!("issue {id} not found")))?;
+    // Label colors are cosmetic, so a labels-endpoint failure must never block the issue
+    // detail: degrade to an empty map (chips fall back to the default gray).
     let color_by_name: std::collections::HashMap<String, String> = forge
         .list_labels()
-        .await?
+        .await
+        .unwrap_or_default()
         .into_iter()
         .map(|(name, color)| (name, normalize_color(&color)))
         .collect();
@@ -374,5 +380,13 @@ mod tests {
     #[test]
     fn repo_from_remote_returns_none_for_garbage() {
         assert_eq!(repo_from_remote("not a url"), None);
+    }
+
+    #[test]
+    fn repo_from_remote_rejects_single_segment_paths() {
+        // A bare owner (no repo) and a Windows path have no owner/repo slash: reject them
+        // so the caller falls back to manual entry rather than a wrong slug.
+        assert_eq!(repo_from_remote("https://github.com/owner"), None);
+        assert_eq!(repo_from_remote(r"C:\Users\me\project"), None);
     }
 }

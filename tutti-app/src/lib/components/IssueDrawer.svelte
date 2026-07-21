@@ -80,7 +80,14 @@
       }
     };
     node.addEventListener("click", handler);
-    return { destroy: () => node.removeEventListener("click", handler) };
+    // auxclick covers middle-click, which does not fire a normal click event.
+    node.addEventListener("auxclick", handler);
+    return {
+      destroy: () => {
+        node.removeEventListener("click", handler);
+        node.removeEventListener("auxclick", handler);
+      },
+    };
   }
 </script>
 

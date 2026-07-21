@@ -58,6 +58,9 @@
       issueDetail = await api.getIssue(id);
     } catch (e) {
       loadError = String(e);
+      // Close the drawer on error so it does not sit on a false "Loading..." state; the
+      // error surfaces in the top banner.
+      selectedIssueId.set(null);
     } finally {
       issueLoading = false;
     }
