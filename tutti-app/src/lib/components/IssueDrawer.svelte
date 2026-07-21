@@ -25,7 +25,7 @@
   // or the GitHub/Gitea `scope:value` convention) render as a two-tone pill: a solid
   // "scope" half and a tinted "value" half, mirroring GitLab's own scoped-label style.
   function hexToRgb(hex: string): [number, number, number] {
-    const h = hex.replace(/^#/, "");
+    const h = (hex || "8b949e").replace(/^#/, "");
     const full =
       h.length === 3
         ? h
@@ -41,6 +41,7 @@
     return l > 0.6 ? "#1a1a1a" : "#ffffff";
   }
   function splitScoped(name: string): { scope: string; value: string } | null {
+    if (!name) return null;
     const dd = name.indexOf("::");
     if (dd > 0 && dd + 2 < name.length) return { scope: name.slice(0, dd), value: name.slice(dd + 2) };
     const s = name.indexOf(":");
@@ -65,9 +66,10 @@
         <b>Labels</b>
         {#if issue.labels.length}
           <span class="chips">
-            {#each issue.labels as lbl (lbl.name)}
-              {@const hex = `#${lbl.color}`}
-              {@const rgb = hexToRgb(lbl.color)}
+            {#each issue.labels as lbl, i (i)}
+              {@const color = lbl.color || "8b949e"}
+              {@const hex = `#${color}`}
+              {@const rgb = hexToRgb(color)}
               {@const parts = splitScoped(lbl.name)}
               {#if parts}
                 <span class="lbl scoped">
