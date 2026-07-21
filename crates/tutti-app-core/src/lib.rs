@@ -47,16 +47,34 @@ pub struct Board {
     pub done: Vec<IssueCard>,
 }
 
+/// A label as shown on the drawer: name plus its real forge color, for a GitLab-style
+/// scoped-label pill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabelChip {
+    pub name: String,
+    /// Normalized hex color WITHOUT a leading '#', lowercased. Empty if unknown.
+    pub color: String,
+}
+
 /// The full detail for the drawer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueDetail {
     pub id: u64,
     pub title: String,
     pub body: String,
-    pub labels: Vec<String>,
+    pub labels: Vec<LabelChip>,
     pub milestone: Option<String>,
     pub status: Status,
     pub branch: String,
+}
+
+/// Default color for a label whose name is not found in the repo's label list (e.g. a
+/// stale/renamed label still on the issue). A neutral gray.
+const DEFAULT_LABEL_COLOR: &str = "8b949e";
+
+/// Normalize a forge-returned label color: strip a leading '#' and lowercase.
+fn normalize_color(color: &str) -> String {
+    color.trim_start_matches('#').to_lowercase()
 }
 
 fn classify(issue: &Issue, labels: &StatusLabels) -> Status {
@@ -164,11 +182,28 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
         .into_iter()
         .find(|i| i.id.0 == id)
         .ok_or_else(|| EngineError::Forge(format!("issue {id} not found")))?;
+    let color_by_name: std::collections::HashMap<String, String> = forge
+        .list_labels()
+        .await?
+        .into_iter()
+        .map(|(name, color)| (name, normalize_color(&color)))
+        .collect();
+    let chips: Vec<LabelChip> = issue
+        .labels
+        .iter()
+        .map(|name| LabelChip {
+            name: name.clone(),
+            color: color_by_name
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_LABEL_COLOR.into()),
+        })
+        .collect();
     Ok(IssueDetail {
         id,
         title: issue.title.clone(),
         body: issue.body.clone(),
-        labels: issue.labels.clone(),
+        labels: chips,
         milestone: issue.milestone.clone(),
         status: classify(&issue, &labels),
         branch: format!("feat/issue-{id}"),
@@ -291,6 +326,10 @@ mod tests {
         assert_eq!(detail.status, Status::Ready);
         assert_eq!(detail.milestone.as_deref(), Some("Phase 1"));
         assert_eq!(detail.branch, format!("feat/issue-{}", created.id.0));
+        // FakeForge::list_labels is empty, so every chip falls back to the default color.
+        assert_eq!(detail.labels.len(), 1);
+        assert_eq!(detail.labels[0].name, "status:ready");
+        assert_eq!(detail.labels[0].color, "8b949e");
     }
 
     #[tokio::test]
