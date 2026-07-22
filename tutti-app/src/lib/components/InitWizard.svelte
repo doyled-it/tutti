@@ -41,6 +41,7 @@
   let preview = $state<string | null>(null);
   let previewError = $state<string | null>(null);
   let detectedRepo = $derived(probe.repo);
+  let modalEl = $state<HTMLElement | null>(null);
 
   // "Choose a different folder..." replaces the wizard's target in place, so re-seed
   // from the new folder and its probe. That button only exists on step 0, so there are
@@ -65,24 +66,51 @@
 
   function next() {
     if (error || last) return;
+    submitError = null;
     step += 1;
   }
 
   function back() {
-    if (step > 0) step -= 1;
+    if (step > 0) {
+      submitError = null;
+      step -= 1;
+    }
   }
 
   // Fetch the rendered file whenever the review step is reached, so it always reflects
-  // the answers as they stand rather than a stale render from an earlier visit.
+  // the answers as they stand rather than a stale render from an earlier visit. The
+  // generation token drops a response that lands after a newer request was issued, so a
+  // slow render from an older set of answers can never paint over the current one: the
+  // whole point of this step is that the preview matches what Create will write.
+  let previewSeq = 0;
   $effect(() => {
     if (step !== STEP_COUNT - 1) return;
     preview = null;
     previewError = null;
+    previewSeq += 1;
+    const seq = previewSeq;
     const form = toInitForm(s);
     api
       .previewTuttiToml(form)
-      .then((text) => (preview = text))
-      .catch((e) => (previewError = String(e)));
+      .then((text) => {
+        if (seq === previewSeq) preview = text;
+      })
+      .catch((e) => {
+        if (seq === previewSeq) previewError = String(e);
+      });
+  });
+
+  // Move focus to the step's first control on every step change, so the modal owns focus
+  // from the moment it opens and a keyboard user is not left tabbing from the top of the
+  // document into the shell behind the scrim.
+  let bodyEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    // Track the step so this re-runs on navigation.
+    void step;
+    const el = bodyEl?.querySelector<HTMLElement>(
+      'input:not([type="radio"]), input[type="radio"]:checked, select, textarea, button',
+    );
+    el?.focus();
   });
 
   async function create() {
@@ -98,14 +126,40 @@
     }
   }
 
+  const FOCUSABLE = 'input, select, textarea, button:not([tabindex="-1"]), [href]';
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
       onCancel();
       return;
     }
-    // Enter advances, except inside a textarea and except when the step is invalid.
-    if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement)) {
+    // Keep Tab inside the modal. Without this, tabbing past the last control walks into
+    // the shell behind the scrim, which is inert but still focusable.
+    if (e.key === "Tab" && modalEl) {
+      const items = [...modalEl.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => !el.hasAttribute("disabled"),
+      );
+      if (items.length === 0) return;
+      const first = items[0];
+      const flast = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || !modalEl.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? flast : first).focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        flast.focus();
+      } else if (!e.shiftKey && active === flast) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+    // Enter advances, but never when it would steal a focused button's own activation,
+    // and never mid-composition (an IME commit also fires Enter).
+    if (e.key === "Enter" && !e.isComposing && !(e.target instanceof HTMLButtonElement)) {
+      if (e.target instanceof HTMLTextAreaElement) return;
       e.preventDefault();
       if (last) void create();
       else next();
@@ -136,7 +190,13 @@
 
 <button type="button" class="scrim" aria-label="Cancel" tabindex="-1" onclick={onCancel}></button>
 
-<div class="modal" role="dialog" aria-modal="true" aria-label="New Tutti project">
+<div
+  class="modal"
+  role="dialog"
+  aria-modal="true"
+  aria-label="New Tutti project"
+  bind:this={modalEl}
+>
   <header>
     <span class="title">New Tutti project</span>
     <span class="counter">Step {step + 1} of {STEP_COUNT}</span>
@@ -147,7 +207,7 @@
     </div>
   </header>
 
-  <div class="body">
+  <div class="body" bind:this={bodyEl}>
     {#if step === 0}
       <QuestionCard
         question="Which folder?"
@@ -163,6 +223,9 @@
       <QuestionCard
         question="Which forge hosts this project?"
         description="Tutti reads issues and opens pull requests through your forge's command-line tool, using the login you already have."
+        note={probe.forge_kind
+          ? `Detected from your git remote.`
+          : "Could not tell from your git remote (a self-hosted GitLab or Gitea looks like any other host), so check this one."}
         {error}
       >
         <label class="opt" class:on={s.forgeKind === "github"}>
@@ -337,9 +400,12 @@
         {/each}
         <button type="button" class="ghost small self-start" onclick={addSkip}>+ Add label</button>
         <div class="callout">
-          Tutti will create <code>status:ready</code>, <code>status:in-progress</code> and
-          <code>status:done</code> in your forge if they do not exist yet, and will move each issue between
-          them as it works.
+          Tutti will create <code>{s.requireLabel || "status:ready"}</code>,
+          <code>status:in-progress</code>, <code>status:done</code>
+          {#each s.skipLabels.filter((l) => l.trim()) as lab (lab)}
+            and <code>{lab}</code>
+          {/each}
+          in your forge if they do not exist yet, and will move each issue between them as it works.
         </div>
       </QuestionCard>
     {:else if step === 8}
@@ -350,12 +416,14 @@
         note="Tutti always merges with a merge commit, never a squash or a rebase."
         {error}
       >
+        <!-- bind:value (rather than value + oninput) so clearing the field leaves it
+             cleared instead of Svelte writing a coerced 0 straight back into the box. -->
         <input
           type="number"
           min="1"
+          max="4294967295"
           aria-label="Issues per run"
-          value={s.maxIssuesPerRun}
-          oninput={(e) => (s.maxIssuesPerRun = Number(e.currentTarget.value))}
+          bind:value={s.maxIssuesPerRun}
         />
       </QuestionCard>
     {:else}

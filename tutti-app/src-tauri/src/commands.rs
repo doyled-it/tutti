@@ -296,15 +296,19 @@ pub async fn init_project(
         return Err("pause the run before initializing a project".into());
     }
     let root = PathBuf::from(&form.dir);
-    // 1. Write tutti.toml.
+    // 1. Write tutti.toml. Refuse to clobber one that appeared between the folder probe
+    // and here, so the cleanup below can only ever delete a file this call created.
     let params = params_from(&form);
     let toml_path = root.join("tutti.toml");
+    if toml_path.exists() {
+        return Err(format!("{} already exists", toml_path.display()));
+    }
     std::fs::write(&toml_path, tutti_app_core::render_tutti_toml(&params))
         .map_err(|e| format!("write tutti.toml: {e}"))?;
     // 2. Activate (loads the new config, builds the forge, sets state.project). On
     // failure (e.g. gitea without a login, or a bad repo), delete the tutti.toml we just
-    // wrote so a later folder pick still shows the Initialize form instead of routing to
-    // the existing-config path and hiding it behind an unusable file.
+    // wrote so a later folder pick still shows the wizard instead of routing to the
+    // existing-config path and hiding it behind an unusable file.
     let entry = match activate(&form.dir, Some(form.repo.clone()), &state).await {
         Ok(entry) => entry,
         Err(e) => {
@@ -321,18 +325,32 @@ pub async fn init_project(
     Ok(entry)
 }
 
-/// Diff the four status labels the engine relies on against what the forge already has,
-/// and create whichever are missing with sensible default colors. Best effort: a single
-/// label's create failure (permissions, rate limit, ...) must not abort project init.
+/// Diff the labels the engine relies on against what the forge already has, and create
+/// whichever are missing with sensible default colors. Best effort: a single label's
+/// create failure (permissions, rate limit, ...) must not abort project init.
+///
+/// The names come from the loaded config rather than the `status:*` convention, because
+/// the wizard lets the user choose their own `require_label` and `skip_labels`. Seeding
+/// the convention regardless would create labels the config never references and skip
+/// the ones it does.
 async fn seed_status_labels(state: &tauri::State<'_, AppState>) {
-    let wanted = [
-        ("status:ready", "0e8a16"),
-        ("status:in-progress", "fbca04"),
-        ("status:done", "1d76db"),
-        ("status:needs-human", "b60205"),
-    ];
     let guard = state.project.lock().await;
     let Some(p) = guard.as_ref() else { return };
+    let status = p.config.status_labels();
+    // Colors track the meaning, not the name: ready green, in-progress amber, done blue,
+    // and anything the engine must skip red.
+    let mut wanted: Vec<(String, &str)> = vec![
+        (status.ready, "0e8a16"),
+        (status.in_progress, "fbca04"),
+        (status.done, "1d76db"),
+    ];
+    wanted.extend(
+        p.config
+            .select
+            .skip_labels
+            .iter()
+            .map(|l| (l.clone(), "b60205")),
+    );
     let existing: std::collections::HashSet<String> = p
         .forge
         .list_labels()
@@ -342,8 +360,8 @@ async fn seed_status_labels(state: &tauri::State<'_, AppState>) {
         .map(|(n, _)| n)
         .collect();
     for (name, color) in wanted {
-        if !existing.contains(name) {
-            let _ = p.forge.create_label(name, color).await;
+        if !name.is_empty() && !existing.contains(&name) {
+            let _ = p.forge.create_label(&name, color).await;
         }
     }
 }

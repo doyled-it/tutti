@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect } from "vitest";
-import { initialState, validateStep, STEP_COUNT, type WizardState } from "./wizard";
+import {
+  initialState,
+  validateStep,
+  toInitForm,
+  STEP_COUNT,
+  MAX_ISSUES_CEILING,
+  type WizardState,
+} from "./wizard";
 
 function base(): WizardState {
   return initialState("/tmp/proj", {
@@ -98,5 +105,48 @@ describe("validateStep", () => {
   it("rejects a max-issues value below one", () => {
     expect(validateStep({ ...base(), maxIssuesPerRun: 0 }, 8)).not.toBeNull();
     expect(validateStep({ ...base(), maxIssuesPerRun: 1 }, 8)).toBeNull();
+  });
+
+  it("rejects a max-issues value the backend's u32 cannot hold", () => {
+    expect(validateStep({ ...base(), maxIssuesPerRun: MAX_ISSUES_CEILING }, 8)).toBeNull();
+    expect(validateStep({ ...base(), maxIssuesPerRun: MAX_ISSUES_CEILING + 1 }, 8)).not.toBeNull();
+  });
+});
+
+describe("toInitForm", () => {
+  it("trims and drops blanks", () => {
+    const f = toInitForm({
+      ...base(),
+      repo: "  o/r  ",
+      trunk: " main ",
+      integrationBranch: " staging ",
+      model: " m ",
+      requireLabel: " status:ready ",
+      skipLabels: [" keep ", "  ", ""],
+      gateCommands: [" cargo test ", " "],
+    });
+    expect(f.repo).toBe("o/r");
+    expect(f.trunk).toBe("main");
+    expect(f.integration_branch).toBe("staging");
+    expect(f.model).toBe("m");
+    expect(f.require_label).toBe("status:ready");
+    expect(f.skip_labels).toEqual(["keep"]);
+    expect(f.gate_commands).toEqual(["cargo test"]);
+  });
+
+  it("sends a login only for gitea", () => {
+    expect(toInitForm({ ...base(), forgeKind: "gitea", login: " codeberg " }).login).toBe(
+      "codeberg",
+    );
+    expect(toInitForm({ ...base(), forgeKind: "gitea", login: "  " }).login).toBeNull();
+    expect(toInitForm({ ...base(), forgeKind: "github", login: "ignored" }).login).toBeNull();
+  });
+
+  it("carries the remaining fields through unchanged", () => {
+    const f = toInitForm({ ...base(), routing: "phase_stacking", maxIssuesPerRun: 3 });
+    expect(f.dir).toBe("/tmp/proj");
+    expect(f.forge_kind).toBe("github");
+    expect(f.routing).toBe("phase_stacking");
+    expect(f.max_issues_per_run).toBe(3);
   });
 });

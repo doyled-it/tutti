@@ -46,6 +46,9 @@ export function initialState(dir: string, probe: Probe): WizardState {
 
 const blank = (s: string) => s.trim().length === 0;
 
+/** u32::MAX, the widest value the backend's `max_issues_per_run` can deserialize. */
+export const MAX_ISSUES_CEILING = 4294967295;
+
 /**
  * Validate one step. Returns the message to show under the control, or null when the
  * step is answerable. Mirrors Config::validate so a bad value is caught on the step
@@ -89,9 +92,14 @@ export function validateStep(s: WizardState, index: number): string | null {
       if (s.skipLabels.some(blank)) return "Remove the empty skip label.";
       return null;
     case 8:
-      return Number.isInteger(s.maxIssuesPerRun) && s.maxIssuesPerRun >= 1
-        ? null
-        : "Enter a number of 1 or more.";
+      // The upper bound is u32::MAX: anything larger fails to deserialize on the Rust
+      // side and would surface as a raw serde error in the preview box.
+      if (!Number.isInteger(s.maxIssuesPerRun) || s.maxIssuesPerRun < 1) {
+        return "Enter a number of 1 or more.";
+      }
+      return s.maxIssuesPerRun > MAX_ISSUES_CEILING
+        ? `Enter a number no larger than ${MAX_ISSUES_CEILING}.`
+        : null;
     default:
       return null;
   }

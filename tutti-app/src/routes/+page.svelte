@@ -118,7 +118,9 @@
       board.set(await api.getBoard());
       pendingInit = null;
     } catch (e) {
-      loadError = String(e);
+      // Deliberately not mirrored into loadError: the wizard is still open over the
+      // shell and shows the message itself, and a copy in the page banner would sit
+      // behind the scrim and then linger unexplained after Cancel.
       throw e;
     }
   }
