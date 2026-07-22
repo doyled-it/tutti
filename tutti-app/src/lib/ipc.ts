@@ -68,9 +68,14 @@ export interface InitForm {
   repo: string;
   forge_kind: string;
   login: string | null;
+  trunk: string;
+  routing: string;
   integration_branch: string;
   model: string;
-  gate_command: string;
+  max_issues_per_run: number;
+  require_label: string;
+  skip_labels: string[];
+  gate_commands: string[];
 }
 
 // Discriminated union mirroring EngineEvent (serde tag = "kind", snake_case).
@@ -87,7 +92,10 @@ export const api = {
     invoke<ProjectEntry>("add_project", { dir, repo: repo ?? null }),
   switchProject: (dir: string) => invoke<void>("switch_project", { dir }),
   probeProject: (dir: string) => invoke<Probe>("probe_project", { dir }),
-  initProject: (form: InitForm) => invoke<ProjectEntry>("init_project", { form }),
+  initProject: (form: InitForm) =>
+    invoke<ProjectEntry>("init_project", { form }),
+  previewTuttiToml: (form: InitForm) =>
+    invoke<string>("preview_tutti_toml", { form }),
   removeProject: (dir: string) => invoke<void>("remove_project", { dir }),
   getBoard: (milestone?: number) =>
     invoke<Board>("get_board", { milestone: milestone ?? null }),
