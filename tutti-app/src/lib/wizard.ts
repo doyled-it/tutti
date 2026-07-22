@@ -12,7 +12,16 @@ export interface WizardState {
   routing: string;
   integrationBranch: string;
   model: string;
+  /**
+   * Seeded high and never asked about. It bounds a single drain, and the app's run
+   * driver loops drain until you pause it, so as a setup question it is noise.
+   */
   maxIssuesPerRun: number;
+  /**
+   * Fixed convention, not a question. The engine, the board columns, and the seeded
+   * forge labels all have to agree on these names, and letting setup diverge from the
+   * convention buys nothing but a class of confusing mismatches.
+   */
   requireLabel: string;
   skipLabels: string[];
   /**
@@ -25,11 +34,27 @@ export interface WizardState {
   modelCustom: boolean;
 }
 
-/** How many question steps the wizard has, including the final review step. */
-export const STEP_COUNT = 9;
+/**
+ * The questions the wizard can ask, in order. Which of these actually appear depends on
+ * what the folder's git remote already told us: see `stepsFor`.
+ */
+export type StepId = "folder" | "forge" | "repo" | "trunk" | "routing" | "model" | "review";
 
-/** The model ids offered on step 5 before falling through to a custom id. */
+/** The model ids offered on the model step before falling through to a custom id. */
 export const KNOWN_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"];
+
+/** The gate every new project starts with: a command that always succeeds. */
+export const NO_OP_GATE = "true";
+
+/** The status label convention the engine, the board, and label seeding all share. */
+export const REQUIRE_LABEL = "status:ready";
+export const SKIP_LABELS = ["status:needs-human"];
+
+/**
+ * Seeded `max_issues_per_run`. High enough to be no practical limit, and still inside
+ * u32 so the backend can deserialize it.
+ */
+export const MAX_ISSUES_PER_RUN = 1_000_000;
 
 export function initialState(dir: string, probe: Probe): WizardState {
   return {
@@ -41,42 +66,55 @@ export function initialState(dir: string, probe: Probe): WizardState {
     routing: "trunk",
     integrationBranch: "staging",
     model: "claude-sonnet-5",
-    maxIssuesPerRun: 25,
-    requireLabel: "status:ready",
-    skipLabels: ["status:needs-human"],
-    gateCommands: ["true"],
+    maxIssuesPerRun: MAX_ISSUES_PER_RUN,
+    requireLabel: REQUIRE_LABEL,
+    skipLabels: [...SKIP_LABELS],
+    gateCommands: [NO_OP_GATE],
     modelCustom: false,
   };
 }
 
-const blank = (s: string) => s.trim().length === 0;
+/**
+ * The steps to show for this folder. Anything the probe already read off the git remote
+ * is not worth asking about, so a normal clone of a GitHub repo skips straight past the
+ * forge and repo questions.
+ *
+ * The forge step survives detection in one case: Gitea needs a `tea` login, which no
+ * remote URL can tell us, so the step stays to collect it.
+ */
+export function stepsFor(s: WizardState, probe: Probe): StepId[] {
+  const steps: StepId[] = ["folder"];
+  if (probe.forge_kind === null || s.forgeKind === "gitea") steps.push("forge");
+  if (probe.repo === null) steps.push("repo");
+  steps.push("trunk", "routing", "model", "review");
+  return steps;
+}
 
-/** u32::MAX, the widest value the backend's `max_issues_per_run` can deserialize. */
-export const MAX_ISSUES_CEILING = 4294967295;
+const blank = (s: string) => s.trim().length === 0;
 
 /**
  * Validate one step. Returns the message to show under the control, or null when the
  * step is answerable. Mirrors Config::validate so a bad value is caught on the step
  * that caused it instead of surfacing as a backend error after Create.
  */
-export function validateStep(s: WizardState, index: number): string | null {
-  switch (index) {
-    case 0:
+export function validateStep(s: WizardState, step: StepId): string | null {
+  switch (step) {
+    case "folder":
       return blank(s.dir) ? "Choose a folder to initialize." : null;
-    case 1:
+    case "forge":
       return s.forgeKind === "gitea" && blank(s.login)
         ? "Gitea needs a `tea` login. Run `tea login list` to see yours."
         : null;
-    case 2: {
+    case "repo": {
       const r = s.repo.trim();
       if (blank(r) || !r.includes("/") || r.startsWith("/") || r.endsWith("/") || /\s/.test(r)) {
         return "Enter it as `owner/repo`.";
       }
       return null;
     }
-    case 3:
+    case "trunk":
       return blank(s.trunk) || /\s/.test(s.trunk.trim()) ? "Enter a branch name." : null;
-    case 4: {
+    case "routing": {
       if (s.routing === "trunk" && blank(s.integrationBranch)) {
         return "Enter the branch Tutti should merge finished work into.";
       }
@@ -85,28 +123,26 @@ export function validateStep(s: WizardState, index: number): string | null {
       }
       return null;
     }
-    case 5:
+    case "model":
       return blank(s.model) ? "Enter a model id." : null;
-    case 6:
-      if (blank(s.requireLabel)) return "Enter the label Tutti should require.";
-      if (s.skipLabels.some(blank)) return "Remove the empty skip label.";
-      return null;
-    case 7:
-      // The upper bound is u32::MAX: anything larger fails to deserialize on the Rust
-      // side and would surface as a raw serde error in the preview box.
-      if (!Number.isInteger(s.maxIssuesPerRun) || s.maxIssuesPerRun < 1) {
-        return "Enter a number of 1 or more.";
-      }
-      return s.maxIssuesPerRun > MAX_ISSUES_CEILING
-        ? `Enter a number no larger than ${MAX_ISSUES_CEILING}.`
-        : null;
     default:
       return null;
   }
 }
 
-/** The gate every new project starts with: a command that always succeeds. */
-export const NO_OP_GATE = "true";
+/**
+ * Whether every step is answerable. Guards Create against a skipped step holding a bad
+ * value, which is reachable when the repo step is hidden but detection produced
+ * something malformed.
+ */
+export function validateAll(s: WizardState): string | null {
+  const ids: StepId[] = ["folder", "forge", "repo", "trunk", "routing", "model"];
+  for (const id of ids) {
+    const e = validateStep(s, id);
+    if (e) return e;
+  }
+  return null;
+}
 
 /** Project the wizard state onto the backend payload. */
 export function toInitForm(s: WizardState): InitForm {

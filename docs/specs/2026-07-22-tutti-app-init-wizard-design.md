@@ -9,9 +9,9 @@ sidebar: five unlabeled text boxes and a select, crammed into a 160px rail. Noth
 screen says what "staging" or "true" mean, which values are legal, or what happens if you
 get one wrong. It is unusable by anyone who has not read `config.rs`.
 
-It is also incomplete. `Config` has more settings than the form exposes, so the form
-silently hardcodes trunk, routing, `max_issues_per_run`, `require_label`, and
-`skip_labels` to their defaults with no way to see or change them.
+It also asks the wrong questions. The settings that matter at setup (trunk, routing) are
+not exposed at all, while the ones it does ask for are either already knowable from the
+git remote or not answerable this early.
 
 ## Goal
 
@@ -39,18 +39,16 @@ Layout:
 
 ```
 ┌──────────────────────────────────────────────┐
-│ New Tutti project                Step 3 of 9 │  header: title + counter + progress dots
+│ New Tutti project                Step 2 of 5 │  header: title + counter + progress dots
 ├──────────────────────────────────────────────┤
-│ Which repository?                            │  question heading
+│ What is your trunk branch?                   │  question heading
 │                                              │
-│ The repo Tutti reads issues from and opens   │  description paragraph
-│ pull requests against. Detected from your    │
-│ git remote.                                  │
+│ Your protected branch. Tutti never merges    │  description paragraph
+│ into it and never commits to it directly.    │
 │                                              │
-│ [ doyled-it/oxidra                         ] │  control
+│ [ main                                     ] │  control
 │                                              │
-│ Example: doyled-it/oxidra                    │  example line
-│ Detected from your git remote.               │  contextual note
+│ Default: main                                │  default hint
 ├──────────────────────────────────────────────┤
 │ [Cancel]                    [Back]  [Next →] │  footer
 └──────────────────────────────────────────────┘
@@ -77,34 +75,55 @@ label and a one-line description, selected state using `--accent-border` / `--ac
 
 ## The steps
 
-| # | Field(s) | Control | Description shown | Example / default |
+The wizard does not ask for anything it can already read. `probe_project` gives the repo
+slug and the forge kind from the folder's git remote, so on a normal clone both of those
+questions disappear and a GitHub project is five steps, four of which have a default you
+can accept.
+
+The visible steps are therefore derived (`stepsFor`), not a fixed list:
+
+| Step | Shown when |
+|---|---|
+| `folder` | always |
+| `forge` | the remote did not identify one, **or** the forge is Gitea (which needs a `tea` login no URL can supply) |
+| `repo` | the remote did not identify one |
+| `trunk` | always |
+| `routing` | always |
+| `model` | always |
+| `review` | always |
+
+| Step | Field(s) | Control | Description shown | Example / default |
 |---|---|---|---|---|
-| 1 | `dir` | read-only path + **Choose a different folder...** | "The local git checkout Tutti will work in. It must already be a git repo with your project in it." | shows what the probe detected |
-| 2 | `forge_kind`, `login` | 3 radio cards | GitHub: "Issues and PRs on github.com or GitHub Enterprise. Requires the `gh` CLI, already logged in." GitLab: "Issues, merge requests and epics on gitlab.com or self-hosted. Requires `glab`, already logged in." Gitea: "Issues and PRs on Gitea, Forgejo or Codeberg. Requires `tea`, already logged in." Choosing Gitea reveals a required **login** text field: "Which `tea` login to use. This is the name you gave the host when you ran `tea login add`. Run `tea login list` to see yours." | login example: `codeberg` |
-| 3 | `repo` | text | "The repo Tutti reads issues from and opens pull requests against." Note when pre-filled: "Detected from your git remote." | GitHub/Gitea: `doyled-it/oxidra`. GitLab: `group/subgroup/project` |
-| 4 | `trunk` | text | "Your protected branch. Tutti never merges into it and never commits to it directly. Promoting work from the integration branch to trunk stays a human decision." | default `main` |
-| 5 | `routing`, `integration_branch` | 2 radio cards | Trunk (recommended): "Every issue branches off one integration branch and merges back into it. Simple, and what you want unless you are running phased milestones." Phase stacking: "Each milestone gets its own integration branch stacked on the previous one, so phase N builds on phase N-1 before any of it reaches trunk." Trunk reveals **integration branch**: "The branch Tutti merges finished work into. It must exist, and must not be your trunk." | default `staging` |
-| 6 | `model` | select of known ids + **Custom...** revealing a text field | "Which model the coding agent runs as. Sonnet is the balanced default; Opus is stronger and slower on hard work; Haiku is fastest and cheapest for mechanical tasks." | default `claude-sonnet-5` |
-| 7 | `require_label`, `skip_labels` | text + chip list with add/remove | "Tutti only picks up issues carrying the required label, and never picks up one carrying a skip label." Callout: "Tutti will create `status:ready`, `status:in-progress` and `status:done` in your forge if they do not exist yet, and will move each issue between them as it works." | defaults `status:ready`, `status:needs-human` |
-| 8 | `max_issues_per_run` | number | "How many issues one Run will work through before stopping. A safety ceiling, not a target: the run also stops when nothing is ready." Note: "Tutti always merges with a merge commit, never a squash or rebase." | default `25` |
-| 9 | (review) | read-only `<pre>` of the rendered file | "This is exactly what will be written to `tutti.toml`. Nothing has been created yet." | primary button reads **Create project** |
+| `folder` | `dir` | read-only path + **Choose a different folder...** | "The local git checkout Tutti will work in. It must already be a git repo with your project in it." | reports what the probe detected, or that it detected nothing |
+| `forge` | `forge_kind`, `login` | 3 radio cards | GitHub: "Issues and pull requests on github.com or GitHub Enterprise. Requires the `gh` CLI, already logged in." GitLab: "Issues, merge requests and epics on gitlab.com or a self-hosted instance. Requires `glab`." Gitea: "Issues and pull requests on Gitea, Forgejo or Codeberg. Requires `tea`." Gitea reveals a required **login**: "The name you gave the host when you ran `tea login add`. Run `tea login list` to see yours." | login example: `codeberg` |
+| `repo` | `repo` | text | "The repo Tutti reads issues from and opens pull requests against." | GitHub/Gitea: `doyled-it/oxidra`. GitLab: `group/subgroup/project` |
+| `trunk` | `trunk` | text | "Your protected branch. Tutti never merges into it and never commits to it directly. Promoting finished work from the integration branch up to trunk stays a human decision." | default `main` |
+| `routing` | `routing`, `integration_branch` | 2 radio cards | Trunk (recommended): "Every issue branches off one integration branch and merges back into it. Simple, and what you want unless you are running phased milestones." Phase stacking: "Each milestone gets its own integration branch, stacked on the previous one, so phase N builds on phase N-1 before any of it reaches trunk." Trunk reveals **integration branch**, which must exist and must not equal trunk. | default `staging` |
+| `model` | `model` | select of known ids + **Custom...** | "Sonnet is the balanced default. Opus is stronger and slower on hard work. Haiku is fastest and cheapest for mechanical tasks." | default `claude-sonnet-5` |
+| `review` | (none) | read-only `<pre>` of the rendered file | "This is exactly what will be written to tutti.toml. Nothing has been created yet." Two callouts: the labels Tutti will create, and that the gate is the no-op. | primary button reads **Create project** |
 
-Step 7's callout is a statement of existing behavior: `init_project` already calls
-`seed_status_labels`. The wizard just makes it visible before the fact.
+### What the wizard deliberately does not ask
 
-### Why the gate is not a question
+Each of these is seeded in `wizard.ts` and stated on the review step rather than asked
+about, because none of them is a decision the user is equipped to make at setup time:
 
-An earlier draft asked for `gate_commands` as a step. It is cut. What must pass before
-Tutti ships is not a setup fact you can state before you have described the project: it
-falls out of the brainstorming conversation about what the project is and how it is
-verified. Asking for it here forces a guess at the moment the user knows least, and the
-guess then sticks in the config.
-
-So the wizard seeds `gate = ["true"]` (the explicit no-op), the review step says so
-plainly, and setting a real gate belongs to the orchestrator conversation. `NO_OP_GATE`
-in `wizard.ts` is that seed, and `toInitForm` falls back to it rather than ever emitting
-an empty command list, which would mean the same thing while being much easier to
-misread in the file.
+- **`require_label` / `skip_labels`.** A fixed convention (`status:ready`,
+  `status:needs-human`). The engine, the board columns, and label seeding all have to
+  agree on these names. Letting setup diverge from the convention buys nothing but a
+  class of confusing mismatches, so `REQUIRE_LABEL` and `SKIP_LABELS` are constants.
+- **`max_issues_per_run`.** It bounds a single drain, and the app's run driver loops
+  drain until you pause it, so as a setup question it is noise. Seeded to
+  `MAX_ISSUES_PER_RUN` (1,000,000), with `render_tutti_toml` emitting a comment above
+  the key so a large number in the file does not read as a typo.
+- **`gate_commands`.** What must pass before Tutti ships is not a setup fact: it falls
+  out of the brainstorming conversation about what the project is and how it gets
+  verified. Asking here forces a guess at the moment the user knows least, and the guess
+  then sticks in the config. Seeded to `NO_OP_GATE` (`true`), the review step says so,
+  and setting a real gate belongs to the orchestrator conversation (issue #15).
+  `toInitForm` falls back to it rather than ever emitting an empty command list, which
+  would mean the same thing while being much easier to misread in the file.
+- **`ci_max_polls`, `poll_delay_secs`, `merge_mode`, `roles`.** Tuning knobs. Hand-edit
+  `tutti.toml` to change them.
 
 ## Validation
 
@@ -113,13 +132,16 @@ it rather than as a backend error string after Create:
 
 | Step | Rule | Message |
 |---|---|---|
-| 2 | Gitea requires a non-empty login | "Gitea needs a `tea` login. Run `tea login list` to see yours." |
-| 3 | non-empty, at least one `/`, no leading/trailing slash, no whitespace | "Enter it as `owner/repo`." |
-| 4 | non-empty, no whitespace | "Enter a branch name." |
-| 5 | integration branch non-empty when routing is `trunk`; must not equal trunk | "The integration branch must be different from your trunk branch." |
-| 6 | non-empty when Custom | "Enter a model id." |
-| 7 | `require_label` non-empty; no blank skip chips | "Enter the label Tutti should require." |
-| 8 | integer >= 1, no larger than u32::MAX | "Enter a number of 1 or more." |
+| `forge` | Gitea requires a non-empty login | "Gitea needs a `tea` login. Run `tea login list` to see yours." |
+| `repo` | non-empty, at least one `/`, no leading/trailing slash, no whitespace | "Enter it as `owner/repo`." |
+| `trunk` | non-empty, no whitespace | "Enter a branch name." |
+| `routing` | integration branch non-empty when routing is `trunk`; must not equal trunk | "The integration branch must be different from your trunk branch." |
+| `model` | non-empty | "Enter a model id." |
+
+Because steps can be hidden, per-step validation is not enough on its own: detection can
+hand back a repo slug the `repo` step would have rejected, and that step is skipped
+*because* detection succeeded. `validateAll` re-checks every rule (hidden steps included)
+before Create writes anything, and reports the failure on the review step.
 
 Validation lives in a pure module so it is testable without mounting anything.
 

@@ -235,6 +235,11 @@ pub fn render_tutti_toml(p: &InitParams) -> String {
         toml_basic_string(&p.integration_branch)
     ));
     out.push_str(&format!("model = {}\n", toml_basic_string(&p.model)));
+    // The app's run driver loops drain() until you pause it, so this per-drain ceiling is
+    // not a knob anyone should have to think about at setup. Say what it is in the file
+    // rather than leaving a bare large number looking like a typo.
+    out.push_str("# Per-drain ceiling. The app loops until paused, so this is not a limit\n");
+    out.push_str("# on how much a run gets through; lower it if you want a hard stop.\n");
     out.push_str(&format!("max_issues_per_run = {}\n", p.max_issues_per_run));
     out.push_str("\n[select]\n");
     out.push_str(&format!(

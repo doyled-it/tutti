@@ -9,8 +9,9 @@
   import {
     initialState,
     validateStep,
+    validateAll,
+    stepsFor,
     toInitForm,
-    STEP_COUNT,
     KNOWN_MODELS,
     type WizardState,
   } from "$lib/wizard";
@@ -53,10 +54,13 @@
     step = 0;
   });
 
-  let error = $derived(validateStep(s, step));
-  let last = $derived(step === STEP_COUNT - 1);
-
-  const STEPS = Array.from({ length: STEP_COUNT }, (_, i) => i);
+  // The visible steps depend on what the probe detected, so they are derived rather than
+  // a fixed list. `step` is an index into this, clamped in case a step disappears (the
+  // forge step does exactly that when you move off Gitea).
+  let steps = $derived(stepsFor(s, probe));
+  let current = $derived(steps[Math.min(step, steps.length - 1)]);
+  let error = $derived(validateStep(s, current));
+  let last = $derived(step >= steps.length - 1);
 
   const REPO_EXAMPLE: Record<string, string> = {
     github: "doyled-it/oxidra",
@@ -84,7 +88,7 @@
   // whole point of this step is that the preview matches what Create will write.
   let previewSeq = 0;
   $effect(() => {
-    if (step !== STEP_COUNT - 1) return;
+    if (current !== "review") return;
     preview = null;
     previewError = null;
     previewSeq += 1;
@@ -106,7 +110,7 @@
   let bodyEl = $state<HTMLElement | null>(null);
   $effect(() => {
     // Track the step so this re-runs on navigation.
-    void step;
+    void current;
     const el = bodyEl?.querySelector<HTMLElement>(
       'input:not([type="radio"]), input[type="radio"]:checked, select, textarea, button',
     );
@@ -115,6 +119,14 @@
 
   async function create() {
     if (submitting) return;
+    // A hidden step can still hold a bad value: detection can hand back a repo slug the
+    // repo step would have rejected, and that step is skipped precisely because
+    // detection succeeded. Check everything before writing anything.
+    const bad = validateAll(s);
+    if (bad) {
+      submitError = bad;
+      return;
+    }
     submitting = true;
     submitError = null;
     try {
@@ -165,16 +177,6 @@
       else next();
     }
   }
-
-  function setSkip(i: number, v: string) {
-    s.skipLabels[i] = v;
-  }
-  function addSkip() {
-    s.skipLabels = [...s.skipLabels, ""];
-  }
-  function removeSkip(i: number) {
-    s.skipLabels = s.skipLabels.filter((_, j) => j !== i);
-  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -190,27 +192,27 @@
 >
   <header>
     <span class="title">New Tutti project</span>
-    <span class="counter">Step {step + 1} of {STEP_COUNT}</span>
+    <span class="counter">Step {step + 1} of {steps.length}</span>
     <div class="dots">
-      {#each STEPS as i (i)}
+      {#each steps as id, i (id)}
         <span class="dot" class:on={i === step} class:past={i < step}></span>
       {/each}
     </div>
   </header>
 
   <div class="body" bind:this={bodyEl}>
-    {#if step === 0}
+    {#if current === "folder"}
       <QuestionCard
         question="Which folder?"
         description="The local git checkout Tutti will work in. It must already be a git repo with your project in it."
         note={detectedRepo
-          ? `Detected the repo ${detectedRepo} from this folder's git remote.`
-          : "No git remote detected here, so you will need to type the repo yourself on the next steps."}
+          ? `Detected the repo ${detectedRepo} from this folder's git remote, so there is nothing to enter for it.`
+          : "No git remote detected here, so the next steps ask which forge and repo this is."}
       >
         <div class="path">{s.dir}</div>
         <button type="button" class="ghost" onclick={onRepick}>Choose a different folder...</button>
       </QuestionCard>
-    {:else if step === 1}
+    {:else if current === "forge"}
       <QuestionCard
         question="Which forge hosts this project?"
         description="Tutti reads issues and opens pull requests through your forge's command-line tool, using the login you already have."
@@ -257,7 +259,7 @@
           </div>
         {/if}
       </QuestionCard>
-    {:else if step === 2}
+    {:else if current === "repo"}
       <QuestionCard
         question="Which repository?"
         description="The repo Tutti reads issues from and opens pull requests against."
@@ -267,7 +269,7 @@
       >
         <input bind:value={s.repo} placeholder={REPO_EXAMPLE[s.forgeKind] ?? "owner/repo"} />
       </QuestionCard>
-    {:else if step === 3}
+    {:else if current === "trunk"}
       <QuestionCard
         question="What is your trunk branch?"
         description="Your protected branch. Tutti never merges into it and never commits to it directly. Promoting finished work from the integration branch up to trunk stays a human decision."
@@ -276,7 +278,7 @@
       >
         <input bind:value={s.trunk} placeholder="main" />
       </QuestionCard>
-    {:else if step === 4}
+    {:else if current === "routing"}
       <QuestionCard
         question="How should work be routed?"
         description="Where each issue's branch comes from, and where it merges back to."
@@ -311,7 +313,7 @@
           </div>
         {/if}
       </QuestionCard>
-    {:else if step === 5}
+    {:else if current === "model"}
       <QuestionCard
         question="Which model should the agent run as?"
         description="Sonnet is the balanced default. Opus is stronger and slower on hard work. Haiku is fastest and cheapest for mechanical tasks."
@@ -340,58 +342,6 @@
           <input bind:value={s.model} placeholder="model id" aria-label="Custom model id" />
         {/if}
       </QuestionCard>
-    {:else if step === 6}
-      <QuestionCard
-        question="Which issues should Tutti pick up?"
-        description="Tutti only picks up issues carrying the required label, and never picks up one carrying a skip label."
-        {error}
-      >
-        <label class="sub-label" for="require-label">Required label</label>
-        <input id="require-label" bind:value={s.requireLabel} placeholder="status:ready" />
-        <div class="sub-label">Skip labels</div>
-        {#each s.skipLabels as lab, i (i)}
-          <div class="row">
-            <input
-              value={lab}
-              aria-label={`Skip label ${i + 1}`}
-              oninput={(e) => setSkip(i, e.currentTarget.value)}
-            />
-            <button
-              type="button"
-              class="ghost small"
-              aria-label="Remove label"
-              onclick={() => removeSkip(i)}>&times;</button
-            >
-          </div>
-        {/each}
-        <button type="button" class="ghost small self-start" onclick={addSkip}>+ Add label</button>
-        <div class="callout">
-          Tutti will create <code>{s.requireLabel || "status:ready"}</code>,
-          <code>status:in-progress</code>, <code>status:done</code>
-          {#each s.skipLabels.filter((l) => l.trim()) as lab (lab)}
-            and <code>{lab}</code>
-          {/each}
-          in your forge if they do not exist yet, and will move each issue between them as it works.
-        </div>
-      </QuestionCard>
-    {:else if step === 7}
-      <QuestionCard
-        question="How many issues per run?"
-        description="How many issues one Run will work through before stopping. This is a safety ceiling, not a target: the run also stops as soon as nothing is ready."
-        fallback="25"
-        note="Tutti always merges with a merge commit, never a squash or a rebase."
-        {error}
-      >
-        <!-- bind:value (rather than value + oninput) so clearing the field leaves it
-             cleared instead of Svelte writing a coerced 0 straight back into the box. -->
-        <input
-          type="number"
-          min="1"
-          max="4294967295"
-          aria-label="Issues per run"
-          bind:value={s.maxIssuesPerRun}
-        />
-      </QuestionCard>
     {:else}
       <QuestionCard
         question="Ready to create"
@@ -406,9 +356,14 @@
           <pre class="preview">{preview}</pre>
         {/if}
         <div class="callout">
-          The gate is set to <code>true</code>, which accepts everything. What actually has to pass
-          before Tutti ships is a decision that comes out of talking through the project, so you set
-          it from the orchestrator conversation rather than guessing at it here.
+          Tutti will create <code>status:ready</code>, <code>status:in-progress</code>,
+          <code>status:done</code> and <code>status:needs-human</code> in your forge if they are not there
+          yet, and will move each issue between them as it works.
+        </div>
+        <div class="callout">
+          The gate is <code>true</code>, which accepts everything. What actually has to pass before
+          Tutti ships is a decision that comes out of talking through the project, so you set it
+          from the orchestrator conversation rather than guessing at it here.
         </div>
       </QuestionCard>
     {/if}
@@ -553,16 +508,6 @@
     line-height: 1.5;
     color: var(--text-dim);
   }
-  .row {
-    display: flex;
-    gap: 6px;
-  }
-  .row input {
-    flex: 1;
-  }
-  .self-start {
-    align-self: flex-start;
-  }
   .callout {
     margin-top: 6px;
     padding: 10px 12px;
@@ -608,9 +553,6 @@
     color: var(--text);
     font-size: 13px;
     cursor: pointer;
-  }
-  button.small {
-    padding: 5px 9px;
   }
   button:hover:not(:disabled) {
     background: var(--hover);
