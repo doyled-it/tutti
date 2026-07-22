@@ -71,6 +71,34 @@ All through the CLIs already in use, so authentication is whatever the user alre
 | GitLab | `glab api user`, `glab api groups?min_access_level=30&per_page=100` | `glab api groups/{id}/projects?per_page=100`, `glab api users/{id}/projects?per_page=100` |
 | Gitea | `tea api user`, `tea api user/orgs` (with `--login`) | `tea api users/{login}/repos`, `tea api orgs/{org}/repos` |
 
+### Verified wire formats
+
+Captured 2026-07-22 from the real CLIs against `doyled-it` on both hosts, so the field
+names below are facts rather than guesses.
+
+**GitHub.** `gh api user` gives `{login, id, type}`. `gh api user/orgs` gives objects
+with `login`. Repo objects carry `full_name`, `name`, `description` (nullable),
+`clone_url`, `private` (bool), and also `fork` and `archived`.
+
+**GitLab.** `glab api user` gives `{id, username, name}`; the id is numeric and the
+projects call needs it (`users/{id}/projects`, not the username). Groups carry `id`,
+`full_path`, `parent_id` (null at top level) and `name`; `full_path` is the field to
+display and `id` is what the projects call is keyed by. Project objects carry
+`path_with_namespace`, `name`, `description` (nullable), `http_url_to_repo`, and
+**`visibility` as a string** (`"private"` / `"internal"` / `"public"`), not a boolean.
+
+Two consequences the naive mapping gets wrong:
+
+- `RemoteRepo.private` must be `visibility != "public"` on GitLab, and a straight
+  `private` field on GitHub and Gitea. An `internal` GitLab project is not public and
+  must not be shown as such.
+- `RemoteRepo.clone_url` comes from three differently-named fields (`clone_url`,
+  `http_url_to_repo`, `clone_url`), so the mapping is per adapter, not shared.
+
+GitHub also exposes `fork` and `archived`. Neither is filtered out: an archived repo is
+a legitimate thing to browse to and read from. They are surfaced as a muted marker in
+the list so the choice is informed rather than made for the user.
+
 Notes that shape the implementation:
 
 - **Pagination is not optional.** A GitHub account with hundreds of repos, or a GitLab
@@ -78,9 +106,11 @@ Notes that shape the implementation:
   the missing repo will look like a permissions problem. GitHub and Gitea use
   `--paginate` where available; GitLab gets an explicit page loop capped at 10 pages
   (1000 repos), and the UI states when the cap was hit rather than quietly truncating.
-- **GitLab namespaces are keyed by numeric id, not path**, for the projects call. The
-  `Namespace` therefore carries the id in `path` for groups and the UI shows `name`.
-  For the user's own namespace GitLab wants `users/{id}/projects`.
+- **GitLab namespaces are keyed by numeric id, not path**, for the projects call, for
+  both groups and the user's own namespace. `Namespace.path` therefore holds the id on
+  GitLab while `name` holds the human-readable `full_path`. On GitHub and Gitea `path`
+  is the login or org name and no such split is needed, which is why the two fields
+  exist rather than one.
 - **Gitea needs `--login`** on every call, exactly like `GiteaForge`, and the flag must
   precede the endpoint positional (urfave-cli v1 rejects it otherwise). This is a
   gotcha already learned in 3B-tea and it applies unchanged here.
