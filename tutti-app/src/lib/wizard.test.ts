@@ -6,6 +6,7 @@ import {
   toInitForm,
   STEP_COUNT,
   MAX_ISSUES_CEILING,
+  NO_OP_GATE,
   type WizardState,
 } from "./wizard";
 
@@ -92,24 +93,26 @@ describe("validateStep", () => {
     expect(validateStep({ ...base(), model: "  " }, 5)).not.toBeNull();
   });
 
-  it("rejects an empty or blank gate command list", () => {
-    expect(validateStep({ ...base(), gateCommands: [] }, 6)).not.toBeNull();
-    expect(validateStep({ ...base(), gateCommands: ["cargo test", " "] }, 6)).not.toBeNull();
-  });
-
   it("rejects an empty require label or a blank skip label", () => {
-    expect(validateStep({ ...base(), requireLabel: "" }, 7)).not.toBeNull();
-    expect(validateStep({ ...base(), skipLabels: ["ok", ""] }, 7)).not.toBeNull();
+    expect(validateStep({ ...base(), requireLabel: "" }, 6)).not.toBeNull();
+    expect(validateStep({ ...base(), skipLabels: ["ok", ""] }, 6)).not.toBeNull();
   });
 
   it("rejects a max-issues value below one", () => {
-    expect(validateStep({ ...base(), maxIssuesPerRun: 0 }, 8)).not.toBeNull();
-    expect(validateStep({ ...base(), maxIssuesPerRun: 1 }, 8)).toBeNull();
+    expect(validateStep({ ...base(), maxIssuesPerRun: 0 }, 7)).not.toBeNull();
+    expect(validateStep({ ...base(), maxIssuesPerRun: 1 }, 7)).toBeNull();
   });
 
   it("rejects a max-issues value the backend's u32 cannot hold", () => {
-    expect(validateStep({ ...base(), maxIssuesPerRun: MAX_ISSUES_CEILING }, 8)).toBeNull();
-    expect(validateStep({ ...base(), maxIssuesPerRun: MAX_ISSUES_CEILING + 1 }, 8)).not.toBeNull();
+    expect(validateStep({ ...base(), maxIssuesPerRun: MAX_ISSUES_CEILING }, 7)).toBeNull();
+    expect(validateStep({ ...base(), maxIssuesPerRun: MAX_ISSUES_CEILING + 1 }, 7)).not.toBeNull();
+  });
+
+  // The gate is never asked about, so no step validates it. It rides through as the
+  // seeded no-op until the orchestrator conversation sets a real one.
+  it("does not gate any step on the gate commands", () => {
+    const s = { ...base(), gateCommands: [] };
+    for (let i = 0; i < STEP_COUNT; i++) expect(validateStep(s, i)).toBeNull();
   });
 });
 
@@ -132,6 +135,11 @@ describe("toInitForm", () => {
     expect(f.require_label).toBe("status:ready");
     expect(f.skip_labels).toEqual(["keep"]);
     expect(f.gate_commands).toEqual(["cargo test"]);
+  });
+
+  it("never sends an empty gate", () => {
+    expect(toInitForm({ ...base(), gateCommands: [] }).gate_commands).toEqual([NO_OP_GATE]);
+    expect(toInitForm({ ...base(), gateCommands: [" "] }).gate_commands).toEqual([NO_OP_GATE]);
   });
 
   it("sends a login only for gitea", () => {

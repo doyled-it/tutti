@@ -166,15 +166,6 @@
     }
   }
 
-  function setGate(i: number, v: string) {
-    s.gateCommands[i] = v;
-  }
-  function addGate() {
-    s.gateCommands = [...s.gateCommands, ""];
-  }
-  function removeGate(i: number) {
-    s.gateCommands = s.gateCommands.filter((_, j) => j !== i);
-  }
   function setSkip(i: number, v: string) {
     s.skipLabels[i] = v;
   }
@@ -351,31 +342,6 @@
       </QuestionCard>
     {:else if step === 6}
       <QuestionCard
-        question="What must pass before shipping?"
-        description="Commands that must pass before Tutti will ship an issue's work. They run in order in your repo root, and the first non-zero exit fails the gate and sends the work back for a fix. Leave the single `true` if you do not want a gate yet."
-        example="cargo test, npm test, uv run pytest"
-        {error}
-      >
-        {#each s.gateCommands as cmd, i (i)}
-          <div class="row">
-            <input
-              value={cmd}
-              aria-label={`Gate command ${i + 1}`}
-              oninput={(e) => setGate(i, e.currentTarget.value)}
-            />
-            <button
-              type="button"
-              class="ghost small"
-              aria-label="Remove command"
-              onclick={() => removeGate(i)}>&times;</button
-            >
-          </div>
-        {/each}
-        <button type="button" class="ghost small self-start" onclick={addGate}>+ Add command</button
-        >
-      </QuestionCard>
-    {:else if step === 7}
-      <QuestionCard
         question="Which issues should Tutti pick up?"
         description="Tutti only picks up issues carrying the required label, and never picks up one carrying a skip label."
         {error}
@@ -408,7 +374,7 @@
           in your forge if they do not exist yet, and will move each issue between them as it works.
         </div>
       </QuestionCard>
-    {:else if step === 8}
+    {:else if step === 7}
       <QuestionCard
         question="How many issues per run?"
         description="How many issues one Run will work through before stopping. This is a safety ceiling, not a target: the run also stops as soon as nothing is ready."
@@ -439,6 +405,11 @@
         {:else}
           <pre class="preview">{preview}</pre>
         {/if}
+        <div class="callout">
+          The gate is set to <code>true</code>, which accepts everything. What actually has to pass
+          before Tutti ships is a decision that comes out of talking through the project, so you set
+          it from the orchestrator conversation rather than guessing at it here.
+        </div>
       </QuestionCard>
     {/if}
   </div>

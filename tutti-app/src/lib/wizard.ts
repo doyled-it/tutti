@@ -15,15 +15,20 @@ export interface WizardState {
   maxIssuesPerRun: number;
   requireLabel: string;
   skipLabels: string[];
+  /**
+   * Seeded to the no-op gate and never asked about. A project's real gate is not a
+   * setup fact: it comes out of talking through what the project is, so it is set later
+   * from the orchestrator conversation rather than guessed at here.
+   */
   gateCommands: string[];
   /** True once the user picks "Custom..." on the model step, so the text input stays open. */
   modelCustom: boolean;
 }
 
 /** How many question steps the wizard has, including the final review step. */
-export const STEP_COUNT = 10;
+export const STEP_COUNT = 9;
 
-/** The model ids offered on step 6 before falling through to a custom id. */
+/** The model ids offered on step 5 before falling through to a custom id. */
 export const KNOWN_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"];
 
 export function initialState(dir: string, probe: Probe): WizardState {
@@ -83,15 +88,10 @@ export function validateStep(s: WizardState, index: number): string | null {
     case 5:
       return blank(s.model) ? "Enter a model id." : null;
     case 6:
-      if (s.gateCommands.length === 0 || s.gateCommands.some(blank)) {
-        return "Add at least one command, or use `true` for no gate.";
-      }
-      return null;
-    case 7:
       if (blank(s.requireLabel)) return "Enter the label Tutti should require.";
       if (s.skipLabels.some(blank)) return "Remove the empty skip label.";
       return null;
-    case 8:
+    case 7:
       // The upper bound is u32::MAX: anything larger fails to deserialize on the Rust
       // side and would surface as a raw serde error in the preview box.
       if (!Number.isInteger(s.maxIssuesPerRun) || s.maxIssuesPerRun < 1) {
@@ -105,8 +105,15 @@ export function validateStep(s: WizardState, index: number): string | null {
   }
 }
 
+/** The gate every new project starts with: a command that always succeeds. */
+export const NO_OP_GATE = "true";
+
 /** Project the wizard state onto the backend payload. */
 export function toInitForm(s: WizardState): InitForm {
+  // No step can empty this, but an empty command list would mean "ship without running
+  // anything", which reads the same as the no-op gate while being far less obvious in
+  // the file. Keep the explicit `true` so the config always says what it does.
+  const gate = s.gateCommands.map((c) => c.trim()).filter((c) => c.length > 0);
   return {
     dir: s.dir,
     repo: s.repo.trim(),
@@ -121,6 +128,6 @@ export function toInitForm(s: WizardState): InitForm {
     max_issues_per_run: s.maxIssuesPerRun,
     require_label: s.requireLabel.trim(),
     skip_labels: s.skipLabels.map((l) => l.trim()).filter((l) => l.length > 0),
-    gate_commands: s.gateCommands.map((c) => c.trim()).filter((c) => c.length > 0),
+    gate_commands: gate.length > 0 ? gate : [NO_OP_GATE],
   };
 }

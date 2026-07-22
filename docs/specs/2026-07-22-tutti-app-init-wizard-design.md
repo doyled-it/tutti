@@ -39,7 +39,7 @@ Layout:
 
 ```
 ┌──────────────────────────────────────────────┐
-│ New Tutti project                Step 3 of 10│  header: title + counter + progress dots
+│ New Tutti project                Step 3 of 9 │  header: title + counter + progress dots
 ├──────────────────────────────────────────────┤
 │ Which repository?                            │  question heading
 │                                              │
@@ -85,13 +85,26 @@ label and a one-line description, selected state using `--accent-border` / `--ac
 | 4 | `trunk` | text | "Your protected branch. Tutti never merges into it and never commits to it directly. Promoting work from the integration branch to trunk stays a human decision." | default `main` |
 | 5 | `routing`, `integration_branch` | 2 radio cards | Trunk (recommended): "Every issue branches off one integration branch and merges back into it. Simple, and what you want unless you are running phased milestones." Phase stacking: "Each milestone gets its own integration branch stacked on the previous one, so phase N builds on phase N-1 before any of it reaches trunk." Trunk reveals **integration branch**: "The branch Tutti merges finished work into. It must exist, and must not be your trunk." | default `staging` |
 | 6 | `model` | select of known ids + **Custom...** revealing a text field | "Which model the coding agent runs as. Sonnet is the balanced default; Opus is stronger and slower on hard work; Haiku is fastest and cheapest for mechanical tasks." | default `claude-sonnet-5` |
-| 7 | `gate_commands` | repeatable rows with add/remove | "Commands that must pass before Tutti will ship an issue's work. They run in order in your repo root; the first non-zero exit fails the gate and the work goes back for a fix. Leave the single `true` if you do not want a gate yet." | examples `cargo test`, `npm test`, `uv run pytest` |
-| 8 | `require_label`, `skip_labels` | text + chip list with add/remove | "Tutti only picks up issues carrying the required label, and never picks up one carrying a skip label." Callout: "Tutti will create `status:ready`, `status:in-progress` and `status:done` in your forge if they do not exist yet, and will move each issue between them as it works." | defaults `status:ready`, `status:needs-human` |
-| 9 | `max_issues_per_run` | number | "How many issues one Run will work through before stopping. A safety ceiling, not a target: the run also stops when nothing is ready." Note: "Tutti always merges with a merge commit, never a squash or rebase." | default `25` |
-| 10 | (review) | read-only `<pre>` of the rendered file | "This is exactly what will be written to `tutti.toml`. Nothing has been created yet." | primary button reads **Create project** |
+| 7 | `require_label`, `skip_labels` | text + chip list with add/remove | "Tutti only picks up issues carrying the required label, and never picks up one carrying a skip label." Callout: "Tutti will create `status:ready`, `status:in-progress` and `status:done` in your forge if they do not exist yet, and will move each issue between them as it works." | defaults `status:ready`, `status:needs-human` |
+| 8 | `max_issues_per_run` | number | "How many issues one Run will work through before stopping. A safety ceiling, not a target: the run also stops when nothing is ready." Note: "Tutti always merges with a merge commit, never a squash or rebase." | default `25` |
+| 9 | (review) | read-only `<pre>` of the rendered file | "This is exactly what will be written to `tutti.toml`. Nothing has been created yet." | primary button reads **Create project** |
 
-Step 8's callout is a statement of existing behavior: `init_project` already calls
+Step 7's callout is a statement of existing behavior: `init_project` already calls
 `seed_status_labels`. The wizard just makes it visible before the fact.
+
+### Why the gate is not a question
+
+An earlier draft asked for `gate_commands` as a step. It is cut. What must pass before
+Tutti ships is not a setup fact you can state before you have described the project: it
+falls out of the brainstorming conversation about what the project is and how it is
+verified. Asking for it here forces a guess at the moment the user knows least, and the
+guess then sticks in the config.
+
+So the wizard seeds `gate = ["true"]` (the explicit no-op), the review step says so
+plainly, and setting a real gate belongs to the orchestrator conversation. `NO_OP_GATE`
+in `wizard.ts` is that seed, and `toInitForm` falls back to it rather than ever emitting
+an empty command list, which would mean the same thing while being much easier to
+misread in the file.
 
 ## Validation
 
@@ -105,9 +118,8 @@ it rather than as a backend error string after Create:
 | 4 | non-empty, no whitespace | "Enter a branch name." |
 | 5 | integration branch non-empty when routing is `trunk`; must not equal trunk | "The integration branch must be different from your trunk branch." |
 | 6 | non-empty when Custom | "Enter a model id." |
-| 7 | at least one row, no blank rows | "Add at least one command, or use `true` for no gate." |
-| 8 | `require_label` non-empty; no blank skip chips | "Enter the label Tutti should require." |
-| 9 | integer >= 1 | "Enter a number of 1 or more." |
+| 7 | `require_label` non-empty; no blank skip chips | "Enter the label Tutti should require." |
+| 8 | integer >= 1, no larger than u32::MAX | "Enter a number of 1 or more." |
 
 Validation lives in a pure module so it is testable without mounting anything.
 
