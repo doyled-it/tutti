@@ -10,8 +10,8 @@ use tutti_app_core::{
     assemble_board, issue_detail, Board, IssueDetail, ProjectEntry, ProjectStore,
 };
 use tutti_core::config::{Config, ForgeKind};
-use tutti_core::traits::{EngineError, Forge, Result as EngineResult};
 use tutti_core::tracking::MilestoneId;
+use tutti_core::traits::{EngineError, Forge, Result as EngineResult};
 use tutti_forge_gitea::GiteaForge;
 use tutti_forge_github::GitHubForge;
 use tutti_forge_gitlab::GitLabForge;
@@ -68,7 +68,9 @@ async fn activate(
     let repo = repo
         .filter(|r| !r.trim().is_empty())
         .or_else(|| detect_repo(&root))
-        .ok_or("could not determine the repo from the folder's git remote; enter owner/repo manually")?;
+        .ok_or(
+            "could not determine the repo from the folder's git remote; enter owner/repo manually",
+        )?;
     let forge = build_forge(&cfg, &repo, root.clone()).map_err(|e| e.to_string())?;
     let name = root
         .file_name()
@@ -179,10 +181,7 @@ pub async fn get_board(
 }
 
 #[tauri::command]
-pub async fn get_issue(
-    id: u64,
-    state: tauri::State<'_, AppState>,
-) -> Result<IssueDetail, String> {
+pub async fn get_issue(id: u64, state: tauri::State<'_, AppState>) -> Result<IssueDetail, String> {
     // Increment 1: assemble detail from the current board read. A dedicated single-issue
     // Forge read is a later refinement; for now, find the issue across all milestones.
     let guard = state.project.lock().await;
@@ -384,9 +383,7 @@ pub(crate) fn build_forge(
         }),
         ForgeKind::Gitea => {
             let login = cfg.forge.login.as_deref().ok_or_else(|| {
-                EngineError::Forge(
-                    "forge kind 'gitea' requires a login (set [forge].login)".into(),
-                )
+                EngineError::Forge("forge kind 'gitea' requires a login (set [forge].login)".into())
             })?;
             Box::new(GiteaForge {
                 repo: repo.to_string(),

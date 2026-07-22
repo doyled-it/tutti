@@ -22,7 +22,10 @@ use tutti_git::GitWorkspace;
 /// forge adapter inside the spawned task via `build_forge`. The task looks up
 /// `AppState` again through the cloned, `'static` `AppHandle`; nothing borrowed from
 /// this call crosses into the task.
-pub async fn start(app: tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<(), String> {
+pub async fn start(
+    app: tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+) -> Result<(), String> {
     let (config, repo, repo_root): (Config, String, std::path::PathBuf) = {
         let guard = state.project.lock().await;
         let p = guard.as_ref().ok_or("no project loaded")?;
@@ -101,7 +104,7 @@ async fn run_loop(
         }
         match engine.drain_with(&hooks).await {
             Ok((shipped, _)) if shipped > 0 => continue, // more may be ready
-            _ => break,                                   // 0 shipped or error
+            _ => break,                                  // 0 shipped or error
         }
     }
 }
