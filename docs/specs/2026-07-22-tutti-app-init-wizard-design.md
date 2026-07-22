@@ -1,6 +1,6 @@
 # New-project wizard (guided `tutti.toml` initialization)
 
-Status: designed
+Status: implemented
 
 ## Problem
 
