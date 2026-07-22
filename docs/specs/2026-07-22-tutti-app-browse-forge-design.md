@@ -87,6 +87,24 @@ display and `id` is what the projects call is keyed by. Project objects carry
 `path_with_namespace`, `name`, `description` (nullable), `http_url_to_repo`, and
 **`visibility` as a string** (`"private"` / `"internal"` / `"public"`), not a boolean.
 
+**Gitea.** `tea api --login <name> user` gives `{id, login, ...}`. `user/orgs` gives an
+array (empty for an account in no orgs). Repo objects are the closest of the three to
+GitHub: `full_name`, `name`, `description`, `clone_url`, `private` (bool), plus `fork`,
+`archived`, `empty` and `default_branch`.
+
+The important Gitea gotcha: **the tea login name is not the username.** The `login` is a
+local alias for a host-plus-token pair, and it can differ from the account it
+authenticates as. On this machine the login `icesight-engine` authenticates as the user
+`workslocally`, and `users/icesight-engine/repos` returns
+`{"message": "user redirect does not exist"}`. So `list_namespaces` must read the login
+off `tea api user` and use *that* for the repo call. Deriving the username from the
+login name is wrong and fails in exactly the case where a user has named their logins
+descriptively.
+
+Also worth knowing: Gitea error responses are a JSON object (`{message, url}`) with a
+zero exit status, not an array, so the parser must detect that shape and surface the
+message rather than failing to deserialize into `Vec<_>`.
+
 Two consequences the naive mapping gets wrong:
 
 - `RemoteRepo.private` must be `visibility != "public"` on GitLab, and a straight
@@ -187,7 +205,10 @@ wizard, and wires its completion into the existing `onAdd` / wizard handoff.
 - **Live tier** behind the existing `live` feature, one per adapter, asserting the user's
   own namespace appears and that the sandbox repo is listed under it. Validated against
   the real GitHub, GitLab and Codeberg accounts before merge, following the 3B pattern
-  where the live tier is what actually catches wire-format divergence.
+  where the live tier is what actually catches wire-format divergence. The Gitea live
+  test must use the `icesight-engine` login (user `workslocally`), which owns
+  `tutti-tea-sandbox`: the newer `doyled-it` Codeberg account has no repos and no orgs,
+  so it can prove the calls work but cannot assert on any content.
 - **Clone handling** unit-tested through a small pure helper for the target-path and
   already-exists decisions, so the branchy part is not buried in an IO function.
 - **Frontend** `browse.test.ts` over the pure module, plus the existing gates.
