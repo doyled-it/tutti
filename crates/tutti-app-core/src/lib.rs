@@ -700,6 +700,34 @@ mod tests {
     }
 
     #[test]
+    fn render_round_trips_non_default_values_for_every_field() {
+        let params = InitParams {
+            trunk: "trunk-branch".into(),
+            routing: "phase_stacking".into(),
+            integration_branch: "integ".into(),
+            model: "claude-opus-4-8".into(),
+            max_issues_per_run: 7,
+            require_label: "ready-now".into(),
+            skip_labels: vec!["blocked".into(), "needs-human".into()],
+            gate_commands: vec!["cargo test".into(), "cargo clippy".into()],
+            forge_kind: "gitlab".into(),
+            login: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tutti.toml");
+        std::fs::write(&path, render_tutti_toml(&params)).unwrap();
+        let cfg = tutti_core::config::Config::load(&path).unwrap();
+        assert_eq!(cfg.trunk, "trunk-branch");
+        assert_eq!(cfg.routing, "phase_stacking");
+        assert_eq!(cfg.integration_branch, "integ");
+        assert_eq!(cfg.model, "claude-opus-4-8");
+        assert_eq!(cfg.max_issues_per_run, 7);
+        assert_eq!(cfg.select.require_label, "ready-now");
+        assert_eq!(cfg.select.skip_labels, vec!["blocked", "needs-human"]);
+        assert_eq!(cfg.gate.commands, vec!["cargo test", "cargo clippy"]);
+    }
+
+    #[test]
     fn render_tutti_toml_escapes_special_characters() {
         // A value with a quote, a backslash, and a non-ASCII char must still produce a
         // tutti.toml that Config::load accepts, with the value preserved verbatim.
