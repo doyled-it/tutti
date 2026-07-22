@@ -6,6 +6,7 @@
 <script lang="ts">
   import { api } from "$lib/ipc";
   import type { InitForm, ProjectEntry } from "$lib/ipc";
+  import { initialState, toInitForm } from "$lib/wizard";
   import Resizer from "./Resizer.svelte";
 
   let {
@@ -116,15 +117,21 @@
     addError = null;
     initSubmitting = true;
     try {
-      await onInit({
-        dir,
-        repo: initRepo,
-        forge_kind: initForgeKind,
-        login: initForgeKind === "gitea" ? initLogin || null : null,
-        integration_branch: initIntegrationBranch,
-        model: initModel,
-        gate_command: initGateCommand,
-      });
+      // The inline form only asks a subset of the settings, so start from the wizard
+      // defaults and override the few fields it collects.
+      await onInit(
+        toInitForm({
+          ...initialState(dir, {
+            has_config: false,
+            repo: initRepo,
+            forge_kind: initForgeKind,
+          }),
+          login: initLogin,
+          integrationBranch: initIntegrationBranch,
+          model: initModel,
+          gateCommands: [initGateCommand],
+        }),
+      );
       cancelAdd();
     } catch (e) {
       addError = String(e);
