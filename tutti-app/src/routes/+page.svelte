@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { api } from "$lib/ipc";
-  import type { InitForm, IssueDetail } from "$lib/ipc";
+  import type { InitForm, IssueDetail, Probe } from "$lib/ipc";
   import {
     projects,
     activeDir,
@@ -22,10 +22,38 @@
   import BoardView from "$lib/components/BoardView.svelte";
   import LanesView from "$lib/components/LanesView.svelte";
   import IssueDrawer from "$lib/components/IssueDrawer.svelte";
+  import InitWizard from "$lib/components/InitWizard.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
   let loadError = $state<string | null>(null);
+
+  // Set when the user picks a folder with no tutti.toml; opens the wizard over the shell.
+  let pendingInit = $state<{ dir: string; probe: Probe } | null>(null);
+
+  function onNeedsInit(dir: string, probe: Probe) {
+    pendingInit = { dir, probe };
+  }
+
+  // Re-open the folder picker from inside the wizard, replacing the pending target. The
+  // wizard stays mounted and re-seeds itself from the new dir, so do not null it out here.
+  async function repickInit() {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true });
+    if (typeof picked !== "string") return;
+    try {
+      const probe = await api.probeProject(picked);
+      if (probe.has_config) {
+        // It is already a Tutti project: just add it and close the wizard.
+        pendingInit = null;
+        await onAdd(picked, probe.repo ?? undefined);
+      } else {
+        pendingInit = { dir: picked, probe };
+      }
+    } catch (e) {
+      loadError = String(e);
+    }
+  }
 
   // Switch the active project: activate it on the backend (this also persists the choice),
   // load its board, and close any open issue drawer since it belongs to the old project.
@@ -74,9 +102,10 @@
     }
   }
 
-  // Called by the sidebar's Initialize form when the picked folder has no tutti.toml.
+  // Called by the wizard's final Create step when the picked folder has no tutti.toml.
   // Writes the config on the backend, then activates and loads the new project the same
-  // way onAdd does for an existing one.
+  // way onAdd does for an existing one, and closes the wizard. Rethrows on failure so the
+  // wizard keeps the answers on screen and shows the message.
   async function onInit(form: InitForm) {
     loadError = null;
     try {
@@ -87,6 +116,7 @@
       selectedIssueId.set(null);
       issueDetail = null;
       board.set(await api.getBoard());
+      pendingInit = null;
     } catch (e) {
       loadError = String(e);
       throw e;
@@ -214,7 +244,7 @@
     runActive={$runStatus.state !== "idle"}
     onSwitch={onSwitch}
     onAdd={onAdd}
-    onInit={onInit}
+    onNeedsInit={onNeedsInit}
     onRemove={onRemove}
   />
 
@@ -254,6 +284,16 @@
     </div>
   </div>
 </div>
+
+{#if pendingInit}
+  <InitWizard
+    dir={pendingInit.dir}
+    probe={pendingInit.probe}
+    onCancel={() => (pendingInit = null)}
+    onCreate={onInit}
+    onRepick={repickInit}
+  />
+{/if}
 
 <style>
   .shell {

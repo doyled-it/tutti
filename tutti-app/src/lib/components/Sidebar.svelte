@@ -5,8 +5,7 @@
      edge, with the width persisted to localStorage. -->
 <script lang="ts">
   import { api } from "$lib/ipc";
-  import type { InitForm, ProjectEntry } from "$lib/ipc";
-  import { initialState, toInitForm } from "$lib/wizard";
+  import type { Probe, ProjectEntry } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
 
   let {
@@ -15,7 +14,7 @@
     runActive,
     onSwitch,
     onAdd,
-    onInit,
+    onNeedsInit,
     onRemove,
   }: {
     projects: ProjectEntry[];
@@ -23,7 +22,7 @@
     runActive: boolean;
     onSwitch: (dir: string) => void;
     onAdd: (dir: string, repo?: string) => Promise<void>;
-    onInit: (form: InitForm) => Promise<void>;
+    onNeedsInit: (dir: string, probe: Probe) => void;
     onRemove: (dir: string) => void;
   } = $props();
 
@@ -53,43 +52,23 @@
 
   let adding = $state(false);
   let dir = $state("");
-  // Only shown once a folder is picked and probed and has no tutti.toml; the form lets
-  // the user fill in the details init_project needs to write one.
-  let showInit = $state(false);
   let addError = $state<string | null>(null);
-  let initSubmitting = $state(false);
-
-  let initRepo = $state("");
-  let initForgeKind = $state("github");
-  let initLogin = $state("");
-  let initIntegrationBranch = $state("staging");
-  let initModel = $state("claude-sonnet-5");
-  let initGateCommand = $state("true");
 
   function beginAdd() {
     if (runActive) return;
     adding = true;
-    showInit = false;
     addError = null;
   }
 
   function cancelAdd() {
     adding = false;
     dir = "";
-    showInit = false;
     addError = null;
-    initSubmitting = false;
-    initRepo = "";
-    initForgeKind = "github";
-    initLogin = "";
-    initIntegrationBranch = "staging";
-    initModel = "claude-sonnet-5";
-    initGateCommand = "true";
   }
 
   // Pick a folder, then probe it. A folder with a tutti.toml loads immediately via the
-  // existing add path. One without shows the guided Initialize form instead of erroring,
-  // pre-filled from whatever the probe could detect (git remote, forge kind).
+  // existing add path. One without hands off to the page, which opens the guided wizard
+  // over the whole window, pre-filled from whatever the probe could detect.
   async function pickDir() {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ directory: true });
@@ -102,41 +81,12 @@
         await onAdd(dir, probe.repo ?? undefined);
         cancelAdd();
       } else {
-        initRepo = probe.repo ?? "";
-        initForgeKind = probe.forge_kind ?? "github";
-        showInit = true;
+        // No config here: the page opens the guided wizard over the whole window.
+        cancelAdd();
+        onNeedsInit(picked, probe);
       }
     } catch (e) {
       addError = String(e);
-    }
-  }
-
-  async function submitInit(e: Event) {
-    e.preventDefault();
-    if (!dir || !initRepo || runActive) return;
-    addError = null;
-    initSubmitting = true;
-    try {
-      // The inline form only asks a subset of the settings, so start from the wizard
-      // defaults and override the few fields it collects.
-      await onInit(
-        toInitForm({
-          ...initialState(dir, {
-            has_config: false,
-            repo: initRepo,
-            forge_kind: initForgeKind,
-          }),
-          login: initLogin,
-          integrationBranch: initIntegrationBranch,
-          model: initModel,
-          gateCommands: [initGateCommand],
-        }),
-      );
-      cancelAdd();
-    } catch (e) {
-      addError = String(e);
-    } finally {
-      initSubmitting = false;
     }
   }
 
@@ -197,45 +147,13 @@
 
       {#if adding}
         <div class="add-form">
-          {#if !showInit}
-            <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
-            {#if addError}
-              <div class="add-error">{addError}</div>
-            {/if}
-            <div class="add-actions">
-              <button type="button" onclick={cancelAdd}>Cancel</button>
-            </div>
-          {:else}
-            <form class="init-form" onsubmit={submitInit}>
-              <div class="picked-dir">{dir}</div>
-              <div class="init-hint">No tutti.toml here. Initialize one:</div>
-              {#if addError}
-                <div class="add-error">{addError}</div>
-              {/if}
-              <input class="repo-input" placeholder="owner/repo" bind:value={initRepo} />
-              <select class="forge-select" bind:value={initForgeKind}>
-                <option value="github">github</option>
-                <option value="gitea">gitea</option>
-                <option value="gitlab">gitlab</option>
-              </select>
-              {#if initForgeKind === "gitea"}
-                <input class="repo-input" placeholder="login" bind:value={initLogin} />
-              {/if}
-              <input
-                class="repo-input"
-                placeholder="integration branch"
-                bind:value={initIntegrationBranch}
-              />
-              <input class="repo-input" placeholder="model" bind:value={initModel} />
-              <input class="repo-input" placeholder="gate command" bind:value={initGateCommand} />
-              <div class="add-actions">
-                <button type="submit" class="primary" disabled={runActive || initSubmitting}
-                  >Create</button
-                >
-                <button type="button" onclick={cancelAdd}>Cancel</button>
-              </div>
-            </form>
+          <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
+          {#if addError}
+            <div class="add-error">{addError}</div>
           {/if}
+          <div class="add-actions">
+            <button type="button" onclick={cancelAdd}>Cancel</button>
+          </div>
         </div>
       {:else}
         <button
@@ -386,19 +304,7 @@
     border-radius: 6px;
     margin-top: 2px;
   }
-  .init-form {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .init-hint {
-    font-size: 10px;
-    color: var(--text-faint);
-    line-height: 1.4;
-  }
-  .pick,
-  .repo-input,
-  .forge-select {
+  .pick {
     font-size: 11px;
     padding: 5px 6px;
     border-radius: 5px;
@@ -406,20 +312,7 @@
     background: var(--bg);
     color: var(--text);
     text-align: left;
-  }
-  .pick {
     cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .picked-dir {
-    font-size: 11px;
-    padding: 5px 6px;
-    border-radius: 5px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -442,11 +335,6 @@
     background: var(--bg);
     color: var(--text);
     cursor: pointer;
-  }
-  .add-actions .primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
   }
   .nav {
     margin-top: auto;
