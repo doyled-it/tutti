@@ -92,13 +92,10 @@ export const api = {
     invoke<ProjectEntry>("add_project", { dir, repo: repo ?? null }),
   switchProject: (dir: string) => invoke<void>("switch_project", { dir }),
   probeProject: (dir: string) => invoke<Probe>("probe_project", { dir }),
-  initProject: (form: InitForm) =>
-    invoke<ProjectEntry>("init_project", { form }),
-  previewTuttiToml: (form: InitForm) =>
-    invoke<string>("preview_tutti_toml", { form }),
+  initProject: (form: InitForm) => invoke<ProjectEntry>("init_project", { form }),
+  previewTuttiToml: (form: InitForm) => invoke<string>("preview_tutti_toml", { form }),
   removeProject: (dir: string) => invoke<void>("remove_project", { dir }),
-  getBoard: (milestone?: number) =>
-    invoke<Board>("get_board", { milestone: milestone ?? null }),
+  getBoard: (milestone?: number) => invoke<Board>("get_board", { milestone: milestone ?? null }),
   getIssue: (id: number) => invoke<IssueDetail>("get_issue", { id }),
   startRun: () => invoke<void>("start_run"),
   pauseRun: () => invoke<void>("pause_run"),

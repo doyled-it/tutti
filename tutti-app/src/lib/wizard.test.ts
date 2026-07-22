@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect } from "vitest";
-import {
-  initialState,
-  validateStep,
-  STEP_COUNT,
-  type WizardState,
-} from "./wizard";
+import { initialState, validateStep, STEP_COUNT, type WizardState } from "./wizard";
 
 function base(): WizardState {
   return initialState("/tmp/proj", {
@@ -63,13 +58,7 @@ describe("validateStep", () => {
   });
 
   it("rejects a malformed repo", () => {
-    for (const repo of [
-      "",
-      "noslash",
-      "/leading",
-      "trailing/",
-      "has space/x",
-    ]) {
+    for (const repo of ["", "noslash", "/leading", "trailing/", "has space/x"]) {
       expect(validateStep({ ...base(), repo }, 2)).not.toBeNull();
     }
     expect(validateStep({ ...base(), repo: "group/sub/proj" }, 2)).toBeNull();
@@ -86,14 +75,9 @@ describe("validateStep", () => {
   });
 
   it("rejects an empty integration branch only when routing is trunk", () => {
+    expect(validateStep({ ...base(), integrationBranch: "" }, 4)).not.toBeNull();
     expect(
-      validateStep({ ...base(), integrationBranch: "" }, 4),
-    ).not.toBeNull();
-    expect(
-      validateStep(
-        { ...base(), routing: "phase_stacking", integrationBranch: "" },
-        4,
-      ),
+      validateStep({ ...base(), routing: "phase_stacking", integrationBranch: "" }, 4),
     ).toBeNull();
   });
 
@@ -103,16 +87,12 @@ describe("validateStep", () => {
 
   it("rejects an empty or blank gate command list", () => {
     expect(validateStep({ ...base(), gateCommands: [] }, 6)).not.toBeNull();
-    expect(
-      validateStep({ ...base(), gateCommands: ["cargo test", " "] }, 6),
-    ).not.toBeNull();
+    expect(validateStep({ ...base(), gateCommands: ["cargo test", " "] }, 6)).not.toBeNull();
   });
 
   it("rejects an empty require label or a blank skip label", () => {
     expect(validateStep({ ...base(), requireLabel: "" }, 7)).not.toBeNull();
-    expect(
-      validateStep({ ...base(), skipLabels: ["ok", ""] }, 7),
-    ).not.toBeNull();
+    expect(validateStep({ ...base(), skipLabels: ["ok", ""] }, 7)).not.toBeNull();
   });
 
   it("rejects a max-issues value below one", () => {

@@ -171,7 +171,7 @@
       <div class="nav-item soon">Subsessions (soon)</div>
     </nav>
   </aside>
-  <Resizer onResize={onResize} ariaLabel="Resize sidebar" />
+  <Resizer {onResize} ariaLabel="Resize sidebar" />
 </div>
 
 <style>

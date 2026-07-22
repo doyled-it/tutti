@@ -24,11 +24,7 @@ export interface WizardState {
 export const STEP_COUNT = 10;
 
 /** The model ids offered on step 6 before falling through to a custom id. */
-export const KNOWN_MODELS = [
-  "claude-sonnet-5",
-  "claude-opus-4-8",
-  "claude-haiku-4-5",
-];
+export const KNOWN_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"];
 
 export function initialState(dir: string, probe: Probe): WizardState {
   return {
@@ -65,29 +61,18 @@ export function validateStep(s: WizardState, index: number): string | null {
         : null;
     case 2: {
       const r = s.repo.trim();
-      if (
-        blank(r) ||
-        !r.includes("/") ||
-        r.startsWith("/") ||
-        r.endsWith("/") ||
-        /\s/.test(r)
-      ) {
+      if (blank(r) || !r.includes("/") || r.startsWith("/") || r.endsWith("/") || /\s/.test(r)) {
         return "Enter it as `owner/repo`.";
       }
       return null;
     }
     case 3:
-      return blank(s.trunk) || /\s/.test(s.trunk.trim())
-        ? "Enter a branch name."
-        : null;
+      return blank(s.trunk) || /\s/.test(s.trunk.trim()) ? "Enter a branch name." : null;
     case 4: {
       if (s.routing === "trunk" && blank(s.integrationBranch)) {
         return "Enter the branch Tutti should merge finished work into.";
       }
-      if (
-        s.integrationBranch.trim() &&
-        s.integrationBranch.trim() === s.trunk.trim()
-      ) {
+      if (s.integrationBranch.trim() && s.integrationBranch.trim() === s.trunk.trim()) {
         return "The integration branch must be different from your trunk branch.";
       }
       return null;
@@ -128,8 +113,6 @@ export function toInitForm(s: WizardState): InitForm {
     max_issues_per_run: s.maxIssuesPerRun,
     require_label: s.requireLabel.trim(),
     skip_labels: s.skipLabels.map((l) => l.trim()).filter((l) => l.length > 0),
-    gate_commands: s.gateCommands
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0),
+    gate_commands: s.gateCommands.map((c) => c.trim()).filter((c) => c.length > 0),
   };
 }

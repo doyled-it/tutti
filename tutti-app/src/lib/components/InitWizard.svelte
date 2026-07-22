@@ -253,11 +253,7 @@
               The branch Tutti merges finished work into. It must exist, and must not be your trunk
               branch. Default: staging.
             </div>
-            <input
-              id="integration-branch"
-              bind:value={s.integrationBranch}
-              placeholder="staging"
-            />
+            <input id="integration-branch" bind:value={s.integrationBranch} placeholder="staging" />
           </div>
         {/if}
       </QuestionCard>
@@ -312,7 +308,8 @@
             >
           </div>
         {/each}
-        <button type="button" class="ghost small self-start" onclick={addGate}>+ Add command</button>
+        <button type="button" class="ghost small self-start" onclick={addGate}>+ Add command</button
+        >
       </QuestionCard>
     {:else if step === 7}
       <QuestionCard

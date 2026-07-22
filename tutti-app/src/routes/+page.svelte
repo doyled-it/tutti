@@ -242,10 +242,10 @@
     projects={$projects}
     activeDir={$activeDir}
     runActive={$runStatus.state !== "idle"}
-    onSwitch={onSwitch}
-    onAdd={onAdd}
-    onNeedsInit={onNeedsInit}
-    onRemove={onRemove}
+    {onSwitch}
+    {onAdd}
+    {onNeedsInit}
+    {onRemove}
   />
 
   <div class="center">
