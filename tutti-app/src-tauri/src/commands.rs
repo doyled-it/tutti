@@ -243,17 +243,47 @@ pub async fn probe_project(dir: String) -> Result<Probe, String> {
     })
 }
 
-/// Form payload for `init_project`: the folder to initialize plus the settings the
-/// user picked (or accepted as defaults) to seed the new `tutti.toml`.
-#[derive(serde::Deserialize)]
+/// Form payload for `init_project`: the folder to initialize plus every setting the
+/// wizard asks about. Mirrors `tutti_app_core::InitParams` one-for-one, plus the `dir`
+/// to write into and the `repo` to record in the project store.
+#[derive(serde::Deserialize, Clone)]
 pub struct InitForm {
     pub dir: String,
     pub repo: String,
     pub forge_kind: String,
     pub login: Option<String>,
+    pub trunk: String,
+    pub routing: String,
     pub integration_branch: String,
     pub model: String,
-    pub gate_command: String,
+    pub max_issues_per_run: u32,
+    pub require_label: String,
+    pub skip_labels: Vec<String>,
+    pub gate_commands: Vec<String>,
+}
+
+/// Map the form onto the renderer's params. Shared by `init_project` and
+/// `preview_tutti_toml` so the preview can never drift from what gets written.
+fn params_from(form: &InitForm) -> tutti_app_core::InitParams {
+    tutti_app_core::InitParams {
+        trunk: form.trunk.clone(),
+        routing: form.routing.clone(),
+        integration_branch: form.integration_branch.clone(),
+        model: form.model.clone(),
+        max_issues_per_run: form.max_issues_per_run,
+        require_label: form.require_label.clone(),
+        skip_labels: form.skip_labels.clone(),
+        gate_commands: form.gate_commands.clone(),
+        forge_kind: form.forge_kind.clone(),
+        login: form.login.clone(),
+    }
+}
+
+/// Render the `tutti.toml` the given form would produce, without touching the disk.
+/// Used by the wizard's review step so the user sees the real file before creating it.
+#[tauri::command]
+pub async fn preview_tutti_toml(form: InitForm) -> Result<String, String> {
+    Ok(tutti_app_core::render_tutti_toml(&params_from(&form)))
 }
 
 #[tauri::command]
@@ -267,14 +297,7 @@ pub async fn init_project(
     }
     let root = PathBuf::from(&form.dir);
     // 1. Write tutti.toml.
-    let params = tutti_app_core::InitParams {
-        model: form.model.clone(),
-        integration_branch: form.integration_branch.clone(),
-        gate_commands: vec![form.gate_command.clone()],
-        forge_kind: form.forge_kind.clone(),
-        login: form.login.clone(),
-        ..Default::default()
-    };
+    let params = params_from(&form);
     let toml_path = root.join("tutti.toml");
     std::fs::write(&toml_path, tutti_app_core::render_tutti_toml(&params))
         .map_err(|e| format!("write tutti.toml: {e}"))?;
@@ -361,4 +384,38 @@ pub(crate) fn build_forge(
         }),
     };
     Ok(forge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_from_maps_every_field() {
+        let form = InitForm {
+            dir: "/tmp/x".into(),
+            repo: "o/r".into(),
+            forge_kind: "gitea".into(),
+            login: Some("codeberg".into()),
+            trunk: "main".into(),
+            routing: "trunk".into(),
+            integration_branch: "staging".into(),
+            model: "claude-sonnet-5".into(),
+            max_issues_per_run: 3,
+            require_label: "status:ready".into(),
+            skip_labels: vec!["status:needs-human".into()],
+            gate_commands: vec!["cargo test".into()],
+        };
+        let p = params_from(&form);
+        assert_eq!(p.trunk, "main");
+        assert_eq!(p.routing, "trunk");
+        assert_eq!(p.integration_branch, "staging");
+        assert_eq!(p.model, "claude-sonnet-5");
+        assert_eq!(p.max_issues_per_run, 3);
+        assert_eq!(p.require_label, "status:ready");
+        assert_eq!(p.skip_labels, vec!["status:needs-human"]);
+        assert_eq!(p.gate_commands, vec!["cargo test"]);
+        assert_eq!(p.forge_kind, "gitea");
+        assert_eq!(p.login.as_deref(), Some("codeberg"));
+    }
 }

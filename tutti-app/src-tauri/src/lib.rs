@@ -20,6 +20,7 @@ pub fn run() {
             commands::pause_run,
             commands::probe_project,
             commands::init_project,
+            commands::preview_tutti_toml,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
