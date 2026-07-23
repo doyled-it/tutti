@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 tutti-core = { path = "../tutti-core" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"

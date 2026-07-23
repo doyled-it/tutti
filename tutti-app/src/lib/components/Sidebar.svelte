@@ -1,17 +1,29 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
-<!-- Left rail: the loaded project (increment 1 supports one at a time), an "open project"
-     affordance, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders).
-     Resizable via a drag handle on the right edge, with the width persisted to localStorage. -->
+<!-- Left rail: the persisted project list, an "add project" affordance, per-row switch and
+     remove, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders).
+     Switching is disabled while a run is active. Resizable via a drag handle on the right
+     edge, with the width persisted to localStorage. -->
 <script lang="ts">
-  import type { ProjectSummary } from "$lib/ipc";
+  import { api } from "$lib/ipc";
+  import type { Probe, ProjectEntry } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
 
   let {
-    project,
-    onOpenProject,
+    projects,
+    activeDir,
+    runActive,
+    onSwitch,
+    onAdd,
+    onNeedsInit,
+    onRemove,
   }: {
-    project: ProjectSummary | null;
-    onOpenProject: (dir: string, repo?: string) => Promise<void>;
+    projects: ProjectEntry[];
+    activeDir: string | null;
+    runActive: boolean;
+    onSwitch: (dir: string) => void;
+    onAdd: (dir: string, repo?: string) => Promise<void>;
+    onNeedsInit: (dir: string, probe: Probe) => void;
+    onRemove: (dir: string) => void;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
@@ -40,29 +52,23 @@
 
   let adding = $state(false);
   let dir = $state("");
-  let repo = $state("");
-  // Only shown once auto-detect fails; the message explains why (no origin remote, or
-  // an unparseable one), so the user knows why they need to type owner/repo.
-  let showManual = $state(false);
   let addError = $state<string | null>(null);
 
   function beginAdd() {
+    if (runActive) return;
     adding = true;
-    showManual = false;
     addError = null;
   }
 
   function cancelAdd() {
     adding = false;
     dir = "";
-    repo = "";
-    showManual = false;
     addError = null;
   }
 
-  // The common case: pick a folder and try loading with no manual repo. If the folder's
-  // git origin resolves to owner/repo, the project loads immediately with no typing. If
-  // there is no remote (or it can't be parsed), fall back to the manual owner/repo field.
+  // Pick a folder, then probe it. A folder with a tutti.toml loads immediately via the
+  // existing add path. One without hands off to the page, which opens the guided wizard
+  // over the whole window, pre-filled from whatever the probe could detect.
   async function pickDir() {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ directory: true });
@@ -70,21 +76,15 @@
     dir = picked;
     addError = null;
     try {
-      await onOpenProject(dir);
-      cancelAdd();
-    } catch (e) {
-      addError = String(e);
-      showManual = true;
-    }
-  }
-
-  async function submitManual(e: Event) {
-    e.preventDefault();
-    if (!dir || !repo) return;
-    addError = null;
-    try {
-      await onOpenProject(dir, repo);
-      cancelAdd();
+      const probe = await api.probeProject(dir);
+      if (probe.has_config) {
+        await onAdd(dir, probe.repo ?? undefined);
+        cancelAdd();
+      } else {
+        // No config here: the page opens the guided wizard over the whole window.
+        cancelAdd();
+        onNeedsInit(picked, probe);
+      }
     } catch (e) {
       addError = String(e);
     }
@@ -95,44 +95,73 @@
     if (forge === "gitea") return "dot ge";
     return "dot gh";
   }
+
+  function handleSwitch(dir: string) {
+    if (runActive) return;
+    onSwitch(dir);
+  }
+
+  function handleRemove(e: MouseEvent, dir: string) {
+    e.stopPropagation();
+    onRemove(dir);
+  }
 </script>
 
 <div class="sidebar-wrap">
   <aside class="sidebar" style={`width:${width}px`}>
     <div class="section-label">Projects</div>
     <div class="projects">
-      {#if project}
-        <div class="project on">
-          <span class={dotClass(project.forge)}></span>
-          <span class="name">{project.name}</span>
-        </div>
+      {#if projects.length === 0}
+        <div class="empty">No projects yet</div>
       {:else}
-        <div class="empty">No project loaded</div>
+        {#each projects as p (p.dir)}
+          <button
+            type="button"
+            class="project"
+            class:on={p.dir === activeDir}
+            class:disabled={runActive}
+            disabled={runActive}
+            title={runActive ? "pause the run to switch" : undefined}
+            onclick={() => handleSwitch(p.dir)}
+          >
+            <span class={dotClass(p.forge)}></span>
+            <span class="name">{p.name}</span>
+            <span
+              class="remove"
+              role="button"
+              tabindex="0"
+              title="Remove project"
+              onclick={(e) => handleRemove(e, p.dir)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleRemove(e as unknown as MouseEvent, p.dir);
+                }
+              }}
+            >
+              &times;
+            </span>
+          </button>
+        {/each}
       {/if}
 
       {#if adding}
         <div class="add-form">
-          {#if !showManual}
-            <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
-            <div class="add-actions">
-              <button type="button" onclick={cancelAdd}>Cancel</button>
-            </div>
-          {:else}
-            <form class="manual-form" onsubmit={submitManual}>
-              <div class="picked-dir">{dir}</div>
-              {#if addError}
-                <div class="add-error">{addError}</div>
-              {/if}
-              <input class="repo-input" placeholder="owner/repo" bind:value={repo} />
-              <div class="add-actions">
-                <button type="submit" class="primary">Load</button>
-                <button type="button" onclick={cancelAdd}>Cancel</button>
-              </div>
-            </form>
+          <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
+          {#if addError}
+            <div class="add-error">{addError}</div>
           {/if}
+          <div class="add-actions">
+            <button type="button" onclick={cancelAdd}>Cancel</button>
+          </div>
         </div>
       {:else}
-        <button class="add" onclick={beginAdd}>+ Add project</button>
+        <button
+          class="add"
+          onclick={beginAdd}
+          disabled={runActive}
+          title={runActive ? "pause the run to add a project" : undefined}>+ Add project</button
+        >
       {/if}
     </div>
 
@@ -142,7 +171,7 @@
       <div class="nav-item soon">Subsessions (soon)</div>
     </nav>
   </aside>
-  <Resizer onResize={onResize} ariaLabel="Resize sidebar" />
+  <Resizer {onResize} ariaLabel="Resize sidebar" />
 </div>
 
 <style>
@@ -179,15 +208,58 @@
     gap: 6px;
     padding: 5px 6px;
     border-radius: 6px;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .project:hover {
+    background: var(--hover);
   }
   .project.on {
     background: var(--active);
     font-weight: 600;
   }
+  .project.disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+  .project.disabled:hover {
+    background: none;
+  }
+  .project.disabled.on:hover {
+    background: var(--active);
+  }
   .name {
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .remove {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-faint);
+    opacity: 0;
+    cursor: pointer;
+  }
+  .project:hover .remove {
+    opacity: 1;
+  }
+  .remove:hover {
+    background: var(--hover);
+    color: var(--text);
   }
   .dot {
     width: 7px;
@@ -232,13 +304,7 @@
     border-radius: 6px;
     margin-top: 2px;
   }
-  .manual-form {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .pick,
-  .repo-input {
+  .pick {
     font-size: 11px;
     padding: 5px 6px;
     border-radius: 5px;
@@ -246,20 +312,7 @@
     background: var(--bg);
     color: var(--text);
     text-align: left;
-  }
-  .pick {
     cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .picked-dir {
-    font-size: 11px;
-    padding: 5px 6px;
-    border-radius: 5px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -282,11 +335,6 @@
     background: var(--bg);
     color: var(--text);
     cursor: pointer;
-  }
-  .add-actions .primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
   }
   .nav {
     margin-top: auto;

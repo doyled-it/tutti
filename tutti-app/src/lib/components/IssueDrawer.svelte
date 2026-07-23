@@ -37,7 +37,11 @@
             .map((c) => c + c)
             .join("")
         : h.padEnd(6, "0").slice(0, 6);
-    return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+    return [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ];
   }
   function textOn(rgb: [number, number, number]): string {
     const [r, g, b] = rgb;
@@ -53,7 +57,8 @@
   function splitScoped(name: string): { scope: string; value: string } | null {
     if (!name) return null;
     const dd = name.indexOf("::");
-    if (dd > 0 && dd + 2 < name.length) return { scope: name.slice(0, dd), value: name.slice(dd + 2) };
+    if (dd > 0 && dd + 2 < name.length)
+      return { scope: name.slice(0, dd), value: name.slice(dd + 2) };
     const s = name.indexOf(":");
     if (s > 0 && s + 1 < name.length) return { scope: name.slice(0, s), value: name.slice(s + 1) };
     return null;
@@ -114,14 +119,19 @@
               {@const parts = splitScoped(lbl.name)}
               {#if parts}
                 <span class="lbl scoped">
-                  <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}>{parts.scope}</span>
+                  <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}
+                    >{parts.scope}</span
+                  >
                   <span
                     class="value"
                     style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.18);color:${lighten(rgb)};border-color:${lighten(rgb)}`}
-                  >{parts.value}</span>
+                    >{parts.value}</span
+                  >
                 </span>
               {:else}
-                <span class="lbl solid" style={`background:${hex};color:${textOn(rgb)}`}>{lbl.name}</span>
+                <span class="lbl solid" style={`background:${hex};color:${textOn(rgb)}`}
+                  >{lbl.name}</span
+                >
               {/if}
             {/each}
           </span>

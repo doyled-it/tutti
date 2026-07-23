@@ -69,6 +69,9 @@ pub trait Forge: Send + Sync {
     /// All labels in the repo as (name, color). Color is a hex string, WITH or without a
     /// leading '#', as the forge returns it; callers normalize.
     async fn list_labels(&self) -> Result<Vec<(String, String)>>;
+    /// Create a label with a hex color (without '#'). Callers create only labels that do
+    /// not already exist (diffed against list_labels), so this need not be idempotent.
+    async fn create_label(&self, name: &str, color: &str) -> Result<()>;
     /// Flip ready -> in-progress. The label flip is the lock.
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard>;
     /// Flip in-progress -> ready (failure path).

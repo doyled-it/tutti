@@ -1,22 +1,42 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Tauri commands: load a project, read the board/issue detail, and drive a run.
+//! Tauri commands: manage the multi-project store (list, add, switch, remove), read
+//! the board/issue detail, and drive a run.
 
 use crate::driver;
 use crate::state::{AppState, Project, RunState};
 use std::path::PathBuf;
-use tutti_app_core::{assemble_board, issue_detail, Board, IssueDetail};
+use tauri::Manager;
+use tutti_app_core::{
+    assemble_board, issue_detail, Board, IssueDetail, ProjectEntry, ProjectStore,
+};
 use tutti_core::config::{Config, ForgeKind};
-use tutti_core::traits::{EngineError, Forge, Result as EngineResult};
 use tutti_core::tracking::MilestoneId;
+use tutti_core::traits::{EngineError, Forge, Result as EngineResult};
 use tutti_forge_gitea::GiteaForge;
 use tutti_forge_github::GitHubForge;
 use tutti_forge_gitlab::GitLabForge;
 
-#[derive(serde::Serialize)]
-pub struct ProjectSummary {
-    pub name: String,
-    pub forge: String,
-    pub repo: String,
+/// Resolve `<app data dir>/projects.json`, creating the app data dir first if it does
+/// not exist yet.
+fn store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("projects.json"))
+}
+
+/// Load the project store from disk. A missing or unreadable file yields an empty
+/// store (first run); `ProjectStore::from_json` already tolerates garbage content.
+fn load_store(app: &tauri::AppHandle) -> Result<ProjectStore, String> {
+    let path = store_path(app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(ProjectStore::from_json(&s)),
+        Err(_) => Ok(ProjectStore::default()),
+    }
+}
+
+/// Persist the project store to disk as pretty-printed JSON.
+fn save_store(app: &tauri::AppHandle, store: &ProjectStore) -> Result<(), String> {
+    std::fs::write(store_path(app)?, store.to_json()).map_err(|e| e.to_string())
 }
 
 /// Shell out to `git remote get-url origin` and parse the owner/repo path from it. Returns
@@ -35,18 +55,22 @@ fn detect_repo(root: &std::path::Path) -> Option<String> {
     tutti_app_core::repo_from_remote(&url)
 }
 
-#[tauri::command]
-pub async fn load_project(
-    dir: String,
+/// Resolve a project's repo, config, and forge, and set it as the active project in
+/// managed state. Shared by `add_project` and `switch_project`; this is the same work
+/// the old single-project `load_project` command did.
+async fn activate(
+    dir: &str,
     repo: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<ProjectSummary, String> {
-    let root = PathBuf::from(&dir);
+    state: &tauri::State<'_, AppState>,
+) -> Result<ProjectEntry, String> {
+    let root = PathBuf::from(dir);
     let cfg = Config::load(&root.join("tutti.toml")).map_err(|e| e.to_string())?;
     let repo = repo
         .filter(|r| !r.trim().is_empty())
         .or_else(|| detect_repo(&root))
-        .ok_or("could not determine the repo from the folder's git remote; enter owner/repo manually")?;
+        .ok_or(
+            "could not determine the repo from the folder's git remote; enter owner/repo manually",
+        )?;
     let forge = build_forge(&cfg, &repo, root.clone()).map_err(|e| e.to_string())?;
     let name = root
         .file_name()
@@ -65,11 +89,83 @@ pub async fn load_project(
         repo_root: root,
         name: name.clone(),
     });
-    Ok(ProjectSummary {
+    Ok(ProjectEntry {
+        dir: dir.to_string(),
+        repo,
         name,
         forge: forge_kind,
-        repo,
     })
+}
+
+/// The full project list plus which one is active, as returned to the frontend.
+#[derive(serde::Serialize)]
+pub struct ProjectList {
+    pub projects: Vec<ProjectEntry>,
+    pub active: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_projects(app: tauri::AppHandle) -> Result<ProjectList, String> {
+    let s = load_store(&app)?;
+    Ok(ProjectList {
+        projects: s.projects,
+        active: s.active,
+    })
+}
+
+#[tauri::command]
+pub async fn add_project(
+    app: tauri::AppHandle,
+    dir: String,
+    repo: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<ProjectEntry, String> {
+    // Adding a project makes it active, which is a switch: block it during a run so the
+    // active project cannot change out from under the running engine.
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before adding a project".into());
+    }
+    let entry = activate(&dir, repo, &state).await?;
+    let mut store = load_store(&app)?;
+    store.upsert(entry.clone());
+    save_store(&app, &store)?;
+    Ok(entry)
+}
+
+#[tauri::command]
+pub async fn switch_project(
+    app: tauri::AppHandle,
+    dir: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before switching projects".into());
+    }
+    activate(&dir, None, &state).await?;
+    let mut store = load_store(&app)?;
+    store.set_active(&dir);
+    save_store(&app, &store)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_project(
+    app: tauri::AppHandle,
+    dir: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // Never drop a project (possibly the active one) while a run is in flight.
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before removing a project".into());
+    }
+    let mut store = load_store(&app)?;
+    let was_active = store.active.as_deref() == Some(dir.as_str());
+    store.remove(&dir);
+    save_store(&app, &store)?;
+    if was_active {
+        *state.project.lock().await = None;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -85,10 +181,7 @@ pub async fn get_board(
 }
 
 #[tauri::command]
-pub async fn get_issue(
-    id: u64,
-    state: tauri::State<'_, AppState>,
-) -> Result<IssueDetail, String> {
+pub async fn get_issue(id: u64, state: tauri::State<'_, AppState>) -> Result<IssueDetail, String> {
     // Increment 1: assemble detail from the current board read. A dedicated single-issue
     // Forge read is a later refinement; for now, find the issue across all milestones.
     let guard = state.project.lock().await;
@@ -116,6 +209,162 @@ pub async fn pause_run(state: tauri::State<'_, AppState>) -> Result<(), String> 
     Ok(())
 }
 
+/// The result of probing a folder for an existing tutti.toml and a git remote, used to
+/// pre-fill the Initialize Project form on the frontend.
+#[derive(serde::Serialize)]
+pub struct Probe {
+    pub has_config: bool,
+    pub repo: Option<String>,
+    pub forge_kind: Option<String>,
+}
+
+#[tauri::command]
+pub async fn probe_project(dir: String) -> Result<Probe, String> {
+    let root = std::path::PathBuf::from(&dir);
+    let has_config = root.join("tutti.toml").is_file();
+    // Read the remote once for both repo and forge-kind detection.
+    let remote = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let repo = remote.as_deref().and_then(tutti_app_core::repo_from_remote);
+    let forge_kind = remote
+        .as_deref()
+        .and_then(tutti_app_core::forge_kind_from_remote);
+    Ok(Probe {
+        has_config,
+        repo,
+        forge_kind,
+    })
+}
+
+/// Form payload for `init_project`: the folder to initialize plus every setting the
+/// wizard asks about. Mirrors `tutti_app_core::InitParams` one-for-one, plus the `dir`
+/// to write into and the `repo` to record in the project store.
+#[derive(serde::Deserialize, Clone)]
+pub struct InitForm {
+    pub dir: String,
+    pub repo: String,
+    pub forge_kind: String,
+    pub login: Option<String>,
+    pub trunk: String,
+    pub routing: String,
+    pub integration_branch: String,
+    pub model: String,
+    pub max_issues_per_run: u32,
+    pub require_label: String,
+    pub skip_labels: Vec<String>,
+    pub gate_commands: Vec<String>,
+}
+
+/// Map the form onto the renderer's params. Shared by `init_project` and
+/// `preview_tutti_toml` so the preview can never drift from what gets written.
+fn params_from(form: &InitForm) -> tutti_app_core::InitParams {
+    tutti_app_core::InitParams {
+        trunk: form.trunk.clone(),
+        routing: form.routing.clone(),
+        integration_branch: form.integration_branch.clone(),
+        model: form.model.clone(),
+        max_issues_per_run: form.max_issues_per_run,
+        require_label: form.require_label.clone(),
+        skip_labels: form.skip_labels.clone(),
+        gate_commands: form.gate_commands.clone(),
+        forge_kind: form.forge_kind.clone(),
+        login: form.login.clone(),
+    }
+}
+
+/// Render the `tutti.toml` the given form would produce, without touching the disk.
+/// Used by the wizard's review step so the user sees the real file before creating it.
+#[tauri::command]
+pub async fn preview_tutti_toml(form: InitForm) -> Result<String, String> {
+    Ok(tutti_app_core::render_tutti_toml(&params_from(&form)))
+}
+
+#[tauri::command]
+pub async fn init_project(
+    app: tauri::AppHandle,
+    form: InitForm,
+    state: tauri::State<'_, AppState>,
+) -> Result<ProjectEntry, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before initializing a project".into());
+    }
+    let root = PathBuf::from(&form.dir);
+    // 1. Write tutti.toml. Refuse to clobber one that appeared between the folder probe
+    // and here, so the cleanup below can only ever delete a file this call created.
+    let params = params_from(&form);
+    let toml_path = root.join("tutti.toml");
+    if toml_path.exists() {
+        return Err(format!("{} already exists", toml_path.display()));
+    }
+    std::fs::write(&toml_path, tutti_app_core::render_tutti_toml(&params))
+        .map_err(|e| format!("write tutti.toml: {e}"))?;
+    // 2. Activate (loads the new config, builds the forge, sets state.project). On
+    // failure (e.g. gitea without a login, or a bad repo), delete the tutti.toml we just
+    // wrote so a later folder pick still shows the wizard instead of routing to the
+    // existing-config path and hiding it behind an unusable file.
+    let entry = match activate(&form.dir, Some(form.repo.clone()), &state).await {
+        Ok(entry) => entry,
+        Err(e) => {
+            let _ = std::fs::remove_file(&toml_path);
+            return Err(e);
+        }
+    };
+    // 3. Seed the status labels that do not exist yet (best effort per label).
+    seed_status_labels(&state).await;
+    // 4. Persist.
+    let mut store = load_store(&app)?;
+    store.upsert(entry.clone());
+    save_store(&app, &store)?;
+    Ok(entry)
+}
+
+/// Diff the labels the engine relies on against what the forge already has, and create
+/// whichever are missing with sensible default colors. Best effort: a single label's
+/// create failure (permissions, rate limit, ...) must not abort project init.
+///
+/// The names come from the loaded config rather than the `status:*` convention, because
+/// the wizard lets the user choose their own `require_label` and `skip_labels`. Seeding
+/// the convention regardless would create labels the config never references and skip
+/// the ones it does.
+async fn seed_status_labels(state: &tauri::State<'_, AppState>) {
+    let guard = state.project.lock().await;
+    let Some(p) = guard.as_ref() else { return };
+    let status = p.config.status_labels();
+    // Colors track the meaning, not the name: ready green, in-progress amber, done blue,
+    // and anything the engine must skip red.
+    let mut wanted: Vec<(String, &str)> = vec![
+        (status.ready, "0e8a16"),
+        (status.in_progress, "fbca04"),
+        (status.done, "1d76db"),
+    ];
+    wanted.extend(
+        p.config
+            .select
+            .skip_labels
+            .iter()
+            .map(|l| (l.clone(), "b60205")),
+    );
+    let existing: std::collections::HashSet<String> = p
+        .forge
+        .list_labels()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    for (name, color) in wanted {
+        if !name.is_empty() && !existing.contains(&name) {
+            let _ = p.forge.create_label(&name, color).await;
+        }
+    }
+}
+
 /// Build the concrete forge adapter for `cfg.forge.kind`. A faithful copy of
 /// `crates/tutti-cli/src/wire.rs`'s `build()` match, adapted to return just the forge
 /// (the CLI's `LiveAdapters` also bundles a backend and workspace the app builds
@@ -134,9 +383,7 @@ pub(crate) fn build_forge(
         }),
         ForgeKind::Gitea => {
             let login = cfg.forge.login.as_deref().ok_or_else(|| {
-                EngineError::Forge(
-                    "forge kind 'gitea' requires a login (set [forge].login)".into(),
-                )
+                EngineError::Forge("forge kind 'gitea' requires a login (set [forge].login)".into())
             })?;
             Box::new(GiteaForge {
                 repo: repo.to_string(),
@@ -152,4 +399,38 @@ pub(crate) fn build_forge(
         }),
     };
     Ok(forge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_from_maps_every_field() {
+        let form = InitForm {
+            dir: "/tmp/x".into(),
+            repo: "o/r".into(),
+            forge_kind: "gitea".into(),
+            login: Some("codeberg".into()),
+            trunk: "main".into(),
+            routing: "trunk".into(),
+            integration_branch: "staging".into(),
+            model: "claude-sonnet-5".into(),
+            max_issues_per_run: 3,
+            require_label: "status:ready".into(),
+            skip_labels: vec!["status:needs-human".into()],
+            gate_commands: vec!["cargo test".into()],
+        };
+        let p = params_from(&form);
+        assert_eq!(p.trunk, "main");
+        assert_eq!(p.routing, "trunk");
+        assert_eq!(p.integration_branch, "staging");
+        assert_eq!(p.model, "claude-sonnet-5");
+        assert_eq!(p.max_issues_per_run, 3);
+        assert_eq!(p.require_label, "status:ready");
+        assert_eq!(p.skip_labels, vec!["status:needs-human"]);
+        assert_eq!(p.gate_commands, vec!["cargo test"]);
+        assert_eq!(p.forge_kind, "gitea");
+        assert_eq!(p.login.as_deref(), Some("codeberg"));
+    }
 }

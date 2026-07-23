@@ -462,6 +462,8 @@ name = "tutti-app-core"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tutti-core",
 ]

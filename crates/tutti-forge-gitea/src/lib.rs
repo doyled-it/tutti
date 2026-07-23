@@ -104,7 +104,9 @@ impl GiteaForge {
         if let Some(id) = Self::id_for(&map, name) {
             return Ok(id);
         }
-        let body = serde_json::json!({"name": name, "color": color});
+        // Gitea's label color wants a leading '#' (verified against Codeberg); matches
+        // create_label so the two label-creating paths agree on the wire format.
+        let body = serde_json::json!({"name": name, "color": format!("#{color}")});
         let json = self
             .api("POST", &self.endpoint("labels"), Some(&body.to_string()))
             .await?;
@@ -158,6 +160,13 @@ impl Forge for GiteaForge {
             .api("GET", &self.endpoint("labels?limit=100"), None)
             .await?;
         Ok(parse::parse_labels(&json))
+    }
+
+    async fn create_label(&self, name: &str, color: &str) -> Result<()> {
+        let body = serde_json::json!({"name": name, "color": format!("#{color}")});
+        self.api("POST", &self.endpoint("labels"), Some(&body.to_string()))
+            .await?;
+        Ok(())
     }
 
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {

@@ -150,6 +150,10 @@ impl Forge for FakeForge {
         Ok(Vec::new())
     }
 
+    async fn create_label(&self, _name: &str, _color: &str) -> Result<()> {
+        Ok(())
+    }
+
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         let mut st = self.state.lock().unwrap();
         let i = st.issues.iter().find(|i| i.id == issue).cloned();

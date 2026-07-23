@@ -22,7 +22,10 @@ describe("applyEvent", () => {
 
   it("ship moves the card to done and bumps the count", () => {
     const claimed = applyEvent(base, idle, { kind: "issue_claimed", id: 10, title: "a" });
-    const { board, run } = applyEvent(claimed.board, claimed.run, { kind: "issue_shipped", id: 10 });
+    const { board, run } = applyEvent(claimed.board, claimed.run, {
+      kind: "issue_shipped",
+      id: 10,
+    });
     expect(board!.done.map((c) => c.id)).toEqual([10]);
     expect(run.shipped).toBe(1);
   });
@@ -30,13 +33,20 @@ describe("applyEvent", () => {
   it("drain_complete does NOT flip to idle (it is a per-pass event, not the run end)", () => {
     // The continuous loop drains again until nothing is ready; run-state ends via the
     // separate run-ended signal, so a per-pass drain_complete must leave state running.
-    const { run } = applyEvent(base, { state: "running", shipped: 1 }, { kind: "drain_complete", shipped: 1 });
+    const { run } = applyEvent(
+      base,
+      { state: "running", shipped: 1 },
+      { kind: "drain_complete", shipped: 1 },
+    );
     expect(run.state).toBe("running");
   });
 
   it("release moves the card back to ready and clears current", () => {
     const claimed = applyEvent(base, idle, { kind: "issue_claimed", id: 10, title: "a" });
-    const { board, run } = applyEvent(claimed.board, claimed.run, { kind: "issue_released", id: 10 });
+    const { board, run } = applyEvent(claimed.board, claimed.run, {
+      kind: "issue_released",
+      id: 10,
+    });
     expect(board!.ready.map((c) => c.id)).toEqual([10]);
     expect(board!.in_progress).toEqual([]);
     expect(run.current).toBeUndefined();

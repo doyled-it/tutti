@@ -50,7 +50,7 @@
 </script>
 
 <aside class="rail-wrap">
-  <Resizer onResize={onResize} ariaLabel="Resize roadmap rail" />
+  <Resizer {onResize} ariaLabel="Resize roadmap rail" />
   <div class="rail" style={`width:${width}px`}>
     <div class="col-h">Roadmap</div>
     <div

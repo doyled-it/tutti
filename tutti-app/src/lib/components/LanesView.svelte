@@ -30,7 +30,8 @@
     <div class="chips">
       {#each chips as { card, cls } (card.id)}
         <button class={`chip ${cls}`} onclick={() => onSelectIssue(card.id)}>
-          #{card.id} {card.title}
+          #{card.id}
+          {card.title}
           {#if card.status === "in_progress"}
             <span class="live-dot"></span>
           {/if}

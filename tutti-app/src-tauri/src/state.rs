@@ -15,8 +15,8 @@ pub struct Project {
     pub forge: Box<dyn Forge>,
     pub repo: String,
     pub repo_root: PathBuf,
-    // Not read back from state yet: `load_project` returns it directly in the
-    // `ProjectSummary` response. Kept on `Project` for a later command (e.g. a
+    // Not read back from state yet: `activate` returns it directly in the
+    // `ProjectEntry` response. Kept on `Project` for a later command (e.g. a
     // "current project" query) that reads it out of managed state instead.
     #[allow(dead_code)]
     pub name: String,

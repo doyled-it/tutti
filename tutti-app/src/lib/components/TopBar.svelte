@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Project name, the Board|Lanes segmented toggle, Run/Pause, and the live run status line. -->
 <script lang="ts">
-  import type { ProjectSummary } from "$lib/ipc";
+  import type { ProjectEntry } from "$lib/ipc";
   import type { RunUi } from "$lib/stores";
 
   let {
@@ -12,7 +12,7 @@
     onRun,
     onPause,
   }: {
-    project: ProjectSummary | null;
+    project: ProjectEntry | null;
     view: "board" | "lanes";
     runStatus: RunUi;
     onViewChange: (v: "board" | "lanes") => void;
