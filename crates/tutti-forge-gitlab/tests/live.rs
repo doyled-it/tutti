@@ -109,5 +109,7 @@ async fn browse_lists_own_namespace_and_sandbox() {
     let ns = b.list_namespaces().await.unwrap();
     let own = ns.first().expect("user namespace");
     let repos = b.list_repos(own).await.unwrap();
-    assert!(repos.iter().any(|r| r.full_path == "doyled-it/tutti-glab-sandbox"));
+    assert!(repos
+        .iter()
+        .any(|r| r.full_path == "doyled-it/tutti-glab-sandbox"));
 }

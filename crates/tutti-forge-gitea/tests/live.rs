@@ -89,7 +89,9 @@ async fn tracking_and_status_round_trip() {
 async fn browse_lists_own_namespace() {
     use tutti_core::browse::ForgeBrowser;
     use tutti_forge_gitea::GiteaBrowser;
-    let b = GiteaBrowser { login: "doyled-it".into() };
+    let b = GiteaBrowser {
+        login: "doyled-it".into(),
+    };
     let ns = b.list_namespaces().await.unwrap();
     assert!(ns.iter().any(|n| n.path == "doyled-it"));
 }

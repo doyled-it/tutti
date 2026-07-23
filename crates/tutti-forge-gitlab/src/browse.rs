@@ -37,7 +37,11 @@ struct GlProject {
 pub fn parse_user_namespace(json: &str) -> Result<Namespace> {
     let u: GlUser = serde_json::from_str(json)
         .map_err(|e| EngineError::Forge(format!("parse glab user: {e}")))?;
-    Ok(Namespace { path: u.id.to_string(), name: u.username, kind: NamespaceKind::User })
+    Ok(Namespace {
+        path: u.id.to_string(),
+        name: u.username,
+        kind: NamespaceKind::User,
+    })
 }
 
 /// Parse `glab api groups` into group namespaces (id in `path`, full_path in `name`).
@@ -48,7 +52,11 @@ pub fn parse_group_namespaces(json: &str) -> Result<Vec<Namespace>> {
         .into_iter()
         .map(|g| Namespace {
             path: g.id.to_string(),
-            name: if g.full_path.is_empty() { g.name } else { g.full_path },
+            name: if g.full_path.is_empty() {
+                g.name
+            } else {
+                g.full_path
+            },
             kind: NamespaceKind::Group,
         })
         .collect())

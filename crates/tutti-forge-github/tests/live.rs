@@ -150,5 +150,7 @@ async fn browse_lists_own_namespace_and_sandbox() {
     assert!(ns.iter().any(|n| n.path == "doyled-it"));
     let own = ns.iter().find(|n| n.path == "doyled-it").unwrap();
     let repos = b.list_repos(own).await.unwrap();
-    assert!(repos.iter().any(|r| r.full_path == "doyled-it/tutti-live-sandbox"));
+    assert!(repos
+        .iter()
+        .any(|r| r.full_path == "doyled-it/tutti-live-sandbox"));
 }
