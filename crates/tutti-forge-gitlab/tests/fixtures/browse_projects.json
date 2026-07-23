@@ -1,0 +1,5 @@
+[
+  { "id": 84564301, "name": "tutti-glab-sandbox", "path_with_namespace": "doyled-it/tutti-glab-sandbox", "description": null, "http_url_to_repo": "https://gitlab.com/doyled-it/tutti-glab-sandbox.git", "visibility": "private" },
+  { "id": 20549458, "name": "handicap", "path_with_namespace": "doyled-it/handicap", "description": "", "http_url_to_repo": "https://gitlab.com/doyled-it/handicap.git", "visibility": "public" },
+  { "id": 19234488, "name": "internal-thing", "path_with_namespace": "doyled-it/internal-thing", "description": "x", "http_url_to_repo": "https://gitlab.com/doyled-it/internal-thing.git", "visibility": "internal" }
+]

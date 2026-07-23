@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The GitLab `Forge`: drives `glab api` (REST v4 + GraphQL) and `git`.
+pub mod browse;
 pub mod parse;
+
+pub use browse::GitLabBrowser;
 
 use async_trait::async_trait;
 use tutti_core::domain::{
