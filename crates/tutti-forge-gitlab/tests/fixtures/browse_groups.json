@@ -1,0 +1,4 @@
+[
+  { "id": 4781228, "full_path": "container-manager", "parent_id": null, "name": "container-manager" },
+  { "id": 4781300, "full_path": "container-manager/backend", "parent_id": 4781228, "name": "backend" }
+]

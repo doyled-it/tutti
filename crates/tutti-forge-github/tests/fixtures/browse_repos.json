@@ -1,0 +1,5 @@
+[
+  { "full_name": "doyled-it/agent-view", "name": "agent-view", "description": "OpenTUI-based terminal interface", "clone_url": "https://github.com/doyled-it/agent-view.git", "private": false, "fork": false, "archived": false },
+  { "full_name": "doyled-it/secret-thing", "name": "secret-thing", "description": null, "clone_url": "https://github.com/doyled-it/secret-thing.git", "private": true, "fork": false, "archived": false },
+  { "full_name": "doyled-it/old-thing", "name": "old-thing", "description": "archived", "clone_url": "https://github.com/doyled-it/old-thing.git", "private": false, "fork": true, "archived": true }
+]

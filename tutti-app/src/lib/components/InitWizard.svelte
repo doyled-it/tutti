@@ -20,12 +20,15 @@
   let {
     dir,
     probe,
+    login = "",
     onCancel,
     onCreate,
     onRepick,
   }: {
     dir: string;
     probe: Probe;
+    // Pre-filled Gitea login when the caller already collected it (browse-and-clone).
+    login?: string;
     onCancel: () => void;
     onCreate: (form: InitForm) => Promise<void>;
     onRepick: () => void;
@@ -34,7 +37,7 @@
   // Seeded once from the props here, and re-seeded by the effect below when a repick
   // swaps the target folder underneath a mounted wizard. untrack makes the one-shot
   // capture explicit rather than an accidental snapshot.
-  let s = $state<WizardState>(untrack(() => initialState(dir, probe)));
+  let s = $state<WizardState>(untrack(() => initialState(dir, probe, login)));
   let seededDir = untrack(() => dir);
   let step = $state(0);
   let submitting = $state(false);

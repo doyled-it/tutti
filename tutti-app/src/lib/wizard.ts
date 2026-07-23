@@ -56,11 +56,16 @@ export const SKIP_LABELS = ["status:needs-human"];
  */
 export const MAX_ISSUES_PER_RUN = 1_000_000;
 
-export function initialState(dir: string, probe: Probe): WizardState {
+/**
+ * Seed the wizard. `login` pre-fills the Gitea login when the caller already knows it
+ * (the browse-and-clone flow collected it), so the user is not asked to re-enter it. It
+ * defaults to empty for the plain folder-pick flow, where no login was collected.
+ */
+export function initialState(dir: string, probe: Probe, login = ""): WizardState {
   return {
     dir,
     forgeKind: probe.forge_kind ?? "github",
-    login: "",
+    login,
     repo: probe.repo ?? "",
     trunk: "main",
     routing: "trunk",

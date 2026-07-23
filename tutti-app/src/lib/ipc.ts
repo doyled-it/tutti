@@ -78,6 +78,21 @@ export interface InitForm {
   gate_commands: string[];
 }
 
+export type NamespaceKind = "User" | "Org" | "Group";
+export interface Namespace {
+  path: string;
+  name: string;
+  kind: NamespaceKind;
+}
+export interface RemoteRepo {
+  full_path: string;
+  name: string;
+  description: string | null;
+  clone_url: string;
+  private: boolean;
+  archived: boolean;
+}
+
 // Discriminated union mirroring EngineEvent (serde tag = "kind", snake_case).
 export type EngineEvent =
   | { kind: "drain_started" }
@@ -104,4 +119,10 @@ export const api = {
   // Fired once when a whole run ends (any exit path, including error), so the UI can
   // leave the running state even when no terminal DrainComplete was emitted.
   onRunEnded: (cb: () => void) => listen("engine://run-ended", () => cb()),
+  listNamespaces: (forgeKind: string, login: string | null) =>
+    invoke<Namespace[]>("list_namespaces", { forgeKind, login }),
+  listRepos: (forgeKind: string, login: string | null, namespace: Namespace) =>
+    invoke<RemoteRepo[]>("list_repos", { forgeKind, login, namespace }),
+  cloneRepo: (cloneUrl: string, parentDir: string, name: string) =>
+    invoke<string>("clone_repo", { cloneUrl, parentDir, name }),
 };

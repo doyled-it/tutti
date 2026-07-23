@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Gitea/Codeberg `Forge`: drives `tea api` and `git`.
+pub mod browse;
 pub mod parse;
+
+pub use browse::GiteaBrowser;
 
 use async_trait::async_trait;
 use tutti_core::domain::{

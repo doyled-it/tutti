@@ -23,16 +23,46 @@
   import LanesView from "$lib/components/LanesView.svelte";
   import IssueDrawer from "$lib/components/IssueDrawer.svelte";
   import InitWizard from "$lib/components/InitWizard.svelte";
+  import BrowseForge from "$lib/components/BrowseForge.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
   let loadError = $state<string | null>(null);
 
   // Set when the user picks a folder with no tutti.toml; opens the wizard over the shell.
-  let pendingInit = $state<{ dir: string; probe: Probe } | null>(null);
+  // `login` pre-fills the wizard's Gitea login when we already know it (browse flow).
+  let pendingInit = $state<{ dir: string; probe: Probe; login: string } | null>(null);
 
-  function onNeedsInit(dir: string, probe: Probe) {
-    pendingInit = { dir, probe };
+  function onNeedsInit(dir: string, probe: Probe, login = "") {
+    pendingInit = { dir, probe, login };
+  }
+
+  // Set while the browse-a-forge modal is open.
+  let browsing = $state(false);
+
+  function onBrowse() {
+    browsing = true;
+  }
+
+  // After a browse clone lands a local checkout, run it through the same probe-then-add
+  // or probe-then-wizard path a manually picked folder uses. The browse flow already knows
+  // the forge kind and (for Gitea) the login, so carry both through rather than making the
+  // wizard re-derive the forge from the remote host (which only recognizes the three
+  // public hosts, so a self-hosted GitLab/Gitea/GHE would come back unknown).
+  async function onCloned(dir: string, forgeKind: string, login: string) {
+    browsing = false;
+    loadError = null;
+    try {
+      const probe = await api.probeProject(dir);
+      if (probe.has_config) {
+        await onAdd(dir, probe.repo ?? undefined);
+      } else {
+        const known = { ...probe, forge_kind: probe.forge_kind ?? forgeKind };
+        onNeedsInit(dir, known, forgeKind === "gitea" ? login : "");
+      }
+    } catch (e) {
+      loadError = String(e);
+    }
   }
 
   // Re-open the folder picker from inside the wizard, replacing the pending target. The
@@ -48,7 +78,7 @@
         pendingInit = null;
         await onAdd(picked, probe.repo ?? undefined);
       } else {
-        pendingInit = { dir: picked, probe };
+        pendingInit = { dir: picked, probe, login: "" };
       }
     } catch (e) {
       loadError = String(e);
@@ -247,6 +277,7 @@
     {onSwitch}
     {onAdd}
     {onNeedsInit}
+    {onBrowse}
     {onRemove}
   />
 
@@ -291,10 +322,15 @@
   <InitWizard
     dir={pendingInit.dir}
     probe={pendingInit.probe}
+    login={pendingInit.login}
     onCancel={() => (pendingInit = null)}
     onCreate={onInit}
     onRepick={repickInit}
   />
+{/if}
+
+{#if browsing}
+  <BrowseForge onCancel={() => (browsing = false)} {onCloned} />
 {/if}
 
 <style>

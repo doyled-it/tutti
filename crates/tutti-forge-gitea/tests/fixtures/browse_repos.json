@@ -1,0 +1,4 @@
+[
+  { "full_name": "doyled-it/tutti-tea-sandbox", "name": "tutti-tea-sandbox", "description": "sandbox", "clone_url": "https://codeberg.org/doyled-it/tutti-tea-sandbox.git", "private": false, "fork": false, "archived": false },
+  { "full_name": "doyled-it/private-repo", "name": "private-repo", "description": "", "clone_url": "https://codeberg.org/doyled-it/private-repo.git", "private": true, "fork": false, "archived": false }
+]

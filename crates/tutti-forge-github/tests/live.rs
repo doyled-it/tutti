@@ -139,3 +139,18 @@ async fn milestone_and_issue_tracking_round_trip() {
 
     // `cleanup` drops here, deleting the throwaway issue and milestone.
 }
+
+#[tokio::test]
+#[ignore = "hits the real gh CLI"]
+async fn browse_lists_own_namespace_and_sandbox() {
+    use tutti_core::browse::ForgeBrowser;
+    use tutti_forge_github::GitHubBrowser;
+    let b = GitHubBrowser;
+    let ns = b.list_namespaces().await.unwrap();
+    assert!(ns.iter().any(|n| n.path == "doyled-it"));
+    let own = ns.iter().find(|n| n.path == "doyled-it").unwrap();
+    let repos = b.list_repos(own).await.unwrap();
+    assert!(repos
+        .iter()
+        .any(|r| r.full_path == "doyled-it/tutti-live-sandbox"));
+}
