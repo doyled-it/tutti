@@ -15,6 +15,7 @@
     onSwitch,
     onAdd,
     onNeedsInit,
+    onBrowse,
     onRemove,
   }: {
     projects: ProjectEntry[];
@@ -23,6 +24,7 @@
     onSwitch: (dir: string) => void;
     onAdd: (dir: string, repo?: string) => Promise<void>;
     onNeedsInit: (dir: string, probe: Probe) => void;
+    onBrowse: () => void;
     onRemove: (dir: string) => void;
   } = $props();
 
@@ -96,6 +98,13 @@
     return "dot gh";
   }
 
+  // Hand off to the page-owned BrowseForge modal, closing the add affordance behind it.
+  function beginBrowse() {
+    if (runActive) return;
+    cancelAdd();
+    onBrowse();
+  }
+
   function handleSwitch(dir: string) {
     if (runActive) return;
     onSwitch(dir);
@@ -147,7 +156,8 @@
 
       {#if adding}
         <div class="add-form">
-          <button type="button" class="pick" onclick={pickDir}>Choose folder...</button>
+          <button type="button" class="pick" onclick={pickDir}>Open a local folder...</button>
+          <button type="button" class="pick" onclick={beginBrowse}>Browse a forge...</button>
           {#if addError}
             <div class="add-error">{addError}</div>
           {/if}

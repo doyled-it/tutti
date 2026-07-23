@@ -23,6 +23,7 @@
   import LanesView from "$lib/components/LanesView.svelte";
   import IssueDrawer from "$lib/components/IssueDrawer.svelte";
   import InitWizard from "$lib/components/InitWizard.svelte";
+  import BrowseForge from "$lib/components/BrowseForge.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
@@ -33,6 +34,30 @@
 
   function onNeedsInit(dir: string, probe: Probe) {
     pendingInit = { dir, probe };
+  }
+
+  // Set while the browse-a-forge modal is open.
+  let browsing = $state(false);
+
+  function onBrowse() {
+    browsing = true;
+  }
+
+  // After a browse clone lands a local checkout, run it through the same probe-then-add
+  // or probe-then-wizard path a manually picked folder uses.
+  async function onCloned(dir: string) {
+    browsing = false;
+    loadError = null;
+    try {
+      const probe = await api.probeProject(dir);
+      if (probe.has_config) {
+        await onAdd(dir, probe.repo ?? undefined);
+      } else {
+        onNeedsInit(dir, probe);
+      }
+    } catch (e) {
+      loadError = String(e);
+    }
   }
 
   // Re-open the folder picker from inside the wizard, replacing the pending target. The
@@ -247,6 +272,7 @@
     {onSwitch}
     {onAdd}
     {onNeedsInit}
+    {onBrowse}
     {onRemove}
   />
 
@@ -295,6 +321,10 @@
     onCreate={onInit}
     onRepick={repickInit}
   />
+{/if}
+
+{#if browsing}
+  <BrowseForge onCancel={() => (browsing = false)} {onCloned} />
 {/if}
 
 <style>
