@@ -99,3 +99,15 @@ async fn tracking_and_status_round_trip() {
         ])
         .output();
 }
+
+#[tokio::test]
+#[ignore = "hits the real glab CLI"]
+async fn browse_lists_own_namespace_and_sandbox() {
+    use tutti_core::browse::ForgeBrowser;
+    use tutti_forge_gitlab::GitLabBrowser;
+    let b = GitLabBrowser;
+    let ns = b.list_namespaces().await.unwrap();
+    let own = ns.first().expect("user namespace");
+    let repos = b.list_repos(own).await.unwrap();
+    assert!(repos.iter().any(|r| r.full_path == "doyled-it/tutti-glab-sandbox"));
+}
