@@ -15,8 +15,10 @@
     onCloned,
   }: {
     onCancel: () => void;
-    // Called with the local path once a repo is cloned (or an existing checkout reused).
-    onCloned: (dir: string) => Promise<void>;
+    // Called once a repo is cloned (or an existing checkout reused) with the local path
+    // plus the forge kind and login the user chose, so the handoff does not have to
+    // re-derive the forge from the remote host (which only knows the three public ones).
+    onCloned: (dir: string, forgeKind: string, login: string) => Promise<void>;
   } = $props();
 
   let forgeKind = $state("github");
@@ -182,7 +184,7 @@
     cloneError = null;
     try {
       const path = await api.cloneRepo(selectedRepo.clone_url, parentDir, selectedRepo.name);
-      await onCloned(path);
+      await onCloned(path, forgeKind, login.trim());
     } catch (e) {
       cloneError = String(e);
     } finally {

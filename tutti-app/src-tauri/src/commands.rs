@@ -422,6 +422,21 @@ pub fn clone_action(target_exists: bool, is_git_repo: bool) -> CloneAction {
     }
 }
 
+/// Whether two git remote URLs point at the same repo, ignoring cosmetic differences: a
+/// trailing `.git`, a trailing slash, and surrounding whitespace. Pure so the reuse
+/// guard below is testable. Deliberately conservative: it does not try to unify
+/// https and ssh forms, so an ambiguous case falls through to refusing reuse, which is
+/// the safe direction (clone into a fresh path rather than silently adopt a checkout).
+pub fn remotes_match(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.trim()
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_string()
+    }
+    norm(a) == norm(b)
+}
+
 /// Build a browser for `forge_kind`. Gitea needs the login; the others ignore it.
 fn build_browser(forge_kind: &str, login: Option<String>) -> Result<Box<dyn ForgeBrowser>, String> {
     match forge_kind {
@@ -481,7 +496,28 @@ pub async fn clone_repo(
     let target = std::path::Path::new(&parent_dir).join(&name);
     let is_git = target.join(".git").is_dir();
     match clone_action(target.exists(), is_git) {
-        CloneAction::UseExisting => Ok(target.to_string_lossy().into_owned()),
+        CloneAction::UseExisting => {
+            // A git repo is already at the target path. Only adopt it if its origin is
+            // the repo the user actually picked; otherwise a same-named checkout of an
+            // unrelated repo would be silently adopted under the wrong identity.
+            let origin = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&target)
+                .args(["remote", "get-url", "origin"])
+                .output()
+                .await
+                .map_err(|e| format!("read origin of {}: {e}", target.display()))?;
+            let origin = String::from_utf8_lossy(&origin.stdout);
+            if remotes_match(origin.trim(), &clone_url) {
+                Ok(target.to_string_lossy().into_owned())
+            } else {
+                Err(format!(
+                    "{} already holds a different repo ({}), not {clone_url}",
+                    target.display(),
+                    origin.trim()
+                ))
+            }
+        }
         CloneAction::Occupied => Err(format!(
             "{} already exists and is not a git repo",
             target.display()
@@ -514,6 +550,27 @@ mod browse_tests {
         assert_eq!(clone_action(false, false), CloneAction::Clone);
         assert_eq!(clone_action(true, true), CloneAction::UseExisting);
         assert_eq!(clone_action(true, false), CloneAction::Occupied);
+    }
+
+    #[test]
+    fn remotes_match_ignores_cosmetic_differences() {
+        assert!(remotes_match(
+            "https://github.com/o/r.git",
+            "https://github.com/o/r"
+        ));
+        assert!(remotes_match(
+            "https://github.com/o/r/ ",
+            "https://github.com/o/r.git"
+        ));
+        assert!(!remotes_match(
+            "https://github.com/o/r.git",
+            "https://github.com/other/r.git"
+        ));
+        // https and ssh forms are not unified: treated as a mismatch (refuse reuse).
+        assert!(!remotes_match(
+            "git@github.com:o/r.git",
+            "https://github.com/o/r.git"
+        ));
     }
 }
 

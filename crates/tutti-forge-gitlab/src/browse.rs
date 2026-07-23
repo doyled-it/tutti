@@ -79,22 +79,71 @@ pub fn parse_projects(json: &str) -> Result<Vec<RemoteRepo>> {
         .collect())
 }
 
+/// Page size for the paginated list calls. GitLab caps `per_page` at 100.
+const PER_PAGE: usize = 100;
+/// Runaway guard on the page loop. 100 pages is 10,000 items, well past any real
+/// namespace; hitting it means something is wrong, not that a user has that many repos.
+const MAX_PAGES: usize = 100;
+
 #[async_trait]
 impl ForgeBrowser for GitLabBrowser {
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         let mut out = vec![parse_user_namespace(&glab(&["api", "user"]).await?)?];
-        out.extend(parse_group_namespaces(
-            &glab(&["api", "groups?min_access_level=30&per_page=100"]).await?,
-        )?);
+        // `glab api --paginate` concatenates the per-page arrays (`][` between them),
+        // which is not valid JSON, so page explicitly and parse each page on its own.
+        out.extend(
+            paginate(
+                |page| format!("groups?min_access_level=30&per_page={PER_PAGE}&page={page}"),
+                fetch_page,
+                parse_group_namespaces,
+            )
+            .await?,
+        );
         Ok(out)
     }
     async fn list_repos(&self, ns: &Namespace) -> Result<Vec<RemoteRepo>> {
-        let endpoint = match ns.kind {
-            NamespaceKind::Group => format!("groups/{}/projects?per_page=100", ns.path),
-            _ => format!("users/{}/projects?per_page=100", ns.path),
+        let base = match ns.kind {
+            NamespaceKind::Group => format!("groups/{}/projects", ns.path),
+            _ => format!("users/{}/projects", ns.path),
         };
-        parse_projects(&glab(&["api", &endpoint]).await?)
+        paginate(
+            |page| format!("{base}?per_page={PER_PAGE}&page={page}"),
+            fetch_page,
+            parse_projects,
+        )
+        .await
     }
+}
+
+/// Fetch one page's raw JSON from `glab api`. Separated from `paginate` so the loop can
+/// be tested without shelling out.
+async fn fetch_page(endpoint: String) -> Result<String> {
+    glab(&["api", &endpoint]).await
+}
+
+/// Walk pages 1.. building each page's endpoint with `endpoint`, fetching with `fetch`
+/// and parsing with `parse`, until a page comes back shorter than a full page (the last
+/// one) or the runaway guard trips. Each page is a self-contained JSON array, so parsing
+/// is per page rather than over the concatenated `--paginate` output.
+async fn paginate<T, F, Fut>(
+    endpoint: impl Fn(usize) -> String,
+    fetch: F,
+    parse: impl Fn(&str) -> Result<Vec<T>>,
+) -> Result<Vec<T>>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let mut out = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let items = parse(&fetch(endpoint(page)).await?)?;
+        let full = items.len() == PER_PAGE;
+        out.extend(items);
+        if !full {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 async fn glab(args: &[&str]) -> Result<String> {
@@ -114,6 +163,43 @@ mod tests {
             parse_group_namespaces(include_str!("../tests/fixtures/browse_groups.json")).unwrap();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[1].name, "container-manager/backend");
+    }
+
+    #[tokio::test]
+    async fn paginate_stops_on_a_short_page_and_accumulates() {
+        // Two full pages then a short one: three fetches, all items accumulated. The
+        // fetch returns the page number as its "json"; the parse turns it into that
+        // many items (PER_PAGE for pages 1-2, one for page 3).
+        let out = paginate(
+            |page| format!("p{page}"),
+            |endpoint| async move { Ok(endpoint) },
+            |page: &str| {
+                let n = if page == "p3" { 1 } else { PER_PAGE };
+                Ok((0..n).map(|i| format!("{page}-{i}")).collect())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.len(), PER_PAGE * 2 + 1);
+        assert_eq!(out[0], "p1-0");
+        assert_eq!(out.last().unwrap(), "p3-0");
+    }
+
+    #[tokio::test]
+    async fn paginate_stops_immediately_on_a_short_first_page() {
+        let fetches = std::sync::atomic::AtomicUsize::new(0);
+        let out: Vec<String> = paginate(
+            |_page| "p".into(),
+            |endpoint| {
+                fetches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move { Ok(endpoint) }
+            },
+            |_page| Ok(vec!["only".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(out, vec!["only".to_string()]);
     }
 
     #[test]
