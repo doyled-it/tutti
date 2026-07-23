@@ -9,12 +9,13 @@ use tauri::Manager;
 use tutti_app_core::{
     assemble_board, issue_detail, Board, IssueDetail, ProjectEntry, ProjectStore,
 };
+use tutti_core::browse::{ForgeBrowser, Namespace, RemoteRepo};
 use tutti_core::config::{Config, ForgeKind};
 use tutti_core::tracking::MilestoneId;
 use tutti_core::traits::{EngineError, Forge, Result as EngineResult};
-use tutti_forge_gitea::GiteaForge;
-use tutti_forge_github::GitHubForge;
-use tutti_forge_gitlab::GitLabForge;
+use tutti_forge_gitea::{GiteaBrowser, GiteaForge};
+use tutti_forge_github::{GitHubBrowser, GitHubForge};
+use tutti_forge_gitlab::{GitLabBrowser, GitLabForge};
 
 /// Resolve `<app data dir>/projects.json`, creating the app data dir first if it does
 /// not exist yet.
@@ -399,6 +400,121 @@ pub(crate) fn build_forge(
         }),
     };
     Ok(forge)
+}
+
+/// What to do with a clone target path. Pure so the branching is testable without IO.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloneAction {
+    /// Nothing there: clone into it.
+    Clone,
+    /// A git repo is already there: use it as-is (the common "already cloned" case).
+    UseExisting,
+    /// Something non-git is in the way: refuse.
+    Occupied,
+}
+
+/// Decide what to do given whether the target exists and whether it is a git repo.
+pub fn clone_action(target_exists: bool, is_git_repo: bool) -> CloneAction {
+    match (target_exists, is_git_repo) {
+        (false, _) => CloneAction::Clone,
+        (true, true) => CloneAction::UseExisting,
+        (true, false) => CloneAction::Occupied,
+    }
+}
+
+/// Build a browser for `forge_kind`. Gitea needs the login; the others ignore it.
+fn build_browser(forge_kind: &str, login: Option<String>) -> Result<Box<dyn ForgeBrowser>, String> {
+    match forge_kind {
+        "github" => Ok(Box::new(GitHubBrowser)),
+        "gitlab" => Ok(Box::new(GitLabBrowser)),
+        "gitea" => {
+            let login = login
+                .filter(|l| !l.trim().is_empty())
+                .ok_or("gitea browsing needs a tea login (the name from `tea login list`)")?;
+            Ok(Box::new(GiteaBrowser { login }))
+        }
+        other => Err(format!("unknown forge kind '{other}'")),
+    }
+}
+
+#[tauri::command]
+pub async fn list_namespaces(
+    forge_kind: String,
+    login: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Namespace>, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before browsing a forge".into());
+    }
+    build_browser(&forge_kind, login)?
+        .list_namespaces()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_repos(
+    forge_kind: String,
+    login: Option<String>,
+    namespace: Namespace,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RemoteRepo>, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before browsing a forge".into());
+    }
+    build_browser(&forge_kind, login)?
+        .list_repos(&namespace)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clone_repo(
+    clone_url: String,
+    parent_dir: String,
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before cloning".into());
+    }
+    let target = std::path::Path::new(&parent_dir).join(&name);
+    let is_git = target.join(".git").is_dir();
+    match clone_action(target.exists(), is_git) {
+        CloneAction::UseExisting => Ok(target.to_string_lossy().into_owned()),
+        CloneAction::Occupied => Err(format!(
+            "{} already exists and is not a git repo",
+            target.display()
+        )),
+        CloneAction::Clone => {
+            let out = tokio::process::Command::new("git")
+                .arg("clone")
+                .arg(&clone_url)
+                .arg(&target)
+                .output()
+                .await
+                .map_err(|e| format!("spawn git clone: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "git clone failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            Ok(target.to_string_lossy().into_owned())
+        }
+    }
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+
+    #[test]
+    fn clone_action_covers_every_case() {
+        assert_eq!(clone_action(false, false), CloneAction::Clone);
+        assert_eq!(clone_action(true, true), CloneAction::UseExisting);
+        assert_eq!(clone_action(true, false), CloneAction::Occupied);
+    }
 }
 
 #[cfg(test)]

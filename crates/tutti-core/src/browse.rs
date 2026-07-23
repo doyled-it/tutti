@@ -7,7 +7,7 @@ use crate::traits::Result;
 use async_trait::async_trait;
 
 /// What kind of thing owns repos on a forge.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NamespaceKind {
     /// The authenticated user's own account.
     User,
@@ -18,7 +18,7 @@ pub enum NamespaceKind {
 }
 
 /// One place repos can live: an account, an org, or a group.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Namespace {
     /// The key the repo listing needs. A login or org name on GitHub/Gitea; a numeric
     /// id (as a string) on GitLab, where the projects call is keyed by id, not path.
@@ -30,7 +30,7 @@ pub struct Namespace {
 }
 
 /// A repo the user could clone and adopt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RemoteRepo {
     /// `owner/repo`, or `group/subgroup/project` on GitLab. This is exactly the string
     /// the resulting `tutti.toml` records, so it must match what the `Forge` adapter for

@@ -21,6 +21,9 @@ pub fn run() {
             commands::probe_project,
             commands::init_project,
             commands::preview_tutti_toml,
+            commands::list_namespaces,
+            commands::list_repos,
+            commands::clone_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
