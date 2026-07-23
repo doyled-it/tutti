@@ -94,12 +94,11 @@ GitHub: `full_name`, `name`, `description`, `clone_url`, `private` (bool), plus 
 
 The important Gitea gotcha: **the tea login name is not the username.** The `login` is a
 local alias for a host-plus-token pair, and it can differ from the account it
-authenticates as. On this machine the login `icesight-engine` authenticates as the user
-`workslocally`, and `users/icesight-engine/repos` returns
-`{"message": "user redirect does not exist"}`. So `list_namespaces` must read the login
-off `tea api user` and use *that* for the repo call. Deriving the username from the
-login name is wrong and fails in exactly the case where a user has named their logins
-descriptively.
+authenticates as (a login named `work` might authenticate as user `jdoe`). Calling
+`users/{login-name}/repos` then returns `{"message": "user redirect does not exist"}`.
+So `list_namespaces` must read the actual username off `tea api user` and use *that* for
+the repo call. Deriving the username from the login name is wrong and fails in exactly
+the case where a user has named their logins descriptively.
 
 Also worth knowing: Gitea error responses are a JSON object (`{message, url}`) with a
 zero exit status, not an array, so the parser must detect that shape and surface the
@@ -206,9 +205,12 @@ wizard, and wires its completion into the existing `onAdd` / wizard handoff.
   own namespace appears and that the sandbox repo is listed under it. Validated against
   the real GitHub, GitLab and Codeberg accounts before merge, following the 3B pattern
   where the live tier is what actually catches wire-format divergence. The Gitea live
-  test must use the `icesight-engine` login (user `workslocally`), which owns
-  `tutti-tea-sandbox`: the newer `doyled-it` Codeberg account has no repos and no orgs,
-  so it can prove the calls work but cannot assert on any content.
+  test uses the `doyled-it` Codeberg login and a `doyled-it/tutti-tea-sandbox` repo, the
+  parallel to `tutti-live-sandbox` on GitHub and `tutti-glab-sandbox` on GitLab, so the
+  live tier stays entirely within the `doyled-it` account on every forge. That sandbox
+  repo does not exist yet and is a prerequisite for the Gitea live test (the parser and
+  hermetic tests do not need it). Until it exists the Gitea live test asserts only that
+  the user's own namespace lists.
 - **Clone handling** unit-tested through a small pure helper for the target-path and
   already-exists decisions, so the branchy part is not buried in an IO function.
 - **Frontend** `browse.test.ts` over the pure module, plus the existing gates.
