@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type Status = "ready" | "in_progress" | "done" | "other";
+export type Status = "ready" | "in_progress" | "done" | "untriaged";
 
 export interface IssueCard {
   id: number;
@@ -28,6 +28,7 @@ export interface Board {
   ready: IssueCard[];
   in_progress: IssueCard[];
   done: IssueCard[];
+  untriaged: IssueCard[];
 }
 
 export interface LabelChip {

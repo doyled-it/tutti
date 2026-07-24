@@ -9,6 +9,7 @@ const base: Board = {
   ready: [{ id: 10, title: "a", status: "ready", milestone: "P1" }],
   in_progress: [],
   done: [],
+  untriaged: [],
 };
 const idle: RunUi = { state: "idle", shipped: 0 };
 
@@ -56,5 +57,19 @@ describe("applyEvent", () => {
     const { board } = applyEvent(base, idle, { kind: "issue_shipped", id: 999 });
     expect(board!.ready.map((c) => c.id)).toEqual([10]);
     expect(board!.done).toEqual([]);
+  });
+
+  it("claiming a card sitting in untriaged moves it without leaving a phantom", () => {
+    // A stale board can hold a card in untriaged that the engine has since claimed
+    // (relabeled status:ready out of band). The move must find it and remove it from
+    // untriaged, not just append a copy to in_progress.
+    const stale: Board = {
+      ...base,
+      ready: [],
+      untriaged: [{ id: 20, title: "b", status: "untriaged", milestone: "P1" }],
+    };
+    const { board } = applyEvent(stale, idle, { kind: "issue_claimed", id: 20, title: "b" });
+    expect(board!.untriaged).toEqual([]);
+    expect(board!.in_progress.map((c) => c.id)).toEqual([20]);
   });
 });
