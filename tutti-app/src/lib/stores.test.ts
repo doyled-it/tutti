@@ -9,6 +9,7 @@ const base: Board = {
   ready: [{ id: 10, title: "a", status: "ready", milestone: "P1" }],
   in_progress: [],
   done: [],
+  untriaged: [],
 };
 const idle: RunUi = { state: "idle", shipped: 0 };
 

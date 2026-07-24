@@ -22,7 +22,7 @@
     ready: "ready",
     in_progress: "in progress",
     done: "done",
-    other: "untriaged",
+    untriaged: "untriaged",
   };
 
   // Render a label's real forge color as a pill. Scoped labels (GitLab `scope::value`,
@@ -215,7 +215,7 @@
     border-color: var(--done);
     background: rgba(34, 197, 94, 0.12);
   }
-  .badge.other {
+  .badge.untriaged {
     border-color: var(--border);
     background: var(--hover);
   }
