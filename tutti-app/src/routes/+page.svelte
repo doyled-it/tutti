@@ -59,6 +59,7 @@
   // public hosts, so a self-hosted GitLab/Gitea/GHE would come back unknown).
   async function onCloned(dir: string, forgeKind: string, login: string) {
     browsing = false;
+    creating = false;
     loadError = null;
     try {
       const probe = await api.probeProject(dir);

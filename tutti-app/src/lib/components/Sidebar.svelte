@@ -109,7 +109,7 @@
 
   // Hand off to the page-owned CreateRepo modal, closing the add affordance behind it.
   function beginCreate() {
-    adding = false;
+    cancelAdd();
     onCreate();
   }
 
