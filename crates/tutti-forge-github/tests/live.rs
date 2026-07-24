@@ -154,3 +154,56 @@ async fn browse_lists_own_namespace_and_sandbox() {
         .iter()
         .any(|r| r.full_path == "doyled-it/tutti-live-sandbox"));
 }
+
+#[tokio::test]
+#[ignore = "creates a real repo on GitHub under doyled-it"]
+async fn create_repo_makes_a_cloneable_repo() {
+    use tutti_core::browse::{ForgeBrowser, Namespace, NamespaceKind, NewRepo};
+    use tutti_forge_github::GitHubBrowser;
+
+    let name = format!("tutti-create-test-{}", std::process::id());
+    let full = format!("doyled-it/{name}");
+
+    struct RepoCleanup(String);
+    impl Drop for RepoCleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("gh")
+                .args(["repo", "delete", &self.0, "--yes"])
+                .output();
+        }
+    }
+    let _cleanup = RepoCleanup(full.clone());
+
+    let b = GitHubBrowser;
+    let ns = Namespace {
+        path: "doyled-it".into(),
+        name: "doyled-it".into(),
+        kind: NamespaceKind::User,
+    };
+    let spec = NewRepo {
+        name: name.clone(),
+        description: Some("tutti live create test".into()),
+        private: true,
+    };
+    let repo = b.create_repo(&ns, &spec).await.expect("create_repo");
+    assert_eq!(repo.full_path, full);
+    assert!(repo.private);
+    assert!(repo.clone_url.contains(&name));
+
+    let dir = std::env::temp_dir().join(&name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = std::process::Command::new("git")
+        .args(["clone", &repo.clone_url, dir.to_str().unwrap()])
+        .output()
+        .expect("git clone");
+    assert!(
+        out.status.success(),
+        "clone failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        dir.join("README.md").exists(),
+        "auto-init should create a README"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

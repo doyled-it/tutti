@@ -24,6 +24,7 @@ pub fn run() {
             commands::list_namespaces,
             commands::list_repos,
             commands::clone_repo,
+            commands::create_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
