@@ -11,11 +11,15 @@
     onSelectIssue: (id: number) => void;
   } = $props();
 
-  const columns: { key: keyof Pick<Board, "ready" | "in_progress" | "done">; label: string }[] = [
-    { key: "ready", label: "Ready" },
-    { key: "in_progress", label: "In progress" },
-    { key: "done", label: "Done" },
-  ];
+  const columns = $derived([
+    ...(board.untriaged.length > 0 ? [{ key: "untriaged" as const, label: "Untriaged" }] : []),
+    { key: "ready" as const, label: "Ready" },
+    { key: "in_progress" as const, label: "In progress" },
+    { key: "done" as const, label: "Done" },
+  ] satisfies {
+    key: keyof Pick<Board, "ready" | "in_progress" | "done" | "untriaged">;
+    label: string;
+  }[]);
 </script>
 
 <div class="board">
@@ -26,6 +30,7 @@
         {#each board[col.key] as card (card.id)}
           <button
             class="card"
+            class:un={card.status === "untriaged"}
             class:ip={card.status === "in_progress"}
             class:dn={card.status === "done"}
             onclick={() => onSelectIssue(card.id)}
@@ -92,6 +97,11 @@
   .card.ip {
     border-color: var(--accent-border);
     background: var(--accent-bg);
+  }
+  .card.un {
+    border-style: dashed;
+    border-color: var(--border);
+    color: var(--text-dim);
   }
   .card.dn {
     opacity: 0.55;
