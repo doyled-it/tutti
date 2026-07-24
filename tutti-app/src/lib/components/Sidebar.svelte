@@ -16,6 +16,7 @@
     onAdd,
     onNeedsInit,
     onBrowse,
+    onCreate,
     onRemove,
   }: {
     projects: ProjectEntry[];
@@ -25,6 +26,7 @@
     onAdd: (dir: string, repo?: string) => Promise<void>;
     onNeedsInit: (dir: string, probe: Probe) => void;
     onBrowse: () => void;
+    onCreate: () => void;
     onRemove: (dir: string) => void;
   } = $props();
 
@@ -105,6 +107,12 @@
     onBrowse();
   }
 
+  // Hand off to the page-owned CreateRepo modal, closing the add affordance behind it.
+  function beginCreate() {
+    adding = false;
+    onCreate();
+  }
+
   function handleSwitch(dir: string) {
     if (runActive) return;
     onSwitch(dir);
@@ -158,6 +166,7 @@
         <div class="add-form">
           <button type="button" class="pick" onclick={pickDir}>Open a local folder...</button>
           <button type="button" class="pick" onclick={beginBrowse}>Browse a forge...</button>
+          <button type="button" class="pick" onclick={beginCreate}>Create a new repo...</button>
           {#if addError}
             <div class="add-error">{addError}</div>
           {/if}

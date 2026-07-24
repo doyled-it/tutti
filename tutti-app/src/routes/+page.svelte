@@ -24,6 +24,7 @@
   import IssueDrawer from "$lib/components/IssueDrawer.svelte";
   import InitWizard from "$lib/components/InitWizard.svelte";
   import BrowseForge from "$lib/components/BrowseForge.svelte";
+  import CreateRepo from "$lib/components/CreateRepo.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
@@ -42,6 +43,13 @@
 
   function onBrowse() {
     browsing = true;
+  }
+
+  // Set while the create-a-new-repo modal is open.
+  let creating = $state(false);
+
+  function onCreate() {
+    creating = true;
   }
 
   // After a browse clone lands a local checkout, run it through the same probe-then-add
@@ -278,6 +286,7 @@
     {onAdd}
     {onNeedsInit}
     {onBrowse}
+    {onCreate}
     {onRemove}
   />
 
@@ -331,6 +340,10 @@
 
 {#if browsing}
   <BrowseForge onCancel={() => (browsing = false)} {onCloned} />
+{/if}
+
+{#if creating}
+  <CreateRepo onCancel={() => (creating = false)} {onCloned} />
 {/if}
 
 <style>
