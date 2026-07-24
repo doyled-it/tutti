@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tutti_core::browse::{ForgeBrowser, Namespace, NamespaceKind, RemoteRepo};
+use tutti_core::browse::{ForgeBrowser, Namespace, NamespaceKind, NewRepo, RemoteRepo};
 use tutti_core::traits::{EngineError, Result};
 
 /// Browses GitLab via `glab api`. GitLab keys the projects call by numeric id, so the
@@ -79,6 +79,21 @@ pub fn parse_projects(json: &str) -> Result<Vec<RemoteRepo>> {
         .collect())
 }
 
+/// Parse a single-project create response (`POST /projects`). `private` is
+/// `visibility != "public"`, the same rule the list parser uses.
+pub fn parse_created_project(json: &str) -> Result<RemoteRepo> {
+    let p: GlProject = serde_json::from_str(json)
+        .map_err(|e| EngineError::Forge(format!("parse glab created project: {e}")))?;
+    Ok(RemoteRepo {
+        full_path: p.path_with_namespace,
+        name: p.name,
+        description: p.description.filter(|d| !d.is_empty()),
+        clone_url: p.http_url_to_repo,
+        private: p.visibility != "public",
+        archived: false,
+    })
+}
+
 /// Page size for the paginated list calls. GitLab caps `per_page` at 100.
 const PER_PAGE: usize = 100;
 /// Runaway guard on the page loop. 100 pages is 10,000 items, well past any real
@@ -112,6 +127,23 @@ impl ForgeBrowser for GitLabBrowser {
             parse_projects,
         )
         .await
+    }
+    async fn create_repo(&self, ns: &Namespace, spec: &NewRepo) -> Result<RemoteRepo> {
+        let visibility = if spec.private { "private" } else { "public" };
+        // On GitLab `Namespace.path` is the numeric id; a group needs `namespace_id`, the
+        // authenticated user's own namespace is the default when it is omitted.
+        let mut fields: Vec<(&str, &str)> = vec![
+            ("name", spec.name.as_str()),
+            ("visibility", visibility),
+            ("initialize_with_readme", "true"),
+        ];
+        if let NamespaceKind::Group = ns.kind {
+            fields.push(("namespace_id", ns.path.as_str()));
+        }
+        if let Some(d) = spec.description.as_deref().filter(|d| !d.is_empty()) {
+            fields.push(("description", d));
+        }
+        parse_created_project(&glab_post("projects", &fields).await?)
     }
 }
 
@@ -148,6 +180,18 @@ where
 
 async fn glab(args: &[&str]) -> Result<String> {
     crate::run("glab", args, None).await
+}
+
+/// `glab api -X POST -f k=v ... <endpoint>`. Fields become `-f key=value` form args.
+async fn glab_post(endpoint: &str, fields: &[(&str, &str)]) -> Result<String> {
+    let mut args: Vec<String> = vec!["api".into(), "-X".into(), "POST".into()];
+    for (k, v) in fields {
+        args.push("-f".into());
+        args.push(format!("{k}={v}"));
+    }
+    args.push(endpoint.into());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    glab(&refs).await
 }
 
 #[cfg(test)]
@@ -211,5 +255,15 @@ mod tests {
         assert!(!projects[1].private); // public
         assert!(projects[2].private); // internal is not public
         assert_eq!(projects[0].full_path, "doyled-it/tutti-glab-sandbox");
+    }
+
+    #[test]
+    fn parses_a_created_project() {
+        let r =
+            parse_created_project(include_str!("../tests/fixtures/create_project.json")).unwrap();
+        assert_eq!(r.full_path, "doyled-it/widget");
+        assert!(r.private);
+        assert_eq!(r.clone_url, "https://gitlab.com/doyled-it/widget.git");
+        assert_eq!(r.description.as_deref(), Some("a thing"));
     }
 }
