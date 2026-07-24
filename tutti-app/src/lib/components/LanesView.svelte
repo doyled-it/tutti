@@ -18,6 +18,7 @@
   );
 
   const chips = $derived([
+    ...board.untriaged.map((c) => ({ card: c, cls: "u" })),
     ...board.ready.map((c) => ({ card: c, cls: "r" })),
     ...board.in_progress.map((c) => ({ card: c, cls: "i" })),
     ...board.done.map((c) => ({ card: c, cls: "d" })),
@@ -73,6 +74,11 @@
     background: var(--bg-panel);
     color: var(--text);
     cursor: pointer;
+  }
+  .chip.u {
+    border-style: dashed;
+    border-color: var(--border);
+    color: var(--text-dim);
   }
   .chip.r {
     border-color: #64748b;
