@@ -95,3 +95,67 @@ async fn browse_lists_own_namespace() {
     let ns = b.list_namespaces().await.unwrap();
     assert!(ns.iter().any(|n| n.path == "doyled-it"));
 }
+
+#[tokio::test]
+#[ignore = "creates a real repo on Codeberg under doyled-it"]
+async fn create_repo_makes_a_cloneable_repo() {
+    use tutti_core::browse::{ForgeBrowser, Namespace, NamespaceKind, NewRepo};
+    use tutti_forge_gitea::GiteaBrowser;
+
+    // The tea login alias (from `tea login list`). Defaults to "codeberg"; override with
+    // TUTTI_TEA_LOGIN if yours differs. The namespace is doyled-it regardless.
+    let login = std::env::var("TUTTI_TEA_LOGIN").unwrap_or_else(|_| "codeberg".into());
+    let name = format!("tutti-create-test-{}", std::process::id());
+    let full = format!("doyled-it/{name}");
+
+    struct RepoCleanup {
+        login: String,
+        full: String,
+    }
+    impl Drop for RepoCleanup {
+        fn drop(&mut self) {
+            let endpoint = format!("repos/{}", self.full);
+            let _ = std::process::Command::new("tea")
+                .args(["api", "--login", &self.login, "-X", "DELETE", &endpoint])
+                .output();
+        }
+    }
+    let _cleanup = RepoCleanup {
+        login: login.clone(),
+        full: full.clone(),
+    };
+
+    let b = GiteaBrowser {
+        login: login.clone(),
+    };
+    let ns = Namespace {
+        path: "doyled-it".into(),
+        name: "doyled-it".into(),
+        kind: NamespaceKind::User,
+    };
+    let spec = NewRepo {
+        name: name.clone(),
+        description: Some("tutti live create test".into()),
+        private: true,
+    };
+    let repo = b.create_repo(&ns, &spec).await.expect("create_repo");
+    assert_eq!(repo.full_path, full);
+    assert!(repo.private);
+
+    let dir = std::env::temp_dir().join(&name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = std::process::Command::new("git")
+        .args(["clone", &repo.clone_url, dir.to_str().unwrap()])
+        .output()
+        .expect("git clone");
+    assert!(
+        out.status.success(),
+        "clone failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        dir.join("README.md").exists(),
+        "auto-init should create a README"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
