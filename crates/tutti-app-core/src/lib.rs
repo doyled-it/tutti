@@ -24,7 +24,7 @@ pub enum Status {
     Ready,
     InProgress,
     Done,
-    Other,
+    Untriaged,
 }
 
 /// A milestone row for the roadmap rail and the Lanes view.
@@ -45,6 +45,7 @@ pub struct Board {
     pub ready: Vec<IssueCard>,
     pub in_progress: Vec<IssueCard>,
     pub done: Vec<IssueCard>,
+    pub untriaged: Vec<IssueCard>,
 }
 
 /// A label as shown on the drawer: name plus its real forge color, for a GitLab-style
@@ -85,7 +86,7 @@ fn classify(issue: &Issue, labels: &StatusLabels) -> Status {
     } else if issue.has_label(&labels.ready) {
         Status::Ready
     } else {
-        Status::Other
+        Status::Untriaged
     }
 }
 
@@ -331,14 +332,15 @@ pub async fn assemble_board(
         None => forge.list_issues().await?,
     };
 
-    let (mut ready, mut in_progress, mut done) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut ready, mut in_progress, mut done, mut untriaged) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for issue in issues {
         let c = card(&issue, &labels);
         match c.status {
             Status::Ready => ready.push(c),
             Status::InProgress => in_progress.push(c),
             Status::Done => done.push(c),
-            Status::Other => ready.push(c), // untriaged shows under Ready
+            Status::Untriaged => untriaged.push(c),
         }
     }
 
@@ -348,6 +350,7 @@ pub async fn assemble_board(
         ready,
         in_progress,
         done,
+        untriaged,
     })
 }
 
@@ -395,7 +398,7 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
 mod tests {
     use super::*;
     use tutti_core::config::Config;
-    use tutti_core::domain::{CiState, SelectFilter};
+    use tutti_core::domain::{CiState, Issue, IssueId, SelectFilter};
     use tutti_core::gate::Gate;
     use tutti_core::message::NewIssue;
     use tutti_core::testing::fake_forge::FakeForge;
@@ -481,6 +484,33 @@ mod tests {
         assert_eq!(board.done.len(), 1);
         assert_eq!(board.selected_milestone, None);
         assert_eq!(board.milestones.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn untriaged_issue_is_not_ready() {
+        // Preload directly: FakeForge::new keeps labels verbatim, whereas create_issue
+        // auto-appends status:ready and so cannot seed a genuinely untriaged issue. The
+        // select=None path (list_issues) reads the preloaded set.
+        let untriaged = Issue {
+            id: IssueId(1),
+            title: "untriaged".into(),
+            body: String::new(),
+            labels: vec!["enhancement".into()],
+            milestone: None,
+        };
+        let ready = Issue {
+            id: IssueId(2),
+            title: "ready".into(),
+            body: String::new(),
+            labels: vec!["status:ready".into()],
+            milestone: None,
+        };
+        let forge = FakeForge::new(vec![untriaged, ready], CiState::Pass);
+
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.ready.len(), 1, "only the status:ready issue is Ready");
+        assert_eq!(board.untriaged.len(), 1, "the unlabeled issue is Untriaged");
+        assert_eq!(board.untriaged[0].status, Status::Untriaged);
     }
 
     #[tokio::test]
