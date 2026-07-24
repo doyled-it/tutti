@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Kanban board: Ready / In progress / Done columns for the selected milestone. -->
 <script lang="ts">
-  import type { Board, IssueCard } from "$lib/ipc";
+  import type { Board } from "$lib/ipc";
+  import { boardColumns } from "$lib/board";
 
   let {
     board,
@@ -11,15 +12,7 @@
     onSelectIssue: (id: number) => void;
   } = $props();
 
-  const columns = $derived([
-    ...(board.untriaged.length > 0 ? [{ key: "untriaged" as const, label: "Untriaged" }] : []),
-    { key: "ready" as const, label: "Ready" },
-    { key: "in_progress" as const, label: "In progress" },
-    { key: "done" as const, label: "Done" },
-  ] satisfies {
-    key: keyof Pick<Board, "ready" | "in_progress" | "done" | "untriaged">;
-    label: string;
-  }[]);
+  const columns = $derived(boardColumns(board));
 </script>
 
 <div class="board">

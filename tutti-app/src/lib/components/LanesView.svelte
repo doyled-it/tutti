@@ -3,7 +3,8 @@
      only has children loaded for the selected milestone, so this renders one lane; picking a
      different milestone from the rail swaps which lane's data is shown. -->
 <script lang="ts">
-  import type { Board, IssueCard } from "$lib/ipc";
+  import type { Board } from "$lib/ipc";
+  import { laneChips } from "$lib/board";
 
   let {
     board,
@@ -17,12 +18,7 @@
     board.milestones.find((m) => m.id === board.selected_milestone)?.title ?? "Unassigned",
   );
 
-  const chips = $derived([
-    ...board.untriaged.map((c) => ({ card: c, cls: "u" })),
-    ...board.ready.map((c) => ({ card: c, cls: "r" })),
-    ...board.in_progress.map((c) => ({ card: c, cls: "i" })),
-    ...board.done.map((c) => ({ card: c, cls: "d" })),
-  ]);
+  const chips = $derived(laneChips(board));
 </script>
 
 <div class="lanes">
