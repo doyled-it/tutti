@@ -3,12 +3,20 @@
 // (crates/tutti-app-core/src/lib.rs). Kept pure and vitest-covered per the board.ts /
 // browse.ts convention; the Svelte pane holds only wiring.
 
-export type MessageKind = "text" | "tool";
+export type MessageKind = "text" | "tool" | "proposal";
+
+export interface GateProposal {
+  commands: string[];
+  working_dir: string;
+  rationale: string;
+}
 
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   kind: MessageKind;
+  // Present only when kind === "proposal".
+  proposal?: GateProposal;
 }
 
 // Open a fresh assistant text bubble that deltas will accumulate into.
@@ -42,4 +50,19 @@ export function dropTrailingEmptyAssistant(msgs: ChatMessage[]): ChatMessage[] {
     return msgs.slice(0, -1);
   }
   return msgs;
+}
+
+// Append a gate-proposal card. Live-only (never persisted): the agent proposes, the user
+// applies or dismisses. `text` carries a short human summary for accessibility.
+export function appendProposal(msgs: ChatMessage[], proposal: GateProposal): ChatMessage[] {
+  return [
+    ...msgs,
+    { role: "assistant", text: proposal.commands.join(" && "), kind: "proposal", proposal },
+  ];
+}
+
+// Remove the proposal card at `index` (on apply or dismiss). Out-of-range is a no-op.
+export function removeProposalAt(msgs: ChatMessage[], index: number): ChatMessage[] {
+  if (index < 0 || index >= msgs.length) return msgs;
+  return [...msgs.slice(0, index), ...msgs.slice(index + 1)];
 }
