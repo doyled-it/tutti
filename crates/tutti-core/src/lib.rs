@@ -3,6 +3,7 @@
 
 pub mod browse;
 pub mod config;
+pub mod context;
 pub mod domain;
 pub mod engine;
 pub mod events;
