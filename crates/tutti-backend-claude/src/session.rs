@@ -4,13 +4,10 @@
 //! spawn/stderr-drain plumbing of `ClaudeBackend::run`, but its outcome is streamed
 //! assistant text plus a captured session id, not a ship artifact.
 
-#![allow(unused_imports)]
-
 use crate::stream;
 use std::path::Path;
-use tokio::io::{AsyncReadExt, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::Sender;
-use tutti_core::mcp::McpServer;
 use tutti_core::message::AgentEvent;
 use tutti_core::traits::{EngineError, Result};
 
@@ -80,9 +77,121 @@ fn is_assistant_text_line(line: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Drives `claude -p` as an interactive chat session. `program` is the executable (usually
+/// "claude"; a test points it at a fake script).
+pub struct ClaudeSession {
+    pub program: String,
+}
+
+impl Default for ClaudeSession {
+    fn default() -> Self {
+        Self { program: "claude".into() }
+    }
+}
+
+impl ClaudeSession {
+    /// Run one chat turn in `cwd`, streaming parsed events on `events`, and return the
+    /// captured session id plus the assistant's reply. `cwd` MUST be the same repo checkout
+    /// every turn (claude keys its resumable session store by working directory).
+    pub async fn turn(
+        &self,
+        message: &str,
+        model: &str,
+        resume: Option<&str>,
+        mcp_config_path: Option<&str>,
+        cwd: &Path,
+        events: Sender<AgentEvent>,
+    ) -> Result<TurnOutcome> {
+        let args = build_turn_args(message, model, resume, mcp_config_path);
+        let mut cmd = tokio::process::Command::new(&self.program);
+        cmd.args(&args);
+        cmd.current_dir(cwd);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| EngineError::Backend(format!("spawn claude: {e}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| EngineError::Backend("no stdout".into()))?;
+        // Drain stderr concurrently so a full ~64KB pipe cannot deadlock the run.
+        let stderr_pipe = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = String::new();
+            if let Some(pipe) = stderr_pipe {
+                let _ = BufReader::new(pipe).read_to_string(&mut buf).await;
+            }
+            buf
+        });
+
+        let mut reader = BufReader::new(stdout).lines();
+        let mut full = String::new();
+        while let Some(line) = reader
+            .next_line()
+            .await
+            .map_err(|e| EngineError::Backend(format!("read: {e}")))?
+        {
+            full.push_str(&line);
+            full.push('\n');
+            if let Some(ev) = stream::parse_stream_line(&line) {
+                let _ = events.send(ev).await;
+            }
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| EngineError::Backend(format!("wait: {e}")))?;
+        let stderr = stderr_task.await.unwrap_or_default();
+        let _ = events.send(AgentEvent::Done).await;
+
+        if !status.success() {
+            let snippet: String = stderr.trim().chars().take(500).collect();
+            return Err(EngineError::Backend(format!("claude exited non-zero: {snippet}")));
+        }
+        Ok(turn_outcome(&full))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
+
+    /// The `program` a `ClaudeSession` runs. A test points it at a shell script that cats a
+    /// fixture to stdout, exercising the spawn + stream + parse loop hermetically.
+    #[tokio::test]
+    async fn turn_streams_events_and_returns_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/session-turn.jsonl");
+        let script = dir.path().join("fake-claude.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat {fixture}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let session = ClaudeSession { program: script.to_string_lossy().into_owned() };
+        let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
+        let outcome = session
+            .turn("hi", "sonnet", None, None, dir.path(), tx)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.session_id.as_deref(), Some("fix-1"));
+        assert_eq!(outcome.assistant_text, "Looking at your repo. It is a Rust workspace.");
+
+        // The stream surfaced a tool_use event and at least one text line, ending in Done.
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolUse(n) if n == "Bash")));
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::Line(_))));
+        assert!(matches!(events.last(), Some(AgentEvent::Done)));
+    }
 
     #[test]
     fn first_turn_has_no_resume() {
