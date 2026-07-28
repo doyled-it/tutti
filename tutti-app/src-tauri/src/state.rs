@@ -44,4 +44,8 @@ pub struct RunInfo {
 pub struct AppState {
     pub project: Mutex<Option<Project>>,
     pub run: Mutex<RunInfo>,
+    /// Set while an orchestrator chat turn is running, so a second concurrent turn is
+    /// refused rather than racing the transcript read-modify-write. See
+    /// `orchestrator::send_orchestrator_message`.
+    pub orchestrator_busy: AtomicBool,
 }

@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"fix-1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at your repo. "}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"It is a Rust workspace."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"It is a Rust workspace.","session_id":"fix-1"}

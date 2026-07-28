@@ -109,6 +109,9 @@ pub struct StreamScan {
     pub result: Option<ResultEvent>,
     /// True when any `rate_limit_event` reported a status other than "allowed".
     pub rate_limited: bool,
+    /// claude's session id, captured from any line that carries a top-level `session_id`
+    /// (the `system` init line and the `result` line both do). Used to `--resume` the chat.
+    pub session_id: Option<String>,
 }
 
 /// Parse one already-decoded stream-json value as a `result` event. Returns None when the
@@ -155,6 +158,9 @@ pub fn scan_stream(full_output: &str) -> StreamScan {
         let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
+        if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
+            scan.session_id = Some(sid.to_string()); // last one wins; they are identical
+        }
         match v.get("type").and_then(|t| t.as_str()) {
             Some("result") => {
                 if let Some(r) = parse_result_event(&v) {
@@ -287,6 +293,24 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"we should handle the rate limit here"}]}}"#
         ));
         assert!(!hit_usage_limit("all good"));
+    }
+
+    #[test]
+    fn scan_captures_session_id_from_result_and_system_lines() {
+        // system init line carries session_id; result line carries it too. Either populates it.
+        let stream = concat!(
+            r#"{"type":"system","subtype":"init","session_id":"abc-123"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"hi","session_id":"abc-123"}"#,
+        );
+        let scan = scan_stream(stream);
+        assert_eq!(scan.session_id.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn scan_session_id_none_when_absent() {
+        let scan = scan_stream(r#"{"type":"assistant","message":{"content":"hi"}}"#);
+        assert_eq!(scan.session_id, None);
     }
 
     /// The captured real transcript (5 lines: system init, assistant text, assistant

@@ -79,6 +79,19 @@ export interface InitForm {
   gate_commands: string[];
 }
 
+export type MessageKind = "text" | "tool";
+export interface TranscriptMessage {
+  role: "user" | "assistant";
+  text: string;
+  // Optional to mirror the Rust `#[serde(default)]`: a legacy transcript file written
+  // without `kind` decodes with the field absent. Callers default it to "text".
+  kind?: MessageKind;
+}
+export interface OrchestratorTranscript {
+  session_id: string | null;
+  messages: TranscriptMessage[];
+}
+
 export type NamespaceKind = "User" | "Org" | "Group";
 export interface Namespace {
   path: string;
@@ -126,6 +139,19 @@ export const api = {
   // Fired once when a whole run ends (any exit path, including error), so the UI can
   // leave the running state even when no terminal DrainComplete was emitted.
   onRunEnded: (cb: () => void) => listen("engine://run-ended", () => cb()),
+  getTranscript: () => invoke<OrchestratorTranscript>("get_transcript"),
+  sendOrchestratorMessage: (message: string) =>
+    invoke<void>("send_orchestrator_message", { message }),
+  onOrchestratorDelta: (cb: (text: string) => void) =>
+    listen<string>("orchestrator://delta", (e) => cb(e.payload)),
+  onOrchestratorTool: (cb: (name: string) => void) =>
+    listen<string>("orchestrator://tool", (e) => cb(e.payload)),
+  // Turn-complete signal only (the streamed deltas are the source of truth for the
+  // transcript, and the authoritative reply is persisted backend-side). The payload text is
+  // intentionally not consumed here.
+  onOrchestratorDone: (cb: () => void) => listen("orchestrator://done", () => cb()),
+  onOrchestratorError: (cb: (msg: string) => void) =>
+    listen<string>("orchestrator://error", (e) => cb(e.payload)),
   listNamespaces: (forgeKind: string, login: string | null) =>
     invoke<Namespace[]>("list_namespaces", { forgeKind, login }),
   listRepos: (forgeKind: string, login: string | null, namespace: Namespace) =>

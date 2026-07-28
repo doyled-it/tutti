@@ -27,6 +27,17 @@ export const selectedIssueId = writable<number | null>(null);
 /** Which main-pane view is active: the Kanban board or the milestone lanes. */
 export const view = writable<"board" | "lanes">("board");
 
+/** Which sidebar section is active: the project board or the orchestrator chat. */
+export const section = writable<"board" | "orchestrator">("board");
+
+/**
+ * True while an orchestrator chat turn is in flight. The sidebar blocks project switch/add/
+ * remove while it is set (the same posture as an active engine run), so a project cannot be
+ * swapped out from under a running turn. The backend enforces its own single-flight guard;
+ * this store only gates the UI.
+ */
+export const orchestratorBusy = writable(false);
+
 /** Pure reducer: apply one engine event to a board + run-status snapshot. Exported for tests. */
 export function applyEvent(
   b: Board | null,

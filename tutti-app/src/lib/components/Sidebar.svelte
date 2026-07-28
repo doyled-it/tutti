@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Left rail: the persisted project list, an "add project" affordance, per-row switch and
-     remove, and the primary nav (Board is live; Orchestrator/Subsessions are placeholders).
-     Switching is disabled while a run is active. Resizable via a drag handle on the right
-     edge, with the width persisted to localStorage. -->
+     remove, and the primary nav (Board and Orchestrator are live; Subsessions is a
+     placeholder). Switching is disabled while a run or chat turn is active. Resizable via a drag handle
+     on the right edge, with the width persisted to localStorage. -->
 <script lang="ts">
   import { api } from "$lib/ipc";
   import type { Probe, ProjectEntry } from "$lib/ipc";
@@ -18,6 +18,8 @@
     onBrowse,
     onCreate,
     onRemove,
+    section = "board",
+    onSection,
   }: {
     projects: ProjectEntry[];
     activeDir: string | null;
@@ -28,6 +30,8 @@
     onBrowse: () => void;
     onCreate: () => void;
     onRemove: (dir: string) => void;
+    section?: "board" | "orchestrator";
+    onSection?: (s: "board" | "orchestrator") => void;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
@@ -139,7 +143,7 @@
             class:on={p.dir === activeDir}
             class:disabled={runActive}
             disabled={runActive}
-            title={runActive ? "pause the run to switch" : undefined}
+            title={runActive ? "finish the current run or chat turn to switch" : undefined}
             onclick={() => handleSwitch(p.dir)}
           >
             <span class={dotClass(p.forge)}></span>
@@ -180,14 +184,21 @@
           class="add"
           onclick={beginAdd}
           disabled={runActive}
-          title={runActive ? "pause the run to add a project" : undefined}>+ Add project</button
+          title={runActive ? "finish the current run or chat turn to add a project" : undefined}
+          >+ Add project</button
         >
       {/if}
     </div>
 
     <nav class="nav">
-      <div class="nav-item on">Board</div>
-      <div class="nav-item soon">Orchestrator (soon)</div>
+      <button class="nav-item" class:on={section === "board"} onclick={() => onSection?.("board")}
+        >Board</button
+      >
+      <button
+        class="nav-item"
+        class:on={section === "orchestrator"}
+        onclick={() => onSection?.("orchestrator")}>Orchestrator</button
+      >
       <div class="nav-item soon">Subsessions (soon)</div>
     </nav>
   </aside>
@@ -373,5 +384,15 @@
   }
   .nav-item.soon {
     color: var(--text-faint);
+  }
+  button.nav-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
 </style>
