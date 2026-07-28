@@ -53,4 +53,18 @@ describe("orchestrator reducer", () => {
     msgs = removeProposalAt(msgs, idx);
     expect(msgs.some((m) => m.kind === "proposal")).toBe(false);
   });
+
+  it("replaces a prior proposal card and drops a trailing empty bubble", () => {
+    let msgs: ChatMessage[] = [{ role: "user", text: "hi", kind: "text" }];
+    msgs = appendTool(msgs, "Bash"); // leaves a trailing empty assistant text bubble
+    msgs = appendProposal(msgs, { commands: ["a"], working_dir: "", rationale: "" });
+    // The empty bubble is gone and exactly one card shows.
+    expect(msgs.some((m) => m.kind === "text" && m.text === "")).toBe(false);
+    expect(msgs.filter((m) => m.kind === "proposal")).toHaveLength(1);
+    // A second proposal replaces the first rather than stacking.
+    const second = { commands: ["b"], working_dir: "", rationale: "" };
+    msgs = appendProposal(msgs, second);
+    expect(msgs.filter((m) => m.kind === "proposal")).toHaveLength(1);
+    expect(msgs[msgs.length - 1].proposal).toEqual(second);
+  });
 });

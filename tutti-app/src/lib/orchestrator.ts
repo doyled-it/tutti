@@ -53,10 +53,13 @@ export function dropTrailingEmptyAssistant(msgs: ChatMessage[]): ChatMessage[] {
 }
 
 // Append a gate-proposal card. Live-only (never persisted): the agent proposes, the user
-// applies or dismisses. `text` carries a short human summary for accessibility.
+// applies or dismisses. `text` carries a short human summary for accessibility. First drops a
+// trailing empty bubble (a tool-final turn leaves one) and any prior live proposal card, so at
+// most one card shows and no blank bubble sits above it.
 export function appendProposal(msgs: ChatMessage[], proposal: GateProposal): ChatMessage[] {
+  const cleaned = dropTrailingEmptyAssistant(msgs).filter((m) => m.kind !== "proposal");
   return [
-    ...msgs,
+    ...cleaned,
     { role: "assistant", text: proposal.commands.join(" && "), kind: "proposal", proposal },
   ];
 }

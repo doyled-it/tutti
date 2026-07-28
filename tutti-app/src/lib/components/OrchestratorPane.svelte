@@ -126,7 +126,11 @@
               <div class="proposal-why">{m.proposal.rationale}</div>
             {/if}
             <div class="proposal-actions">
-              <button class="apply" onclick={() => applyProposal(i, m.proposal!.commands)}>
+              <button
+                class="apply"
+                disabled={m.proposal.commands.length === 0}
+                onclick={() => applyProposal(i, m.proposal!.commands)}
+              >
                 Apply
               </button>
               <button class="dismiss" onclick={() => dismissProposal(i)}>Dismiss</button>
@@ -269,6 +273,10 @@
     border-radius: 6px;
     padding: 4px 12px;
     cursor: pointer;
+  }
+  .proposal-actions .apply:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .proposal-actions .dismiss {
     background: transparent;

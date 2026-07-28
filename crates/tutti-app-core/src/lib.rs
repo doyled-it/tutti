@@ -490,10 +490,11 @@ pub struct GateStatus {
     pub is_noop: bool,
 }
 
-/// True when the gate is the explicit no-op (`["true"]`), meaning nothing is verified before
-/// Tutti ships an issue's work. Matches the wizard's `NO_OP_GATE` seed.
+/// True when the gate verifies nothing before Tutti ships an issue's work: the explicit
+/// no-op (`["true"]`, the wizard's `NO_OP_GATE` seed) or an empty command list (which
+/// `Gate::run` passes vacuously). Both surface the "No gate" badge.
 pub fn gate_is_noop(commands: &[String]) -> bool {
-    commands == ["true"]
+    commands.is_empty() || commands == ["true"]
 }
 
 #[cfg(test)]
@@ -982,6 +983,7 @@ working_dir = ""
         assert!(gate_is_noop(&["true".to_string()]));
         assert!(!gate_is_noop(&["cargo test".to_string()]));
         assert!(!gate_is_noop(&["true".to_string(), "true".to_string()]));
-        assert!(!gate_is_noop(&[]));
+        // An empty gate verifies nothing (Gate::run passes it vacuously), so it counts as no-op.
+        assert!(gate_is_noop(&[]));
     }
 }

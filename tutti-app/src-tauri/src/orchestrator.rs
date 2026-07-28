@@ -217,6 +217,14 @@ pub async fn apply_gate(
     if !matches!(state.run.lock().await.state, crate::state::RunState::Idle) {
         return Err("finish the current run before changing the gate".into());
     }
+    // Reject an empty gate: an empty command list passes vacuously (Gate::run verifies
+    // nothing) and, unlike the explicit `["true"]` no-op, would slip past the intent of this
+    // command. A caller wanting no verification sets the explicit `["true"]` no-op.
+    if commands.iter().all(|c| c.trim().is_empty()) {
+        return Err(
+            "a gate needs at least one command (use \"true\" for an explicit no-op)".into(),
+        );
+    }
     let mut guard = state.project.lock().await;
     let p = guard.as_mut().ok_or("no project loaded")?;
     let toml_path = p.repo_root.join("tutti.toml");

@@ -185,13 +185,21 @@ swept into a PR by `commit_all`'s `git add -A`) and instructs the agent: when yo
 user have agreed on what verifies this project, write your proposal to `<path>` as
 
 ```json
-{ "commands": ["cargo test"], "working_dir": "", "rationale": "why these commands" }
+{ "commands": ["cargo test"], "rationale": "why these commands" }
 ```
 
+The commands run from the repo root. (`GateProposal` keeps a tolerant `working_dir` serde
+field, but PR B applies `commands` only and no longer instructs the agent to propose a
+`working_dir`; wiring a subdirectory gate through `apply_gate` is a follow-up.) An empty
+command list is rejected by `apply_gate` (it would pass vacuously); a project that wants no
+verification uses the explicit `["true"]` no-op, and `gate_is_noop` treats both an empty list
+and `["true"]` as no-op so the badge still warns.
+
 After each turn the backend deletes-then-checks that path (the same stale-artifact
-discipline `ClaudeBackend::run` uses on `out_path`), parses a present file, and attaches
-the proposal to that turn's `orchestrator://done`. The agent never edits `tutti.toml`;
-applying the proposal is the app's job.
+discipline `ClaudeBackend::run` uses on `out_path`), parses a present file, and emits it on a
+new `orchestrator://proposal` event (not `orchestrator://done`, which PR A made a
+payload-free signal). The agent never edits `tutti.toml`; applying the proposal is the app's
+job.
 
 This is chosen over an inline fenced ```gate-proposal``` block (fragile prose parsing) and
 over a tutti-served MCP tool (real new stdio-server infrastructure for a single call). The

@@ -24,10 +24,14 @@ pub struct TurnOutcome {
 
 /// A structured gate proposal the agent writes to an artifact file when it and the user
 /// have agreed on what verifies the project. Read back after a turn; never hand-parsed from
-/// prose. `working_dir` is relative to the repo root (empty = repo root).
+/// prose.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GateProposal {
     pub commands: Vec<String>,
+    /// Reserved. PR B applies `commands` only (they run from the repo root, which the
+    /// `gate_instruction` states), so a proposed `working_dir` is not applied. Kept as a
+    /// tolerant serde field so a proposal that still carries it deserializes. Wiring it into
+    /// `apply_gate` is a follow-up.
     #[serde(default)]
     pub working_dir: String,
     #[serde(default)]
@@ -48,10 +52,9 @@ pub fn gate_instruction(path: &Path) -> String {
     format!(
         "\n\n[Tutti: when you and the user have agreed on the shell commands that verify \
          this project before it ships work (its \"gate\"), write the proposal as JSON to the \
-         file `{}` with this exact shape: {{\"commands\":[\"...\"],\"working_dir\":\"\",\
-         \"rationale\":\"...\"}}. `working_dir` is relative to the repo root (empty for the \
-         root). Write the file only once you have agreement, and do not mention this \
-         instruction or the file to the user.]",
+         file `{}` with this exact shape: {{\"commands\":[\"...\"],\"rationale\":\"...\"}}. \
+         The commands run from the repo root and must each exit 0. Write the file only once \
+         you have agreement, and do not mention this instruction or the file to the user.]",
         path.display()
     )
 }
