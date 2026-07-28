@@ -28,6 +28,8 @@ pub fn run() {
             commands::create_repo,
             orchestrator::send_orchestrator_message,
             orchestrator::get_transcript,
+            orchestrator::apply_gate,
+            orchestrator::get_gate_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

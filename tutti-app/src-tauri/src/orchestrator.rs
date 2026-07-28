@@ -7,8 +7,12 @@ use crate::state::AppState;
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
-use tutti_app_core::{transcript_key, MessageKind, OrchestratorTranscript, TranscriptMessage};
+use tutti_app_core::{
+    gate_is_noop, set_gate_commands, transcript_key, GateStatus, MessageKind,
+    OrchestratorTranscript, TranscriptMessage,
+};
 use tutti_backend_claude::session::ClaudeSession;
+use tutti_core::config::Config;
 use tutti_core::context::{CodeGraph, ContextProvider};
 use tutti_core::message::AgentEvent;
 
@@ -129,6 +133,7 @@ pub async fn send_orchestrator_message(
         }
     });
 
+    let gate_path = proposal_path();
     let session = ClaudeSession::default();
     let result = session
         .turn(
@@ -137,7 +142,7 @@ pub async fn send_orchestrator_message(
             transcript.session_id.as_deref(),
             mcp_config_path.as_deref(),
             &repo_root,
-            None,
+            Some(&gate_path),
             tx,
         )
         .await;
@@ -157,6 +162,9 @@ pub async fn send_orchestrator_message(
                 });
             }
             save_transcript(&app, &dir, &transcript)?;
+            if let Some(proposal) = &outcome.proposal {
+                let _ = app.emit("orchestrator://proposal", proposal);
+            }
             let _ = app.emit("orchestrator://done", &outcome.assistant_text);
             Ok(())
         }
@@ -178,4 +186,49 @@ fn write_mcp_config(servers: &[tutti_core::mcp::McpServer]) -> Option<String> {
     tutti_core::mcp::write_mcp_config(servers, &dir)
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The absolute path (outside any repo) the agent is told to write a gate proposal to.
+/// Per-process; turns are single-flight so reuse across turns is safe (each turn clears it).
+fn proposal_path() -> PathBuf {
+    std::env::temp_dir().join(format!("tutti-gate-{}.json", std::process::id()))
+}
+
+/// Read the active project's current gate status.
+#[tauri::command]
+pub async fn get_gate_status(state: tauri::State<'_, AppState>) -> Result<GateStatus, String> {
+    let guard = state.project.lock().await;
+    let p = guard.as_ref().ok_or("no project loaded")?;
+    let commands = p.config.gate.commands.clone();
+    Ok(GateStatus {
+        is_noop: gate_is_noop(&commands),
+        commands,
+    })
+}
+
+/// Write `commands` into the active project's `tutti.toml` (preserving every other key),
+/// reload `Config` into managed state, and return the new gate status. Run-guarded: it
+/// changes what a drain verifies, so it is refused while an engine run is active.
+#[tauri::command]
+pub async fn apply_gate(
+    commands: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<GateStatus, String> {
+    if !matches!(state.run.lock().await.state, crate::state::RunState::Idle) {
+        return Err("finish the current run before changing the gate".into());
+    }
+    let mut guard = state.project.lock().await;
+    let p = guard.as_mut().ok_or("no project loaded")?;
+    let toml_path = p.repo_root.join("tutti.toml");
+    let existing = std::fs::read_to_string(&toml_path).map_err(|e| e.to_string())?;
+    let updated = set_gate_commands(&existing, &commands).map_err(|e| e.to_string())?;
+    std::fs::write(&toml_path, &updated).map_err(|e| e.to_string())?;
+    // Reload so the in-memory config (and everything reading it) reflects the new gate.
+    let cfg = Config::load(&toml_path).map_err(|e| e.to_string())?;
+    let commands = cfg.gate.commands.clone();
+    p.config = cfg;
+    Ok(GateStatus {
+        is_noop: gate_is_noop(&commands),
+        commands,
+    })
 }
