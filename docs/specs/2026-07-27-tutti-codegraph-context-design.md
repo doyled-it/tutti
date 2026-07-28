@@ -110,24 +110,28 @@ runs plainly.
 - Build the `CodeGraph` provider once (via `detect()`), gated by config, and hand it to the
   engine driver. When `None` or disabled, pass no provider.
 
-## The load-bearing spike (do first)
+## The worktree-indexing question — RESOLVED
 
 Engine agents run in **transient git worktrees**. `codegraph serve --mcp` is spawned by
-`claude`, which runs with the worktree as cwd, so the MCP server looks for `.codegraph/`
-relative to the worktree, not the main checkout.
+`claude`, which runs with the worktree as cwd. Probed against codegraph 0.9.3:
 
-**Spike:** against a real indexed repo, determine whether `codegraph serve --mcp`
-- accepts a project-path argument / env var pointing at an existing index elsewhere, or
-- resolves upward from cwd to find a parent `.codegraph/`, or
-- strictly requires an index in its own cwd.
+- `codegraph serve --mcp -p <path>` accepts an explicit **`-p, --path`** ("optional for MCP
+  mode, uses `rootUri` from client" otherwise). Claude sends the worktree as `rootUri`, so
+  **without** `-p` serve would index/serve the worktree. **With** `-p <main-working-dir>` it
+  serves a fixed index regardless of the agent's cwd.
+- `codegraph init -i <path>` initializes and runs the initial index in one step.
 
-**Then pick:**
-- (a) index the main working dir once, point `serve` at it (cheap, one index), or
-- (b) `ensure_indexed(worktree)` per run and rely on codegraph being fast + incremental.
+**Decision (option a):** index the **main working dir once** (`codegraph init -i <dir>`) and
+put `-p <main-working-dir>` in the MCP server args so every agent — worktree-bound engine
+roles, the planner (runs in the workdir), and the future chat — reads that single index.
+The main index reflects trunk, not an agent's in-flight worktree edits; that is acceptable,
+since codegraph is for understanding existing structure (callers, impact, entry points),
+not the agent's own fresh diff. codegraph's watcher keeps the main index fresh.
 
-The spike's answer and the chosen approach get written back into this spec before the
-implementing work, and the mechanics captured as a gotcha (below) the way prior increments
-captured forge/serialization gotchas.
+Consequence for the seam: `McpServer` for codegraph is `{ command: "codegraph", args:
+["serve", "--mcp", "-p", <main-working-dir>] }`, so `CodeGraph::mcp_server` takes the
+project path. `ensure_indexed(dir)` shells `codegraph init -i <dir>` when `dir/.codegraph`
+is absent.
 
 ## Config
 
@@ -166,13 +170,16 @@ No path here can turn "codegraph had a problem" into "the agent did not run."
   and a real `claude -p --mcp-config` run can call `codegraph_explore`. Skips cleanly when
   the binary is not on the box.
 
-## Gotchas (to fill in during the spike / build)
+## Gotchas (confirmed against codegraph 0.9.3 / installed `claude`)
 
-- codegraph MCP server cwd resolution vs. transient worktrees (see spike). Record the
-  final answer and chosen approach here.
-- `claude -p` MCP config flag exactness (`--mcp-config <file>`; whether `--strict-mcp-config`
-  changes user-server visibility) — confirm against the installed `claude` version.
-- codegraph binary flags for `init`/`serve` as actually installed (docs vs. reality).
+- **codegraph serve cwd resolution.** `serve --mcp` defaults to the MCP client's `rootUri`
+  (the agent's worktree). Must pass `-p <main-working-dir>` to serve a fixed index instead
+  of one tied to the transient worktree. See the resolved section above.
+- **`claude` MCP flags.** `--mcp-config <configs...>` loads servers from JSON files;
+  `--strict-mcp-config` restricts to only those files. Use `--mcp-config` **without**
+  `--strict-mcp-config` so a user's own global MCP servers still load alongside codegraph.
+- **codegraph CLI.** `codegraph init -i <path>` = init + initial index (the `-i` flag is
+  required for the index). `codegraph --version` is the presence probe.
 
 ## Rollout
 
