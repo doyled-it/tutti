@@ -427,6 +427,7 @@ mod tests {
             forge: Default::default(),
             roles: tutti_core::config::default_roles(),
             merge_mode: tutti_core::domain::MergeMode::Merge,
+            codegraph: None,
         }
     }
 

@@ -65,8 +65,16 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
         })
         .unwrap_or_default();
 
+    let codegraph_hint = if task.mcp_servers.iter().any(|s| s.name == "codegraph") {
+        "\n\nA `codegraph_explore` MCP tool is available. Prefer it over reading files to \
+         map structure, callers, and change impact; it answers structural questions from a \
+         pre-built index."
+    } else {
+        ""
+    };
+
     format!(
-        "{skills}\n\n{role_line}\n\nIssue #{num}: {title}\n\n{body}{review_ctx}\n\n\
+        "{skills}\n\n{role_line}\n\nIssue #{num}: {title}\n\n{body}{review_ctx}{codegraph_hint}\n\n\
          When you are done, write your result as JSON matching this schema to the file \
          `{out}` (create the `.tutti` directory if needed). Write ONLY that file for the \
          result; do not print the JSON.\nSchema: {schema}",
@@ -96,6 +104,7 @@ mod tests {
             worktree_branch: "feat/issue-42".into(),
             model: "m".into(),
             review: None,
+            mcp_servers: vec![],
         }
     }
 
@@ -122,5 +131,20 @@ mod tests {
     #[test]
     fn planner_output_path_is_plan_json() {
         assert!(output_path(Path::new("/wt"), Role::Planner).ends_with(".tutti/plan.json"));
+    }
+
+    #[test]
+    fn nudge_present_only_when_mcp_servers_are_wired() {
+        use tutti_core::mcp::McpServer;
+        let mut t = task(Role::Implementer, vec![]);
+        let out = std::path::PathBuf::from("/tmp/.tutti/handoff.json");
+        assert!(!build_prompt(&t, &out).contains("codegraph_explore"));
+
+        t.mcp_servers = vec![McpServer {
+            name: "codegraph".into(),
+            command: "codegraph".into(),
+            args: vec!["serve".into(), "--mcp".into()],
+        }];
+        assert!(build_prompt(&t, &out).contains("codegraph_explore"));
     }
 }

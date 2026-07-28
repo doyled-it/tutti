@@ -233,6 +233,9 @@ impl AgentBackend for ClaudeBackend {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.arg("-p").arg(&prompt).arg("--model").arg(&task.model);
         cmd.args(&self.extra_args);
+        // Wire any MCP servers (codegraph etc.) for this invocation. Non-strict so a user's
+        // own global servers still load alongside.
+        cmd.args(mcp_flag_args(&task.mcp_servers));
         cmd.current_dir(worktree);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -291,6 +294,30 @@ impl AgentBackend for ClaudeBackend {
     }
 }
 
+/// The `--mcp-config <file>` args for a run, or empty when no servers are wired. Writes
+/// the config file into an OS temp dir (NOT the worktree: `commit_all` does `git add -A`,
+/// so a file in the worktree would be swept into the agent's PR). Best-effort: a write
+/// failure yields no flag rather than failing the run.
+fn mcp_flag_args(servers: &[tutti_core::mcp::McpServer]) -> Vec<String> {
+    if servers.is_empty() {
+        return Vec::new();
+    }
+    // Per-process dir so concurrent tutti runs on one machine do not collide. Runs within
+    // a process are sequential, so reusing/overwriting this file across issues is fine.
+    let dir = std::env::temp_dir().join(format!("tutti-mcp-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("mcp config dir skipped: {e}");
+        return Vec::new();
+    }
+    match tutti_core::mcp::write_mcp_config(servers, &dir) {
+        Ok(path) => vec!["--mcp-config".into(), path.to_string_lossy().into_owned()],
+        Err(e) => {
+            eprintln!("mcp config write skipped: {e}");
+            Vec::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
@@ -313,6 +340,7 @@ mod outcome_tests {
             worktree_branch: "feat/issue-1".into(),
             model: "m".into(),
             review: None,
+            mcp_servers: vec![],
         }
     }
 
@@ -325,6 +353,23 @@ mod outcome_tests {
         assert!(ClaudeBackend::default()
             .extra_args
             .contains(&"--verbose".to_string()));
+    }
+
+    #[test]
+    fn mcp_config_written_outside_worktree_and_flagged_only_when_present() {
+        use tutti_core::mcp::McpServer;
+        assert!(mcp_flag_args(&[]).is_empty());
+        let servers = vec![McpServer {
+            name: "codegraph".into(),
+            command: "codegraph".into(),
+            args: vec!["serve".into(), "--mcp".into(), "-p".into(), "/m".into()],
+        }];
+        let args = mcp_flag_args(&servers);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "--mcp-config");
+        let path = std::path::Path::new(&args[1]);
+        assert!(path.exists());
+        assert!(path.starts_with(std::env::temp_dir()));
     }
 
     #[test]

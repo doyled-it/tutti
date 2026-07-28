@@ -46,6 +46,17 @@ pub struct ForgeConfig {
     pub login: Option<String>,
 }
 
+/// The `[codegraph]` section. Absent -> codegraph is used when its binary is present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeGraphConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// The protected trunk the engine never merges into.
@@ -84,6 +95,9 @@ pub struct Config {
     /// How the executor merges a shipped PR. Defaults to a merge commit, never squash.
     #[serde(default = "default_merge_mode")]
     pub merge_mode: crate::domain::MergeMode,
+    /// codegraph context wiring. Absent -> enabled when the binary is present.
+    #[serde(default)]
+    pub codegraph: Option<CodeGraphConfig>,
 }
 
 fn default_max_issues() -> u32 {
@@ -169,6 +183,12 @@ impl Config {
             ready: self.select.require_label.clone(),
             ..StatusLabels::default()
         })
+    }
+
+    /// Whether codegraph wiring is enabled. Absent section defaults to true; the actual
+    /// availability still depends on the binary being present (checked at wire time).
+    pub fn codegraph_enabled(&self) -> bool {
+        self.codegraph.as_ref().is_none_or(|c| c.enabled)
     }
 
     /// The skills for `role`, falling back to the shipped default when the role
@@ -394,6 +414,7 @@ implementer = ["custom:my-implement-skill"]
             forge: Default::default(),
             roles: HashMap::new(),
             merge_mode: crate::domain::MergeMode::Merge,
+            codegraph: None,
         };
         assert_eq!(
             cfg.skills_for(Role::Reviewer),
@@ -536,5 +557,32 @@ login = "icesight-engine"
         assert_eq!("gitea".parse::<ForgeKind>().unwrap(), ForgeKind::Gitea);
         assert_eq!("gitlab".parse::<ForgeKind>().unwrap(), ForgeKind::GitLab);
         assert!("bogus".parse::<ForgeKind>().is_err());
+    }
+
+    #[test]
+    fn codegraph_enabled_defaults_true_and_respects_explicit_false() {
+        // Absent section -> enabled (on when the binary is present).
+        let base = r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(&p, base).unwrap();
+        assert!(Config::load(&p).unwrap().codegraph_enabled());
+
+        // Explicit disable.
+        std::fs::write(&p, format!("{base}[codegraph]\nenabled = false\n")).unwrap();
+        assert!(!Config::load(&p).unwrap().codegraph_enabled());
     }
 }
