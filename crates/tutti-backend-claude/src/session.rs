@@ -51,6 +51,35 @@ pub fn build_turn_args(
     args
 }
 
+/// Distil a finished turn's full stdout into a `TurnOutcome`: the captured session id and
+/// the assistant's reply text. Reuses the `stream.rs` parser so text-block concatenation
+/// and tool_use handling stay in one place. Pure: no IO.
+pub fn turn_outcome(full_output: &str) -> TurnOutcome {
+    let scan = stream::scan_stream(full_output);
+    let mut assistant_text = String::new();
+    for line in full_output.lines() {
+        if let Some(AgentEvent::Line(text)) = stream::parse_stream_line(line) {
+            // `parse_stream_line` only yields a Line for assistant/text content and for
+            // unknown lines; the system/result lines degrade to Line too, so restrict to
+            // lines the parser recognized as assistant content by re-checking the type.
+            if is_assistant_text_line(line) {
+                assistant_text.push_str(&text);
+            }
+        }
+    }
+    TurnOutcome { session_id: scan.session_id, assistant_text }
+}
+
+/// True when a stream-json line is an assistant/text message (not system/result/unknown),
+/// so only genuine reply text is accumulated.
+fn is_assistant_text_line(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s.to_string()))
+        .map(|t| t == "assistant" || t == "text")
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +99,20 @@ mod tests {
         let args = build_turn_args("next", "sonnet", Some("abc-123"), Some("/tmp/mcp.json"));
         assert!(args.windows(2).any(|w| w == ["--resume", "abc-123"]));
         assert!(args.windows(2).any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+    }
+
+    #[test]
+    fn turn_outcome_collects_assistant_text_and_session_id() {
+        let stream = concat!(
+            r#"{"type":"system","subtype":"init","session_id":"s-1"}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"world"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}"#,
+        );
+        let outcome = turn_outcome(stream);
+        assert_eq!(outcome.session_id.as_deref(), Some("s-1"));
+        // Assistant text blocks are concatenated; a tool_use line contributes no text.
+        assert_eq!(outcome.assistant_text, "Hello world");
     }
 }
