@@ -28,6 +28,7 @@ async fn claude_writes_a_handoff() {
         worktree_branch: "feat/issue-1".into(),
         model: "claude-opus-4-8".into(),
         review: None,
+        mcp_servers: vec![],
     };
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });

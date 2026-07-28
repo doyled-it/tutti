@@ -96,6 +96,7 @@ mod tests {
             worktree_branch: "feat/issue-42".into(),
             model: "m".into(),
             review: None,
+            mcp_servers: vec![],
         }
     }
 

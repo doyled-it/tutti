@@ -74,6 +74,7 @@ impl<'a> Engine<'a> {
             worktree_branch: format!("feat/issue-{}", issue.id.0),
             model: self.cfg.model.clone(),
             review,
+            mcp_servers: vec![],
         };
         // Drain events into logs so the channel never blocks.
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });

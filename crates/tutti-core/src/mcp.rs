@@ -3,11 +3,11 @@
 //! Backend- and forge-neutral: a backend decides how to consume these.
 
 use crate::traits::{EngineError, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// A stdio MCP server a backend can wire into an agent invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServer {
     pub name: String,
     pub command: String,

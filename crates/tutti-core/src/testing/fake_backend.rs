@@ -109,6 +109,7 @@ mod tests {
             worktree_branch: "feat/x-1".into(),
             model: "fake".into(),
             review: None,
+            mcp_servers: vec![],
         };
         let got = backend.run(task, Path::new("."), tx).await.unwrap();
         assert_eq!(got.status, AgentStatus::ReadyToShip);

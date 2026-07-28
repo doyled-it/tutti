@@ -313,6 +313,7 @@ mod outcome_tests {
             worktree_branch: "feat/issue-1".into(),
             model: "m".into(),
             review: None,
+            mcp_servers: vec![],
         }
     }
 

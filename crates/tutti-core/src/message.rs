@@ -31,6 +31,10 @@ pub struct AgentTask {
     pub model: String,
     /// The prior `ReviewReport` carried into the fix-applier stage (its findings to act on).
     pub review: Option<ReviewReport>,
+    /// MCP servers to wire into the invocation (e.g. codegraph). Empty = none, which is
+    /// the default and preserves prior behavior.
+    #[serde(default)]
+    pub mcp_servers: Vec<crate::mcp::McpServer>,
 }
 
 /// Streamed progress from a running agent. Drives logs now, the UI later.
