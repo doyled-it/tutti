@@ -99,8 +99,8 @@
     font-size: 11px;
     padding: 2px 8px;
     border-radius: 10px;
-    border: 1px solid var(--coral, #ff8c6b);
-    color: var(--coral, #ff8c6b);
+    border: 1px solid var(--coral);
+    color: var(--coral);
     background: transparent;
     cursor: pointer;
     white-space: nowrap;

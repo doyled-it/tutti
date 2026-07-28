@@ -476,6 +476,15 @@ pub fn set_gate_commands(existing_toml: &str, commands: &[String]) -> Result<Str
     // `doc["gate"]` auto-vivifies an implicit table if absent; make it explicit so it renders
     // as `[gate]` rather than being folded away when empty.
     let gate = doc["gate"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    // Guard a malformed hand-edit (`gate = "x"`): indexing `["commands"]` into a non-table
+    // Item panics, and `apply_gate` reads tutti.toml fresh from disk, so a scalar `gate`
+    // written between activation and apply would reach here. Both `[gate]` and the inline
+    // `gate = { ... }` form are table-like and handled; anything else is a clear error.
+    if !gate.is_table() && !gate.is_inline_table() {
+        return Err(EngineError::Forge(
+            "`[gate]` in tutti.toml is not a table".into(),
+        ));
+    }
     if let Some(t) = gate.as_table_mut() {
         t.set_implicit(false);
     }
@@ -941,6 +950,19 @@ commands = ["true"]
         assert!(out.contains(r#""cargo test""#));
         assert!(out.contains(r#""cargo clippy""#));
         assert!(!out.contains(r#""true""#));
+    }
+
+    #[test]
+    fn set_gate_commands_handles_inline_table_and_rejects_scalar() {
+        // An inline `gate = { ... }` is table-like: commands are set, other keys preserved.
+        let inline =
+            set_gate_commands("gate = { working_dir = \"srv\" }\n", &["cargo test".into()])
+                .unwrap();
+        assert!(inline.contains("cargo test"));
+        assert!(inline.contains("working_dir"));
+        // A malformed scalar `gate = "x"` (a hand-edit) is a clear error, never a panic.
+        let err = set_gate_commands("gate = \"oops\"\n", &["cargo test".into()]);
+        assert!(err.is_err());
     }
 
     #[test]

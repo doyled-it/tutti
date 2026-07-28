@@ -217,10 +217,16 @@ pub async fn apply_gate(
     if !matches!(state.run.lock().await.state, crate::state::RunState::Idle) {
         return Err("finish the current run before changing the gate".into());
     }
-    // Reject an empty gate: an empty command list passes vacuously (Gate::run verifies
-    // nothing) and, unlike the explicit `["true"]` no-op, would slip past the intent of this
-    // command. A caller wanting no verification sets the explicit `["true"]` no-op.
-    if commands.iter().all(|c| c.trim().is_empty()) {
+    // Drop blank/whitespace-only entries, then reject an empty gate: an empty command list
+    // passes vacuously (Gate::run verifies nothing) and, unlike the explicit `["true"]`
+    // no-op, would slip past the intent of this command. A caller wanting no verification
+    // sets the explicit `["true"]` no-op. Filtering also keeps a stray blank the agent
+    // proposed alongside real commands from becoming a no-op `sh -c ""` line in the gate.
+    let commands: Vec<String> = commands
+        .into_iter()
+        .filter(|c| !c.trim().is_empty())
+        .collect();
+    if commands.is_empty() {
         return Err(
             "a gate needs at least one command (use \"true\" for an explicit no-op)".into(),
         );
