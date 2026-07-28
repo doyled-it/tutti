@@ -1,0 +1,180 @@
+# Codegraph context for every agent invocation
+
+Part of #21. Precedes #15 (the orchestrator chat reuses this seam).
+
+## Problem
+
+Every LLM agent function Tutti drives (planner, implementer, reviewer, fixer today;
+the orchestrator chat next) reconstructs a repo's structure by crawling files. That is
+slow and token-heavy. [codegraph](https://github.com/colbymchenry/codegraph) pre-indexes
+a repo into a symbol / call-graph SQLite database and exposes a `codegraph_explore` tool
+over a stdio MCP server (`codegraph serve --mcp`), so an agent answers structural
+questions from the index in one call. We want Tutti to give this context to every agent
+function, for every repo it operates on, across all backends.
+
+## Goals
+
+- Wire the codegraph MCP server into every `claude -p` invocation Tutti makes.
+- Ensure the target repo is indexed so `codegraph_explore` has data to return.
+- Build it as a backend-agnostic seam so Codex/OpenCode inherit it when they land.
+- Never regress the plain path: a machine without `codegraph` behaves exactly as today.
+
+## Non-goals
+
+- The orchestrator chat and gate-setting (#15). It is the next increment and reuses this
+  seam; nothing chat-specific is built here.
+- Persisting or caching anything Tutti-side. codegraph owns its own `.codegraph/` DB and
+  incremental sync.
+- Per-role tuning of codegraph, multiple context providers, or a provider trait. There is
+  one provider (codegraph); a trait is deferred until there is a second (YAGNI).
+- Mutating the user's global `~/.claude.json` or writing marker fences into tracked repo
+  files (`CLAUDE.md`/`AGENTS.md`). Wiring is per-invocation and Tutti-owned.
+
+## Decisions (from brainstorming)
+
+- **Managed `--mcp-config`, not `codegraph install`.** Tutti generates an explicit MCP
+  config file and passes it per `claude -p` call. Hermetic, reversible, per-backend, and
+  the injection point is the backend-agnostic seam. No global side effects.
+- **Seam lives on the backend invocation, keyed off data in `tutti-core`.** A neutral
+  `McpServer` value type, produced by a codegraph provider, consumed by whichever backend
+  runs. Claude → `--mcp-config`; a future backend that cannot do MCP ignores the specs.
+- **Best-effort, never fatal.** Missing binary, index failure, or a config write error
+  logs and proceeds with a plain (un-wired) agent run.
+
+## Architecture
+
+### 1. `tutti-core::mcp` (new module)
+
+```rust
+/// A stdio MCP server Tutti can hand to a backend. Backend- and forge-neutral data.
+pub struct McpServer {
+    pub name: String,      // "codegraph"
+    pub command: String,   // "codegraph"
+    pub args: Vec<String>, // ["serve", "--mcp"]
+}
+
+/// Serialize a set of servers to the Claude Code `--mcp-config` shape and write it to
+/// `dir/mcp-config.json`, returning the path. Shared by the engine backend path and the
+/// future orchestrator-chat path so both write an identical file.
+pub fn write_mcp_config(servers: &[McpServer], dir: &Path) -> Result<PathBuf>;
+```
+
+The file shape matches what `claude -p --mcp-config` expects:
+
+```json
+{ "mcpServers": { "codegraph": { "type": "stdio", "command": "codegraph", "args": ["serve", "--mcp"] } } }
+```
+
+### 2. `tutti-core::context` — the codegraph provider
+
+```rust
+pub struct CodeGraph { /* resolved binary path */ }
+
+impl CodeGraph {
+    /// `None` when the `codegraph` binary is not on PATH (probed via `codegraph --version`).
+    pub fn detect() -> Option<CodeGraph>;
+    /// Ensure `dir` has a codegraph index (`codegraph init` when `.codegraph/` is absent;
+    /// codegraph's own file watcher keeps it fresh afterward). Best-effort.
+    pub async fn ensure_indexed(&self, dir: &Path) -> Result<()>;
+    /// The MCP server spec for `codegraph serve --mcp`.
+    pub fn mcp_server(&self) -> McpServer;
+}
+```
+
+`detect()` returning `None` is the graceful-absence path: the engine wires nothing and
+runs plainly.
+
+### 3. Backend integration (`AgentBackend` / `ClaudeBackend`)
+
+- Add `mcp_servers: Vec<McpServer>` to `AgentTask` (default empty → current behavior;
+  back-compat for every existing construction site and test).
+- `ClaudeBackend::run`: when `task.mcp_servers` is non-empty, call `write_mcp_config`
+  into the worktree and append `--mcp-config <path>` to the `claude` command. Non-strict
+  (omit `--strict-mcp-config`) so any user-global servers still load. When empty, the
+  command is byte-for-byte what it is today.
+- `prompt.rs`: append a one-line nudge when servers are present, e.g. "A `codegraph_explore`
+  MCP tool is available; prefer it over reading files to map structure, callers, and impact."
+  This replaces the fenced instructions `codegraph install` would have written.
+
+### 4. Engine & lifecycle wiring (`engine.rs`)
+
+- `Engine` gains an optional context provider (e.g. `Option<&dyn ...>` or `Option<CodeGraph>`;
+  concrete `CodeGraph` is fine since it is the only provider — revisit if a trait is needed).
+- Before each backend run (both `run_one` and the planner's `run_role`): call
+  `ensure_indexed(workdir)` and set `task.mcp_servers = vec![provider.mcp_server()]`.
+- Default provider `None` → `mcp_servers` stays empty → today's behavior, unchanged.
+- Indexing errors are logged and swallowed; the run proceeds un-wired.
+
+### 5. Wiring in the app (`tutti-app`)
+
+- Build the `CodeGraph` provider once (via `detect()`), gated by config, and hand it to the
+  engine driver. When `None` or disabled, pass no provider.
+
+## The load-bearing spike (do first)
+
+Engine agents run in **transient git worktrees**. `codegraph serve --mcp` is spawned by
+`claude`, which runs with the worktree as cwd, so the MCP server looks for `.codegraph/`
+relative to the worktree, not the main checkout.
+
+**Spike:** against a real indexed repo, determine whether `codegraph serve --mcp`
+- accepts a project-path argument / env var pointing at an existing index elsewhere, or
+- resolves upward from cwd to find a parent `.codegraph/`, or
+- strictly requires an index in its own cwd.
+
+**Then pick:**
+- (a) index the main working dir once, point `serve` at it (cheap, one index), or
+- (b) `ensure_indexed(worktree)` per run and rely on codegraph being fast + incremental.
+
+The spike's answer and the chosen approach get written back into this spec before the
+implementing work, and the mechanics captured as a gotcha (below) the way prior increments
+captured forge/serialization gotchas.
+
+## Config
+
+Optional `[codegraph]` section in `tutti.toml`:
+
+```toml
+[codegraph]
+enabled = true   # default true when the codegraph binary is present; false = full no-op
+```
+
+Absent section → default (on when the binary is detected). Absent binary → no-op
+regardless. No other knobs in this increment.
+
+## Error handling
+
+- `codegraph` not on PATH → `detect()` is `None`; no wiring, no flag, plain run.
+- `ensure_indexed` fails (init error, permission, timeout) → log once, proceed un-wired.
+- `write_mcp_config` fails → log, drop the `--mcp-config` flag, proceed un-wired.
+- A failing/malformed MCP server at agent runtime is Claude's concern, not fatal to Tutti.
+
+No path here can turn "codegraph had a problem" into "the agent did not run."
+
+## Testing
+
+**Hermetic (default tier):**
+- `write_mcp_config` produces the exact expected JSON and round-trips its path.
+- `ClaudeBackend` adds `--mcp-config` iff `mcp_servers` is non-empty, and omits it
+  otherwise (assert on the built arg list, mirroring `verbose_is_in_default_args`).
+- The prompt nudge appears iff servers are present.
+- Engine wiring: a fake provider populates `mcp_servers` and triggers `ensure_indexed`;
+  a `None` provider leaves the task's `mcp_servers` empty (behavior-preserving).
+- Graceful absence: no binary → no flag, run proceeds.
+
+**Live tier (opt-in `live` feature, `#[ignore]`):**
+- Against a real repo with `codegraph` installed: `ensure_indexed` creates `.codegraph/`,
+  and a real `claude -p --mcp-config` run can call `codegraph_explore`. Skips cleanly when
+  the binary is not on the box.
+
+## Gotchas (to fill in during the spike / build)
+
+- codegraph MCP server cwd resolution vs. transient worktrees (see spike). Record the
+  final answer and chosen approach here.
+- `claude -p` MCP config flag exactness (`--mcp-config <file>`; whether `--strict-mcp-config`
+  changes user-server visibility) — confirm against the installed `claude` version.
+- codegraph binary flags for `init`/`serve` as actually installed (docs vs. reality).
+
+## Rollout
+
+One mergeable PR referencing `Part of #21`, straight to `main` (tutti has no CLAUDE.md gate
+and no `version:*` labels). Assigned to `doyled-it`, labeled `enhancement`.
