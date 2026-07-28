@@ -115,4 +115,28 @@ mod tests {
         // Must return without error even if the codegraph binary is missing.
         cg.ensure_ready().await;
     }
+
+    // Live: requires the `codegraph` binary. Skips cleanly if it is not installed.
+    //   cargo test -p tutti-core --features live -- --ignored
+    #[cfg(feature = "live")]
+    #[tokio::test]
+    #[ignore = "requires codegraph binary"]
+    async fn ensure_ready_builds_an_index_live() {
+        let dir = tempfile::tempdir().unwrap();
+        // A trivial source file so codegraph has something to index.
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "fn main() { println!(\"hi\"); }",
+        )
+        .unwrap();
+        let Some(cg) = CodeGraph::detect(dir.path().to_path_buf()) else {
+            eprintln!("codegraph not installed; skipping");
+            return;
+        };
+        cg.ensure_ready().await;
+        assert!(
+            dir.path().join(".codegraph").exists(),
+            "index dir should exist"
+        );
+    }
 }
