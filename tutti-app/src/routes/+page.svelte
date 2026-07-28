@@ -15,6 +15,7 @@
     applyEvent,
     selectedIssueId,
     view,
+    section,
   } from "$lib/stores";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
@@ -25,6 +26,7 @@
   import InitWizard from "$lib/components/InitWizard.svelte";
   import BrowseForge from "$lib/components/BrowseForge.svelte";
   import CreateRepo from "$lib/components/CreateRepo.svelte";
+  import OrchestratorPane from "$lib/components/OrchestratorPane.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
@@ -289,6 +291,8 @@
     {onBrowse}
     {onCreate}
     {onRemove}
+    section={$section}
+    onSection={(s) => section.set(s)}
   />
 
   <div class="center">
@@ -306,7 +310,15 @@
     {/if}
 
     <div class="work">
-      {#if $board}
+      {#if $section === "orchestrator"}
+        {#if $board}
+          {#key $activeDir}
+            <OrchestratorPane />
+          {/key}
+        {:else}
+          <div class="no-project">Open a project to talk to its orchestrator.</div>
+        {/if}
+      {:else if $board}
         {#if $view === "board"}
           <BoardView board={$board} onSelectIssue={selectIssue} />
         {:else}

@@ -27,6 +27,9 @@ export const selectedIssueId = writable<number | null>(null);
 /** Which main-pane view is active: the Kanban board or the milestone lanes. */
 export const view = writable<"board" | "lanes">("board");
 
+/** Which sidebar section is active: the project board or the orchestrator chat. */
+export const section = writable<"board" | "orchestrator">("board");
+
 /** Pure reducer: apply one engine event to a board + run-status snapshot. Exported for tests. */
 export function applyEvent(
   b: Board | null,
