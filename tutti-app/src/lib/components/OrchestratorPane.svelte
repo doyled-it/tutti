@@ -5,12 +5,18 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api } from "$lib/ipc";
-  import { appendDelta, appendTool, startAssistant, type ChatMessage } from "$lib/orchestrator";
+  import { appendDelta, appendTool, type ChatMessage } from "$lib/orchestrator";
 
   let messages = $state<ChatMessage[]>([]);
   let draft = $state("");
   let thinking = $state(false);
   let error = $state<string | null>(null);
+
+  let showThinking = $derived.by(() => {
+    if (!thinking) return false;
+    const last = messages[messages.length - 1];
+    return !last || last.role === "user" || (last.kind === "text" && last.text === "");
+  });
 
   onMount(() => {
     (async () => {
@@ -44,7 +50,7 @@
     const text = draft.trim();
     if (!text || thinking) return;
     error = null;
-    messages = startAssistant([...messages, { role: "user", text, kind: "text" }]);
+    messages = [...messages, { role: "user", text, kind: "text" }];
     draft = "";
     thinking = true;
     try {
@@ -75,7 +81,7 @@
         {/if}
       </div>
     {/each}
-    {#if thinking}
+    {#if showThinking}
       <div class="msg assistant"><div class="bubble thinking">Thinking...</div></div>
     {/if}
   </div>
