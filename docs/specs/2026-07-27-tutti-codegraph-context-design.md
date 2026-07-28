@@ -180,6 +180,13 @@ No path here can turn "codegraph had a problem" into "the agent did not run."
   `--strict-mcp-config` so a user's own global MCP servers still load alongside codegraph.
 - **codegraph CLI.** `codegraph init -i <path>` = init + initial index (the `-i` flag is
   required for the index). `codegraph --version` is the presence probe.
+- **The `--mcp-config` file must NOT live in the agent worktree.** The engine ships an
+  agent's work via `Workspace::commit_all`, which runs `git add -A` inside the worktree
+  (there is no `.tutti` gitignore), so any file written to the worktree would be swept into
+  the user's feature branch and PR. `ClaudeBackend` therefore writes the config to an OS
+  temp dir (`std::env::temp_dir()/tutti-mcp-<pid>/mcp-config.json`) and passes that absolute
+  path to `--mcp-config`. The file location does not affect behavior: codegraph's `-p`
+  already points at the absolute main checkout.
 
 ## Rollout
 
