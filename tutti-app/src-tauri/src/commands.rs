@@ -9,7 +9,7 @@ use tauri::Manager;
 use tutti_app_core::{
     assemble_board, issue_detail, Board, IssueDetail, ProjectEntry, ProjectStore,
 };
-use tutti_core::browse::{ForgeBrowser, Namespace, RemoteRepo};
+use tutti_core::browse::{ForgeBrowser, Namespace, NewRepo, RemoteRepo};
 use tutti_core::config::{Config, ForgeKind};
 use tutti_core::tracking::MilestoneId;
 use tutti_core::traits::{EngineError, Forge, Result as EngineResult};
@@ -539,6 +539,23 @@ pub async fn clone_repo(
             Ok(target.to_string_lossy().into_owned())
         }
     }
+}
+
+#[tauri::command]
+pub async fn create_repo(
+    forge_kind: String,
+    login: Option<String>,
+    namespace: Namespace,
+    spec: NewRepo,
+    state: tauri::State<'_, AppState>,
+) -> Result<RemoteRepo, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("pause the run before creating a repo".into());
+    }
+    build_browser(&forge_kind, login)?
+        .create_repo(&namespace, &spec)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

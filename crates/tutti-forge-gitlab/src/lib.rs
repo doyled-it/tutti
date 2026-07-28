@@ -3,7 +3,7 @@
 pub mod browse;
 pub mod parse;
 
-pub use browse::GitLabBrowser;
+pub use browse::{parse_user_namespace, GitLabBrowser};
 
 use async_trait::async_trait;
 use tutti_core::domain::{

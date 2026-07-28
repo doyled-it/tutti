@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tutti_core::browse::{ForgeBrowser, Namespace, NamespaceKind, RemoteRepo};
+use tutti_core::browse::{ForgeBrowser, Namespace, NamespaceKind, NewRepo, RemoteRepo};
 use tutti_core::traits::Result;
 
 /// Browses GitHub via `gh api`. Needs no repo, unlike `GitHubForge`.
@@ -72,6 +72,21 @@ pub fn parse_repos(json: &str) -> Result<Vec<RemoteRepo>> {
         .collect())
 }
 
+/// Parse a single-repo create response (`POST user/repos` / `orgs/{org}/repos`).
+pub fn parse_created_repo(json: &str) -> Result<RemoteRepo> {
+    let r: GhRepo = serde_json::from_str(json).map_err(|e| {
+        tutti_core::traits::EngineError::Forge(format!("parse gh created repo: {e}"))
+    })?;
+    Ok(RemoteRepo {
+        full_path: r.full_name,
+        name: r.name,
+        description: r.description.filter(|d| !d.is_empty()),
+        clone_url: r.clone_url,
+        private: r.private,
+        archived: r.archived,
+    })
+}
+
 #[async_trait]
 impl ForgeBrowser for GitHubBrowser {
     async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
@@ -87,6 +102,32 @@ impl ForgeBrowser for GitHubBrowser {
             _ => format!("users/{}/repos", ns.path),
         };
         parse_repos(&gh(&["api", &endpoint, "--paginate"]).await?)
+    }
+    async fn create_repo(&self, ns: &Namespace, spec: &NewRepo) -> Result<RemoteRepo> {
+        // `user/repos` creates under the authenticated user; `orgs/{org}/repos` under an org.
+        let endpoint = match ns.kind {
+            NamespaceKind::User => "user/repos".to_string(),
+            _ => format!("orgs/{}/repos", ns.path),
+        };
+        // -f sends raw strings; -F parses typed values (booleans here).
+        let mut args: Vec<String> = vec![
+            "api".into(),
+            endpoint,
+            "--method".into(),
+            "POST".into(),
+            "-f".into(),
+            format!("name={}", spec.name),
+            "-F".into(),
+            format!("private={}", spec.private),
+            "-F".into(),
+            "auto_init=true".into(),
+        ];
+        if let Some(d) = spec.description.as_deref().filter(|d| !d.is_empty()) {
+            args.push("-f".into());
+            args.push(format!("description={d}"));
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        parse_created_repo(&gh(&refs).await?)
     }
 }
 
@@ -119,5 +160,15 @@ mod tests {
         assert!(repos[1].private);
         assert_eq!(repos[1].description, None);
         assert!(repos[2].archived);
+    }
+
+    #[test]
+    fn parses_a_created_repo() {
+        let r = parse_created_repo(include_str!("../tests/fixtures/create_repo.json")).unwrap();
+        assert_eq!(r.full_path, "doyled-it/widget");
+        assert_eq!(r.name, "widget");
+        assert!(r.private);
+        assert_eq!(r.clone_url, "https://github.com/doyled-it/widget.git");
+        assert_eq!(r.description.as_deref(), Some("a thing"));
     }
 }

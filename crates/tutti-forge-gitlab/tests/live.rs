@@ -113,3 +113,61 @@ async fn browse_lists_own_namespace_and_sandbox() {
         .iter()
         .any(|r| r.full_path == "doyled-it/tutti-glab-sandbox"));
 }
+
+#[tokio::test]
+#[ignore = "creates a real project on gitlab.com under doyled-it"]
+async fn create_repo_makes_a_cloneable_project() {
+    use tutti_core::browse::{ForgeBrowser, NamespaceKind, NewRepo};
+    use tutti_forge_gitlab::{parse_user_namespace, GitLabBrowser};
+
+    let name = format!("tutti-create-test-{}", std::process::id());
+
+    // The user's own namespace: path is the numeric id (create under the user needs no
+    // namespace_id, but we resolve the namespace the same way the app would).
+    let user_json = std::process::Command::new("glab")
+        .args(["api", "user"])
+        .output()
+        .expect("glab api user");
+    let ns = parse_user_namespace(&String::from_utf8_lossy(&user_json.stdout)).expect("parse user");
+    assert_eq!(ns.kind, NamespaceKind::User);
+
+    let b = GitLabBrowser;
+    let spec = NewRepo {
+        name: name.clone(),
+        description: Some("tutti live create test".into()),
+        private: true,
+    };
+    let repo = b.create_repo(&ns, &spec).await.expect("create_repo");
+    let full = repo.full_path.clone();
+    assert!(repo.private);
+    assert!(full.ends_with(&name));
+
+    struct RepoCleanup(String);
+    impl Drop for RepoCleanup {
+        fn drop(&mut self) {
+            let encoded = self.0.replace('/', "%2F");
+            let endpoint = format!("projects/{encoded}");
+            let _ = std::process::Command::new("glab")
+                .args(["api", "-X", "DELETE", &endpoint])
+                .output();
+        }
+    }
+    let _cleanup = RepoCleanup(full.clone());
+
+    let dir = std::env::temp_dir().join(&name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = std::process::Command::new("git")
+        .args(["clone", &repo.clone_url, dir.to_str().unwrap()])
+        .output()
+        .expect("git clone");
+    assert!(
+        out.status.success(),
+        "clone failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        dir.join("README.md").exists(),
+        "initialize_with_readme should create a README"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

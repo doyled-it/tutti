@@ -47,6 +47,16 @@ pub struct RemoteRepo {
     pub archived: bool,
 }
 
+/// A repo to create. Always auto-initialized with a README (unconditional, not a field):
+/// an empty repo clones to an unborn branch with no forge-set default, which the wizard's
+/// first commit and label seeding assume against.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NewRepo {
+    pub name: String,
+    pub description: Option<String>,
+    pub private: bool,
+}
+
 /// Browse a forge's namespaces and their repos. Repo-independent by design.
 #[async_trait]
 pub trait ForgeBrowser: Send + Sync {
@@ -55,6 +65,9 @@ pub trait ForgeBrowser: Send + Sync {
     async fn list_namespaces(&self) -> Result<Vec<Namespace>>;
     /// The repos in one namespace.
     async fn list_repos(&self, ns: &Namespace) -> Result<Vec<RemoteRepo>>;
+    /// Create `spec` under `ns`, returning it in the same shape `list_repos` yields so its
+    /// `clone_url` feeds the existing clone path unchanged.
+    async fn create_repo(&self, ns: &Namespace, spec: &NewRepo) -> Result<RemoteRepo>;
 }
 
 #[cfg(test)]

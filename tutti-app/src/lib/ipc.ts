@@ -94,6 +94,12 @@ export interface RemoteRepo {
   archived: boolean;
 }
 
+export interface NewRepo {
+  name: string;
+  description: string | null;
+  private: boolean;
+}
+
 // Discriminated union mirroring EngineEvent (serde tag = "kind", snake_case).
 export type EngineEvent =
   | { kind: "drain_started" }
@@ -126,4 +132,6 @@ export const api = {
     invoke<RemoteRepo[]>("list_repos", { forgeKind, login, namespace }),
   cloneRepo: (cloneUrl: string, parentDir: string, name: string) =>
     invoke<string>("clone_repo", { cloneUrl, parentDir, name }),
+  createRepo: (forgeKind: string, login: string | null, namespace: Namespace, spec: NewRepo) =>
+    invoke<RemoteRepo>("create_repo", { forgeKind, login, namespace, spec }),
 };

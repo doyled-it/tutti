@@ -1,13 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
-<!-- Browse a forge you are already authenticated to, pick a namespace, pick a repo, and
-     clone it locally. Mirrors InitWizard's modal shell (scrim, header with step dots,
-     Back/Next footer, Escape to cancel, Tab focus-trap, focus-first-control on step
-     change). The namespace and repo lists load on entry, each guarded by a generation
-     token so a slow response for an earlier selection cannot paint over the current one. -->
+<!-- Create a brand-new repo on a forge you are authenticated to, then clone it and hand
+     off to the wizard. Mirrors BrowseForge's modal shell. The namespace list loads on
+     entry, guarded by a generation token so a slow response for an earlier forge cannot
+     paint over the current one. -->
 <script lang="ts">
   import { api } from "$lib/ipc";
-  import type { Namespace, RemoteRepo } from "$lib/ipc";
-  import { browseSteps, filterRepos, cloneTarget, validateBrowseStep } from "$lib/browse";
+  import type { Namespace, NewRepo } from "$lib/ipc";
+  import { createSteps, validateCreateStep, validateName } from "$lib/create";
+  import { cloneTarget } from "$lib/browse";
   import QuestionCard from "./QuestionCard.svelte";
 
   let {
@@ -15,9 +15,9 @@
     onCloned,
   }: {
     onCancel: () => void;
-    // Called once a repo is cloned (or an existing checkout reused) with the local path
-    // plus the forge kind and login the user chose, so the handoff does not have to
-    // re-derive the forge from the remote host (which only knows the three public ones).
+    // Same handoff BrowseForge uses: once the new repo is created and cloned locally,
+    // hand the local path plus the chosen forge and login to the page, which probes it
+    // and opens the wizard.
     onCloned: (dir: string, forgeKind: string, login: string) => Promise<void>;
   } = $props();
 
@@ -31,26 +31,24 @@
   let nsQuery = $state("");
   let selectedNs = $state<Namespace | null>(null);
 
-  let repos = $state<RemoteRepo[]>([]);
-  let reposLoading = $state(false);
-  let reposError = $state<string | null>(null);
-  let repoQuery = $state("");
-  let selectedRepo = $state<RemoteRepo | null>(null);
+  let name = $state("");
+  let description = $state("");
+  let isPrivate = $state(true);
 
   let parentDir = $state("");
-  let cloning = $state(false);
-  let cloneError = $state<string | null>(null);
+  let creating = $state(false);
+  let createError = $state<string | null>(null);
 
   let modalEl = $state<HTMLElement | null>(null);
   let bodyEl = $state<HTMLElement | null>(null);
 
-  const steps = browseSteps();
+  const steps = createSteps();
   let current = $derived(steps[Math.min(step, steps.length - 1)]);
   let last = $derived(step >= steps.length - 1);
-  let forgeError = $derived(validateBrowseStep({ forgeKind, login }, "forge"));
+  let forgeError = $derived(validateCreateStep({ forgeKind, login, name }, "forge"));
+  let nameError = $derived(validateName(name));
+  let target = $derived(name && parentDir ? cloneTarget(parentDir, name.trim()) : null);
 
-  // The CLI a given forge drives, so an auth failure can tell the user exactly which
-  // tool to log into.
   function cliName(kind: string): string {
     if (kind === "gitlab") return "glab";
     if (kind === "gitea") return "tea";
@@ -64,28 +62,19 @@
       (n) => n.name.toLowerCase().includes(q) || n.path.toLowerCase().includes(q),
     );
   });
-  let filteredRepos = $derived(filterRepos(repos, repoQuery));
-  let target = $derived(
-    selectedRepo && parentDir ? cloneTarget(parentDir, selectedRepo.name) : null,
-  );
 
-  // Whether Next may fire for the current step. The forge step defers to the shared
-  // validator; the list steps need a selection (picking a row also advances, but Back
-  // then Next must still work); the destination step has its own Clone button.
   let canAdvance = $derived.by(() => {
     if (current === "forge") return forgeError === null;
     if (current === "namespace") return selectedNs !== null;
-    if (current === "repo") return selectedRepo !== null;
+    if (current === "details") return nameError === null;
     return false;
   });
 
-  // Load the namespaces on entering the namespace step. The generation token drops a
-  // response that lands after a newer request was issued, keyed here on the forge and
-  // login, so switching forge before a slow list returns cannot show stale namespaces.
+  // Load namespaces on entering the namespace step, guarded by a generation token keyed
+  // on the forge and login (same as BrowseForge).
   let nsSeq = 0;
   $effect(() => {
     if (current !== "namespace") return;
-    // Track the inputs the list depends on so a change re-runs the load.
     const kind = forgeKind;
     const who = login.trim() || null;
     namespaces = [];
@@ -107,40 +96,8 @@
       });
   });
 
-  // Load the repos on entering the repo step, keyed on the chosen namespace. Same
-  // generation-token guard so a slow list for a previous namespace cannot overwrite the
-  // current one.
-  let repoSeq = 0;
+  // Move focus to the step's first control on every step change.
   $effect(() => {
-    if (current !== "repo") return;
-    const ns = selectedNs;
-    if (!ns) return;
-    const kind = forgeKind;
-    const who = login.trim() || null;
-    repos = [];
-    reposError = null;
-    reposLoading = true;
-    selectedRepo = null;
-    repoSeq += 1;
-    const seq = repoSeq;
-    api
-      .listRepos(kind, who, ns)
-      .then((rs) => {
-        if (seq === repoSeq) repos = rs;
-      })
-      .catch((e) => {
-        if (seq === repoSeq) reposError = String(e);
-      })
-      .finally(() => {
-        if (seq === repoSeq) reposLoading = false;
-      });
-  });
-
-  // Move focus to the step's first control on every step change, so the modal owns focus
-  // from the moment it opens and a keyboard user is not left tabbing from the top of the
-  // document into the shell behind the scrim.
-  $effect(() => {
-    // Track the step so this re-runs on navigation.
     void current;
     const el = bodyEl?.querySelector<HTMLElement>(
       'input:not([type="radio"]), input[type="radio"]:checked, select, textarea, button',
@@ -159,13 +116,6 @@
 
   function pickNamespace(ns: Namespace) {
     selectedNs = ns;
-    selectedRepo = null;
-    repoQuery = "";
-    step += 1;
-  }
-
-  function pickRepo(r: RemoteRepo) {
-    selectedRepo = r;
     step += 1;
   }
 
@@ -174,21 +124,27 @@
     const picked = await open({ directory: true });
     if (typeof picked === "string") {
       parentDir = picked;
-      cloneError = null;
+      createError = null;
     }
   }
 
-  async function clone() {
-    if (cloning || !selectedRepo || !parentDir) return;
-    cloning = true;
-    cloneError = null;
+  async function create() {
+    if (creating || !selectedNs || !parentDir || nameError !== null) return;
+    creating = true;
+    createError = null;
     try {
-      const path = await api.cloneRepo(selectedRepo.clone_url, parentDir, selectedRepo.name);
+      const spec: NewRepo = {
+        name: name.trim(),
+        description: description.trim() ? description.trim() : null,
+        private: isPrivate,
+      };
+      const repo = await api.createRepo(forgeKind, login.trim() || null, selectedNs, spec);
+      const path = await api.cloneRepo(repo.clone_url, parentDir, repo.name);
       await onCloned(path, forgeKind, login.trim());
     } catch (e) {
-      cloneError = String(e);
+      createError = String(e);
     } finally {
-      cloning = false;
+      creating = false;
     }
   }
 
@@ -200,8 +156,6 @@
       onCancel();
       return;
     }
-    // Keep Tab inside the modal. Without this, tabbing past the last control walks into
-    // the shell behind the scrim, which is inert but still focusable.
     if (e.key === "Tab" && modalEl) {
       const items = [...modalEl.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
         (el) => !el.hasAttribute("disabled"),
@@ -222,12 +176,10 @@
       }
       return;
     }
-    // Enter advances, but never when it would steal a focused button's own activation,
-    // and never mid-composition (an IME commit also fires Enter).
     if (e.key === "Enter" && !e.isComposing && !(e.target instanceof HTMLButtonElement)) {
       if (e.target instanceof HTMLTextAreaElement) return;
       e.preventDefault();
-      if (last) void clone();
+      if (last) void create();
       else next();
     }
   }
@@ -241,11 +193,11 @@
   class="modal"
   role="dialog"
   aria-modal="true"
-  aria-label="Add a project from a forge"
+  aria-label="Create a new repository"
   bind:this={modalEl}
 >
   <header>
-    <span class="title">Add a project from a forge</span>
+    <span class="title">Create a new repository</span>
     <span class="counter">Step {step + 1} of {steps.length}</span>
     <div class="dots">
       {#each steps as id, i (id)}
@@ -257,16 +209,15 @@
   <div class="body" bind:this={bodyEl}>
     {#if current === "forge"}
       <QuestionCard
-        question="Which forge do you want to browse?"
-        description="Tutti lists the repos you can reach through your forge's command-line tool, using the login you already have."
+        question="Which forge should host the new repo?"
+        description="Tutti creates the repo through your forge's command-line tool, using the login you already have."
         error={forgeError}
       >
         <label class="opt" class:on={forgeKind === "github"}>
           <input type="radio" bind:group={forgeKind} value="github" />
           <span
             ><b>GitHub</b><em
-              >Your repos and organizations on github.com or GitHub Enterprise. Requires the `gh`
-              CLI, already logged in.</em
+              >Create on github.com or GitHub Enterprise. Requires the `gh` CLI, logged in.</em
             ></span
           >
         </label>
@@ -274,8 +225,7 @@
           <input type="radio" bind:group={forgeKind} value="gitlab" />
           <span
             ><b>GitLab</b><em
-              >Your projects and groups on gitlab.com or a self-hosted instance. Requires the `glab`
-              CLI, already logged in.</em
+              >Create on gitlab.com or a self-hosted instance. Requires the `glab` CLI, logged in.</em
             ></span
           >
         </label>
@@ -283,8 +233,7 @@
           <input type="radio" bind:group={forgeKind} value="gitea" />
           <span
             ><b>Gitea</b><em
-              >Your repos and orgs on Gitea, Forgejo or Codeberg. Requires the `tea` CLI, already
-              logged in.</em
+              >Create on Gitea, Forgejo or Codeberg. Requires the `tea` CLI, logged in.</em
             ></span
           >
         </label>
@@ -301,8 +250,8 @@
       </QuestionCard>
     {:else if current === "namespace"}
       <QuestionCard
-        question="Which account or organization?"
-        description="Where the repo lives: your own account, or one of the orgs or groups you belong to."
+        question="Where should it be created?"
+        description="Your own account, or one of the orgs or groups you belong to."
       >
         {#if nsLoading}
           <div class="loading">Loading namespaces...</div>
@@ -340,67 +289,41 @@
           {/if}
         {/if}
       </QuestionCard>
-    {:else if current === "repo"}
+    {:else if current === "details"}
       <QuestionCard
-        question="Which repository?"
-        description="The repo Tutti will clone and adopt. It records exactly this repo in the project's tutti.toml."
+        question="Name the repository"
+        description="This is exactly what Tutti records in the project's tutti.toml. It is created with a README so the clone lands cleanly."
+        error={name.length > 0 ? nameError : null}
       >
-        {#if reposLoading}
-          <div class="loading">Loading repositories...</div>
-        {:else if reposError}
-          <div class="err-block">
-            <div>
-              Could not list repositories. Check that the `{cliName(forgeKind)}` CLI is installed
-              and authenticated.
-            </div>
-            <div class="err-detail">{reposError}</div>
-          </div>
-        {:else}
-          <input
-            class="search"
-            bind:value={repoQuery}
-            placeholder="Search repositories..."
-            aria-label="Search repositories"
-          />
-          {#if filteredRepos.length === 0}
-            <div class="empty">No repositories match.</div>
-          {:else}
-            <div class="list" role="list">
-              {#each filteredRepos as r (r.full_path)}
-                <button
-                  type="button"
-                  class="row repo-row"
-                  class:on={selectedRepo?.full_path === r.full_path}
-                  onclick={() => pickRepo(r)}
-                >
-                  <span class="repo-head">
-                    <span class="row-name">{r.name}</span>
-                    {#if r.private}<span class="badge">private</span>{/if}
-                    {#if r.archived}<span class="badge muted">archived</span>{/if}
-                  </span>
-                  {#if r.description}
-                    <span class="repo-desc">{r.description}</span>
-                  {/if}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        {/if}
+        <label class="field-label" for="repo-name">Repository name</label>
+        <input id="repo-name" bind:value={name} placeholder="my-project" />
+        <label class="field-label" for="repo-desc">Description (optional)</label>
+        <input id="repo-desc" bind:value={description} placeholder="What this project is" />
+        <div class="vis">
+          <label class="opt" class:on={isPrivate}>
+            <input type="radio" bind:group={isPrivate} value={true} />
+            <span><b>Private</b><em>Only you and people you add can see it.</em></span>
+          </label>
+          <label class="opt" class:on={!isPrivate}>
+            <input type="radio" bind:group={isPrivate} value={false} />
+            <span><b>Public</b><em>Anyone can see it.</em></span>
+          </label>
+        </div>
       </QuestionCard>
     {:else}
       <QuestionCard
         question="Where should it be cloned?"
-        description="Pick the folder to clone into. The repo lands in a subfolder named after it. If a matching git checkout is already there, Tutti reuses it."
-        error={cloneError}
+        description="Pick the folder to clone the new repo into. It lands in a subfolder named after the repo."
+        error={createError}
       >
         <button type="button" class="ghost" onclick={chooseParent}>Choose parent folder...</button>
-        {#if selectedRepo}
-          <div class="target-label">Clone target</div>
-          {#if target}
-            <div class="path">{target}</div>
-          {:else}
-            <div class="empty">Choose a parent folder to see where {selectedRepo.name} lands.</div>
-          {/if}
+        <div class="target-label">Clone target</div>
+        {#if target}
+          <div class="path">{target}</div>
+        {:else}
+          <div class="empty">
+            Choose a parent folder to see where {name.trim() || "the repo"} lands.
+          </div>
         {/if}
       </QuestionCard>
     {/if}
@@ -411,8 +334,8 @@
     <div class="spacer"></div>
     <button type="button" class="ghost" disabled={step === 0} onclick={back}>Back</button>
     {#if last}
-      <button type="button" class="primary" disabled={cloning || !target} onclick={clone}>
-        {cloning ? "Cloning..." : "Clone"}
+      <button type="button" class="primary" disabled={creating || !target} onclick={create}>
+        {creating ? "Creating..." : "Create & clone"}
       </button>
     {:else}
       <button type="button" class="primary" disabled={!canAdvance} onclick={next}>Next</button>
@@ -533,14 +456,24 @@
     flex-direction: column;
     gap: 6px;
   }
-  .sub-label {
+  .sub-label,
+  .field-label {
     font-size: 12px;
     font-weight: 620;
+  }
+  .field-label {
+    margin-top: 6px;
   }
   .sub-desc {
     font-size: 12px;
     line-height: 1.5;
     color: var(--text-dim);
+  }
+  .vis {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .loading {
     font-size: 13px;
@@ -599,16 +532,6 @@
     border-color: var(--accent-border);
     background: var(--accent-bg);
   }
-  .repo-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-  }
-  .repo-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
   .row-name {
     flex: 1;
     font-weight: 600;
@@ -621,32 +544,13 @@
     color: var(--text-faint);
     text-transform: lowercase;
   }
-  .repo-desc {
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--text-dim);
-  }
-  .badge {
-    flex: none;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: 999px;
-    border: 1px solid var(--accent-border);
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .badge.muted {
-    border-color: var(--border);
-    color: var(--text-faint);
-  }
   .target-label {
     margin-top: 6px;
     font-size: 12px;
     font-weight: 620;
   }
   input:not([type="radio"]) {
+    width: 100%;
     padding: 7px 9px;
     border-radius: 6px;
     border: 1px solid var(--border);
