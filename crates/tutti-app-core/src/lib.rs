@@ -316,6 +316,69 @@ impl ProjectStore {
     }
 }
 
+/// How a transcript line should render: plain assistant prose, a tool-use aside, or (a
+/// later PR) a gate proposal. Serialized snake_case to match the frontend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    Text,
+    Tool,
+}
+
+/// One line of the display transcript. `role` is "user" or "assistant".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptMessage {
+    pub role: String,
+    pub text: String,
+    #[serde(default = "default_text_kind")]
+    pub kind: MessageKind,
+}
+
+fn default_text_kind() -> MessageKind {
+    MessageKind::Text
+}
+
+/// A project's persisted orchestrator chat: the claude session id to resume and the
+/// display transcript. Serialized to `app_data_dir()/orchestrator/<key>.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestratorTranscript {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub messages: Vec<TranscriptMessage>,
+}
+
+impl OrchestratorTranscript {
+    /// Parse from JSON; an unreadable/absent transcript is an empty one (first chat).
+    pub fn from_json(s: &str) -> Self {
+        serde_json::from_str(s).unwrap_or_default()
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
+    }
+
+    pub fn push(&mut self, m: TranscriptMessage) {
+        self.messages.push(m);
+    }
+}
+
+/// A filename-safe, stable key for a project's transcript file, derived from its `dir`
+/// (the same identity `ProjectStore` keys on). Non-alphanumeric bytes become `_`, and a
+/// short hash of the full path is appended so two long dirs sharing an 80-char prefix
+/// cannot collide.
+pub fn transcript_key(dir: &str) -> String {
+    let mut s: String = dir
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let hash = dir
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    s.truncate(80);
+    format!("{s}_{hash:x}")
+}
+
 /// Assemble the board for `select` (default: all issues). Reads the milestone list for the
 /// rail, then buckets either the selected milestone's children or every issue by status label.
 pub async fn assemble_board(
@@ -781,5 +844,32 @@ mod tests {
         let cfg = tutti_core::config::Config::load(&path).unwrap();
         assert_eq!(cfg.model, "modèle-5");
         assert_eq!(cfg.gate.commands, vec![r#"echo "café" \ done"#.to_string()]);
+    }
+
+    #[test]
+    fn transcript_roundtrips_and_tolerates_absent() {
+        let empty = OrchestratorTranscript::from_json("not json");
+        assert!(empty.messages.is_empty());
+        assert_eq!(empty.session_id, None);
+
+        let mut t = OrchestratorTranscript {
+            session_id: Some("s-9".into()),
+            ..Default::default()
+        };
+        t.push(TranscriptMessage { role: "user".into(), text: "hi".into(), kind: MessageKind::Text });
+        t.push(TranscriptMessage { role: "assistant".into(), text: "hello".into(), kind: MessageKind::Text });
+        let back = OrchestratorTranscript::from_json(&t.to_json());
+        assert_eq!(back.session_id.as_deref(), Some("s-9"));
+        assert_eq!(back.messages.len(), 2);
+        assert_eq!(back.messages[1].text, "hello");
+    }
+
+    #[test]
+    fn transcript_key_is_filename_safe_and_stable() {
+        let k = transcript_key("/Users/me/projects/tutti");
+        assert!(!k.contains('/'));
+        assert!(!k.is_empty());
+        assert_eq!(k, transcript_key("/Users/me/projects/tutti")); // stable
+        assert_ne!(k, transcript_key("/Users/me/projects/other"));
     }
 }
