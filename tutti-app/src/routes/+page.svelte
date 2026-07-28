@@ -17,6 +17,7 @@
     view,
     section,
     orchestratorBusy,
+    gateStatus,
   } from "$lib/stores";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
@@ -108,6 +109,7 @@
     }
     activeDir.set(dir);
     board.set(await api.getBoard());
+    await loadGateStatus();
     selectedIssueId.set(null);
   }
 
@@ -138,6 +140,7 @@
       selectedIssueId.set(null);
       issueDetail = null;
       board.set(await api.getBoard());
+      await loadGateStatus();
     } catch (e) {
       loadError = String(e);
       throw e;
@@ -158,6 +161,7 @@
       selectedIssueId.set(null);
       issueDetail = null;
       board.set(await api.getBoard());
+      await loadGateStatus();
       pendingInit = null;
     } catch (e) {
       // Deliberately not mirrored into loadError: the wizard is still open over the
@@ -178,9 +182,18 @@
         activeDir.set(null);
         selectedIssueId.set(null);
         issueDetail = null;
+        gateStatus.set(null);
       }
     } catch (e) {
       loadError = String(e);
+    }
+  }
+
+  async function loadGateStatus() {
+    try {
+      gateStatus.set(await api.getGateStatus());
+    } catch {
+      gateStatus.set(null);
     }
   }
 
@@ -301,9 +314,11 @@
       project={activeEntry}
       view={$view}
       runStatus={$runStatus}
+      gateNoop={$gateStatus?.is_noop ?? false}
       onViewChange={(v) => view.set(v)}
       onRun={run}
       onPause={pause}
+      onOpenOrchestrator={() => section.set("orchestrator")}
     />
 
     {#if loadError}

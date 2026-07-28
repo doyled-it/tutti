@@ -462,6 +462,50 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
     })
 }
 
+/// Surgically set `[gate].commands` in an existing `tutti.toml`, preserving every other key,
+/// comment, and formatting. Handles all three shapes: an existing `commands` array (replaced),
+/// a `[gate]` table without `commands` (inserted), and no `[gate]` table (created).
+pub fn set_gate_commands(existing_toml: &str, commands: &[String]) -> Result<String> {
+    let mut doc = existing_toml
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| EngineError::Forge(format!("parse tutti.toml: {e}")))?;
+    let mut arr = toml_edit::Array::new();
+    for c in commands {
+        arr.push(c.as_str());
+    }
+    // `doc["gate"]` auto-vivifies an implicit table if absent; make it explicit so it renders
+    // as `[gate]` rather than being folded away when empty.
+    let gate = doc["gate"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    // Guard a malformed hand-edit (`gate = "x"`): indexing `["commands"]` into a non-table
+    // Item panics, and `apply_gate` reads tutti.toml fresh from disk, so a scalar `gate`
+    // written between activation and apply would reach here. Both `[gate]` and the inline
+    // `gate = { ... }` form are table-like and handled; anything else is a clear error.
+    if !gate.is_table() && !gate.is_inline_table() {
+        return Err(EngineError::Forge(
+            "`[gate]` in tutti.toml is not a table".into(),
+        ));
+    }
+    if let Some(t) = gate.as_table_mut() {
+        t.set_implicit(false);
+    }
+    doc["gate"]["commands"] = toml_edit::value(arr);
+    Ok(doc.to_string())
+}
+
+/// The status of a project's gate, surfaced to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateStatus {
+    pub commands: Vec<String>,
+    pub is_noop: bool,
+}
+
+/// True when the gate verifies nothing before Tutti ships an issue's work: the explicit
+/// no-op (`["true"]`, the wizard's `NO_OP_GATE` seed) or an empty command list (which
+/// `Gate::run` passes vacuously). Both surface the "No gate" badge.
+pub fn gate_is_noop(commands: &[String]) -> bool {
+    commands.is_empty() || commands == ["true"]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,5 +928,84 @@ mod tests {
         assert!(!k.is_empty());
         assert_eq!(k, transcript_key("/Users/me/projects/tutti")); // stable
         assert_ne!(k, transcript_key("/Users/me/projects/other"));
+    }
+
+    #[test]
+    fn set_gate_commands_preserves_everything_else() {
+        let existing = r#"
+# a hand comment
+repo = "o/r"
+trunk = "main"
+merge_mode = "merge"
+
+[gate]
+working_dir = "server"
+commands = ["true"]
+"#;
+        let out =
+            set_gate_commands(existing, &["cargo test".into(), "cargo clippy".into()]).unwrap();
+        assert!(out.contains("# a hand comment"));
+        assert!(out.contains(r#"merge_mode = "merge""#));
+        assert!(out.contains(r#"working_dir = "server""#));
+        assert!(out.contains(r#""cargo test""#));
+        assert!(out.contains(r#""cargo clippy""#));
+        assert!(!out.contains(r#""true""#));
+    }
+
+    #[test]
+    fn set_gate_commands_handles_inline_table_and_rejects_scalar() {
+        // An inline `gate = { ... }` is table-like: commands are set, other keys preserved.
+        let inline =
+            set_gate_commands("gate = { working_dir = \"srv\" }\n", &["cargo test".into()])
+                .unwrap();
+        assert!(inline.contains("cargo test"));
+        assert!(inline.contains("working_dir"));
+        // A malformed scalar `gate = "x"` (a hand-edit) is a clear error, never a panic.
+        let err = set_gate_commands("gate = \"oops\"\n", &["cargo test".into()]);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn set_gate_commands_inserts_when_missing() {
+        // [gate] table with no commands key.
+        let a = set_gate_commands("[gate]\nworking_dir = \"\"\n", &["cargo test".into()]).unwrap();
+        assert!(a.contains("cargo test"));
+        // No [gate] table at all.
+        let b = set_gate_commands("trunk = \"main\"\n", &["cargo test".into()]).unwrap();
+        assert!(b.contains("[gate]"));
+        assert!(b.contains("cargo test"));
+    }
+
+    #[test]
+    fn set_gate_commands_output_still_loads() {
+        let existing = r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#;
+        let out = set_gate_commands(existing, &["cargo test".into()]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tutti.toml");
+        std::fs::write(&path, &out).unwrap();
+        let cfg = tutti_core::config::Config::load(&path).expect("edited toml loads");
+        assert_eq!(cfg.gate.commands, vec!["cargo test".to_string()]);
+    }
+
+    #[test]
+    fn gate_is_noop_truth_table() {
+        assert!(gate_is_noop(&["true".to_string()]));
+        assert!(!gate_is_noop(&["cargo test".to_string()]));
+        assert!(!gate_is_noop(&["true".to_string(), "true".to_string()]));
+        // An empty gate verifies nothing (Gate::run passes it vacuously), so it counts as no-op.
+        assert!(gate_is_noop(&[]));
     }
 }

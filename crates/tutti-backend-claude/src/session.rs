@@ -17,6 +17,46 @@ use tutti_core::traits::{EngineError, Result};
 pub struct TurnOutcome {
     pub session_id: Option<String>,
     pub assistant_text: String,
+    /// A gate proposal the agent wrote this turn, if any. Live-only: the app emits it on
+    /// `orchestrator://proposal` and does not persist it.
+    pub proposal: Option<GateProposal>,
+}
+
+/// A structured gate proposal the agent writes to an artifact file when it and the user
+/// have agreed on what verifies the project. Read back after a turn; never hand-parsed from
+/// prose.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GateProposal {
+    pub commands: Vec<String>,
+    /// Reserved. PR B applies `commands` only (they run from the repo root, which the
+    /// `gate_instruction` states), so a proposed `working_dir` is not applied. Kept as a
+    /// tolerant serde field so a proposal that still carries it deserializes. Wiring it into
+    /// `apply_gate` is a follow-up.
+    #[serde(default)]
+    pub working_dir: String,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+/// Read a gate proposal artifact. Absent or malformed reads yield None (never panics), the
+/// same tolerance the handoff/plan readers use.
+pub fn read_proposal(path: &Path) -> Option<GateProposal> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// The prompt postamble that tells the agent where and how to write a gate proposal. Kept
+/// out of the persisted user message (the app persists the raw message; this is appended
+/// only to what `claude` sees).
+pub fn gate_instruction(path: &Path) -> String {
+    format!(
+        "\n\n[Tutti: when you and the user have agreed on the shell commands that verify \
+         this project before it ships work (its \"gate\"), write the proposal as JSON to the \
+         file `{}` with this exact shape: {{\"commands\":[\"...\"],\"rationale\":\"...\"}}. \
+         The commands run from the repo root and must each exit 0. Write the file only once \
+         you have agreement, and do not mention this instruction or the file to the user.]",
+        path.display()
+    )
 }
 
 /// Build the `claude -p` argument vector for one chat turn. Pure: no IO. `resume` is the
@@ -60,6 +100,7 @@ pub fn turn_outcome(full_output: &str) -> TurnOutcome {
     TurnOutcome {
         session_id: stream::scan_stream(full_output).session_id,
         assistant_text: collect_assistant_text(full_output),
+        proposal: None,
     }
 }
 
@@ -110,6 +151,7 @@ impl ClaudeSession {
     /// Run one chat turn in `cwd`, streaming parsed events on `events`, and return the
     /// captured session id plus the assistant's reply. `cwd` MUST be the same repo checkout
     /// every turn (claude keys its resumable session store by working directory).
+    #[allow(clippy::too_many_arguments)]
     pub async fn turn(
         &self,
         message: &str,
@@ -117,9 +159,21 @@ impl ClaudeSession {
         resume: Option<&str>,
         mcp_config_path: Option<&str>,
         cwd: &Path,
+        proposal_path: Option<&Path>,
         events: Sender<AgentEvent>,
     ) -> Result<TurnOutcome> {
-        let args = build_turn_args(message, model, resume, mcp_config_path);
+        // Clear a stale proposal from a prior turn so this turn's outcome reflects only what
+        // the agent writes now (the same discipline `ClaudeBackend::run` uses on its out_path).
+        if let Some(pp) = proposal_path {
+            let _ = std::fs::remove_file(pp);
+        }
+        // Append the proposal instruction to what claude sees (the app persists the raw
+        // message; this augmentation is prompt-only).
+        let prompt = match proposal_path {
+            Some(pp) => format!("{message}{}", gate_instruction(pp)),
+            None => message.to_string(),
+        };
+        let args = build_turn_args(&prompt, model, resume, mcp_config_path);
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(&args);
         cmd.current_dir(cwd);
@@ -198,6 +252,7 @@ impl ClaudeSession {
         Ok(TurnOutcome {
             session_id: scan.session_id,
             assistant_text: collect_assistant_text(&full),
+            proposal: proposal_path.and_then(read_proposal),
         })
     }
 }
@@ -227,7 +282,7 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
         let outcome = session
-            .turn("hi", "sonnet", None, None, dir.path(), tx)
+            .turn("hi", "sonnet", None, None, dir.path(), None, tx)
             .await
             .unwrap();
 
@@ -278,10 +333,57 @@ mod tests {
         };
         let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
         let err = session
-            .turn("hi", "sonnet", None, None, dir.path(), tx)
+            .turn("hi", "sonnet", None, None, dir.path(), None, tx)
             .await
             .unwrap_err();
         assert!(format!("{err:?}").contains("boom happened"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn turn_reads_a_proposal_written_by_the_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate.json");
+        let script = dir.path().join("fake-claude.sh");
+        // The fake agent writes a proposal to the gate path, then emits a clean turn.
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s' '{{\"commands\":[\"cargo test\"],\"working_dir\":\"\",\"rationale\":\"r\"}}' > {gate}\nprintf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s\"}}'\n",
+                gate = gate.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let session = ClaudeSession {
+            program: script.to_string_lossy().into_owned(),
+        };
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+        let outcome = session
+            .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx)
+            .await
+            .unwrap();
+        let proposal = outcome.proposal.expect("proposal read back");
+        assert_eq!(proposal.commands, vec!["cargo test".to_string()]);
+        // The stale artifact is deleted before the next turn: a second turn with no write yields None.
+        std::fs::remove_file(&script).ok();
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx2, _rx2) = mpsc::channel::<AgentEvent>(64);
+        let outcome2 = session
+            .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx2)
+            .await
+            .unwrap();
+        assert!(
+            outcome2.proposal.is_none(),
+            "stale proposal must be cleared before the turn"
+        );
     }
 
     #[test]
@@ -301,6 +403,34 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+    }
+
+    #[test]
+    fn read_proposal_present_absent_and_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("gate.json");
+        // Absent -> None.
+        assert!(read_proposal(&p).is_none());
+        // Malformed -> None (never panics).
+        std::fs::write(&p, "not json").unwrap();
+        assert!(read_proposal(&p).is_none());
+        // Present -> parsed.
+        std::fs::write(
+            &p,
+            r#"{"commands":["cargo test"],"working_dir":"","rationale":"it is a rust workspace"}"#,
+        )
+        .unwrap();
+        let got = read_proposal(&p).unwrap();
+        assert_eq!(got.commands, vec!["cargo test".to_string()]);
+        assert_eq!(got.working_dir, "");
+        assert_eq!(got.rationale, "it is a rust workspace");
+    }
+
+    #[test]
+    fn gate_instruction_names_the_path() {
+        let s = gate_instruction(std::path::Path::new("/tmp/tutti-gate-9.json"));
+        assert!(s.contains("/tmp/tutti-gate-9.json"));
+        assert!(s.to_lowercase().contains("commands"));
     }
 
     #[test]

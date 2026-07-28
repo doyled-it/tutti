@@ -3,7 +3,7 @@
 // applyEvent reducer is the tested, pure core of the live-update behavior.
 
 import { writable } from "svelte/store";
-import type { Board, EngineEvent, IssueCard, ProjectEntry } from "./ipc";
+import type { Board, EngineEvent, GateStatus, IssueCard, ProjectEntry } from "./ipc";
 
 /** The full saved project list, restored on launch and kept in sync with the backend. */
 export const projects = writable<ProjectEntry[]>([]);
@@ -12,6 +12,9 @@ export const projects = writable<ProjectEntry[]>([]);
 export const activeDir = writable<string | null>(null);
 
 export const board = writable<Board | null>(null);
+
+/** The active project's gate status (null before a project loads). Drives the no-op badge. */
+export const gateStatus = writable<GateStatus | null>(null);
 
 export type RunUi = {
   state: "idle" | "running" | "pausing";

@@ -8,10 +8,12 @@
   import {
     appendDelta,
     appendTool,
+    appendProposal,
+    removeProposalAt,
     dropTrailingEmptyAssistant,
     type ChatMessage,
   } from "$lib/orchestrator";
-  import { orchestratorBusy } from "$lib/stores";
+  import { gateStatus, orchestratorBusy } from "$lib/stores";
 
   let messages = $state<ChatMessage[]>([]);
   let draft = $state("");
@@ -53,6 +55,9 @@
         thinking = false;
         orchestratorBusy.set(false);
       }),
+      api.onOrchestratorProposal((p) => {
+        messages = appendProposal(messages, p);
+      }),
     ];
     return () => {
       unlisteners.forEach((p) => p.then((u) => u()));
@@ -81,6 +86,20 @@
     }
   }
 
+  async function applyProposal(index: number, commands: string[]) {
+    try {
+      const status = await api.applyGate(commands);
+      gateStatus.set(status);
+      messages = removeProposalAt(messages, index);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function dismissProposal(index: number) {
+    messages = removeProposalAt(messages, index);
+  }
+
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -91,10 +110,32 @@
 
 <div class="pane">
   <div class="transcript">
-    {#each messages as m}
+    {#each messages as m, i}
       <div class="msg {m.role} {m.kind}">
         {#if m.kind === "tool"}
           <span class="tool">ran {m.text}</span>
+        {:else if m.kind === "proposal" && m.proposal}
+          <div class="proposal">
+            <div class="proposal-title">Set the verification gate?</div>
+            <ul class="proposal-cmds">
+              {#each m.proposal.commands as c}
+                <li><code>{c}</code></li>
+              {/each}
+            </ul>
+            {#if m.proposal.rationale}
+              <div class="proposal-why">{m.proposal.rationale}</div>
+            {/if}
+            <div class="proposal-actions">
+              <button
+                class="apply"
+                disabled={m.proposal.commands.length === 0}
+                onclick={() => applyProposal(i, m.proposal!.commands)}
+              >
+                Apply
+              </button>
+              <button class="dismiss" onclick={() => dismissProposal(i)}>Dismiss</button>
+            </div>
+          </div>
         {:else}
           <div class="bubble">{m.text}</div>
         {/if}
@@ -195,5 +236,54 @@
   .compose button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  .proposal {
+    max-width: 80%;
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: var(--bg-panel);
+    font-size: 13px;
+  }
+  .proposal-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .proposal-cmds {
+    margin: 0 0 6px;
+    padding-left: 18px;
+  }
+  .proposal-cmds code {
+    font-family: monospace;
+    font-size: 12px;
+  }
+  .proposal-why {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+  .proposal-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .proposal-actions .apply {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .proposal-actions .apply:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .proposal-actions .dismiss {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
   }
 </style>

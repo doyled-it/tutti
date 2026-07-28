@@ -2,8 +2,10 @@
 import { describe, it, expect } from "vitest";
 import {
   appendDelta,
+  appendProposal,
   appendTool,
   dropTrailingEmptyAssistant,
+  removeProposalAt,
   startAssistant,
   type ChatMessage,
 } from "./orchestrator";
@@ -39,5 +41,30 @@ describe("orchestrator reducer", () => {
   it("leaves a non-empty trailing bubble untouched", () => {
     const msgs: ChatMessage[] = [{ role: "assistant", text: "done", kind: "text" }];
     expect(dropTrailingEmptyAssistant(msgs)).toEqual(msgs);
+  });
+
+  it("appends a proposal card and removes it by index", () => {
+    let msgs: ChatMessage[] = [{ role: "user", text: "gate?", kind: "text" }];
+    const proposal = { commands: ["cargo test"], working_dir: "", rationale: "rust" };
+    msgs = appendProposal(msgs, proposal);
+    const idx = msgs.length - 1;
+    expect(msgs[idx].kind).toBe("proposal");
+    expect(msgs[idx].proposal).toEqual(proposal);
+    msgs = removeProposalAt(msgs, idx);
+    expect(msgs.some((m) => m.kind === "proposal")).toBe(false);
+  });
+
+  it("replaces a prior proposal card and drops a trailing empty bubble", () => {
+    let msgs: ChatMessage[] = [{ role: "user", text: "hi", kind: "text" }];
+    msgs = appendTool(msgs, "Bash"); // leaves a trailing empty assistant text bubble
+    msgs = appendProposal(msgs, { commands: ["a"], working_dir: "", rationale: "" });
+    // The empty bubble is gone and exactly one card shows.
+    expect(msgs.some((m) => m.kind === "text" && m.text === "")).toBe(false);
+    expect(msgs.filter((m) => m.kind === "proposal")).toHaveLength(1);
+    // A second proposal replaces the first rather than stacking.
+    const second = { commands: ["b"], working_dir: "", rationale: "" };
+    msgs = appendProposal(msgs, second);
+    expect(msgs.filter((m) => m.kind === "proposal")).toHaveLength(1);
+    expect(msgs[msgs.length - 1].proposal).toEqual(second);
   });
 });
