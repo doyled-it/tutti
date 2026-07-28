@@ -56,9 +56,10 @@ pub fn turn_outcome(full_output: &str) -> TurnOutcome {
     let mut assistant_text = String::new();
     for line in full_output.lines() {
         if let Some(AgentEvent::Line(text)) = stream::parse_stream_line(line) {
-            // `parse_stream_line` only yields a Line for assistant/text content and for
-            // unknown lines; the system/result lines degrade to Line too, so restrict to
-            // lines the parser recognized as assistant content by re-checking the type.
+            // `parse_stream_line` yields a Line for assistant/text content, for unknown
+            // lines, and for the system line (the result line maps to Done instead), so
+            // restrict to lines the parser recognized as assistant content by re-checking
+            // the type.
             if is_assistant_text_line(line) {
                 assistant_text.push_str(&text);
             }
@@ -72,8 +73,11 @@ pub fn turn_outcome(full_output: &str) -> TurnOutcome {
 fn is_assistant_text_line(line: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(line.trim())
         .ok()
-        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s.to_string()))
-        .map(|t| t == "assistant" || t == "text")
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "assistant" || t == "text")
+        })
         .unwrap_or(false)
 }
 
@@ -146,9 +150,26 @@ impl ClaudeSession {
         let stderr = stderr_task.await.unwrap_or_default();
         let _ = events.send(AgentEvent::Done).await;
 
+        let scan = stream::scan_stream(&full);
         if !status.success() {
             let snippet: String = stderr.trim().chars().take(500).collect();
             return Err(EngineError::Backend(format!("claude exited non-zero: {snippet}")));
+        }
+        if scan.rate_limited {
+            return Err(EngineError::Backend("usage/rate limit".into()));
+        }
+        if let Some(r) = &scan.result {
+            if r.is_error {
+                let mut reason = String::from("claude reported an error");
+                if let Some(status) = &r.api_error_status {
+                    reason.push_str(&format!(" ({status})"));
+                }
+                if !r.result.is_empty() {
+                    let snippet: String = r.result.trim().chars().take(500).collect();
+                    reason.push_str(&format!(": {snippet}"));
+                }
+                return Err(EngineError::Backend(reason));
+            }
         }
         Ok(turn_outcome(&full))
     }
@@ -161,17 +182,15 @@ mod tests {
 
     /// The `program` a `ClaudeSession` runs. A test points it at a shell script that cats a
     /// fixture to stdout, exercising the spawn + stream + parse loop hermetically.
+    #[cfg(unix)]
     #[tokio::test]
     async fn turn_streams_events_and_returns_outcome() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/session-turn.jsonl");
         let script = dir.path().join("fake-claude.sh");
         std::fs::write(&script, format!("#!/bin/sh\ncat {fixture}\n")).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let session = ClaudeSession { program: script.to_string_lossy().into_owned() };
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
@@ -191,6 +210,31 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolUse(n) if n == "Bash")));
         assert!(events.iter().any(|e| matches!(e, AgentEvent::Line(_))));
         assert!(matches!(events.last(), Some(AgentEvent::Done)));
+    }
+
+    /// `claude -p` can exit 0 while the result line is flagged `is_error`; `turn` must still
+    /// fail rather than return a garbage/empty outcome.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn turn_errors_on_result_flagged_is_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-claude.sh");
+        // Exits 0 but the result line is flagged is_error: turn must still fail.
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"result\":\"boom happened\",\"session_id\":\"s\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let session = ClaudeSession { program: script.to_string_lossy().into_owned() };
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+        let err = session
+            .turn("hi", "sonnet", None, None, dir.path(), tx)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("boom happened"));
     }
 
     #[test]
