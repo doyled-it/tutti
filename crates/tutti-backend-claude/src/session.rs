@@ -148,6 +148,7 @@ impl ClaudeSession {
     /// Run one chat turn in `cwd`, streaming parsed events on `events`, and return the
     /// captured session id plus the assistant's reply. `cwd` MUST be the same repo checkout
     /// every turn (claude keys its resumable session store by working directory).
+    #[allow(clippy::too_many_arguments)]
     pub async fn turn(
         &self,
         message: &str,
@@ -155,9 +156,21 @@ impl ClaudeSession {
         resume: Option<&str>,
         mcp_config_path: Option<&str>,
         cwd: &Path,
+        proposal_path: Option<&Path>,
         events: Sender<AgentEvent>,
     ) -> Result<TurnOutcome> {
-        let args = build_turn_args(message, model, resume, mcp_config_path);
+        // Clear a stale proposal from a prior turn so this turn's outcome reflects only what
+        // the agent writes now (the same discipline `ClaudeBackend::run` uses on its out_path).
+        if let Some(pp) = proposal_path {
+            let _ = std::fs::remove_file(pp);
+        }
+        // Append the proposal instruction to what claude sees (the app persists the raw
+        // message; this augmentation is prompt-only).
+        let prompt = match proposal_path {
+            Some(pp) => format!("{message}{}", gate_instruction(pp)),
+            None => message.to_string(),
+        };
+        let args = build_turn_args(&prompt, model, resume, mcp_config_path);
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(&args);
         cmd.current_dir(cwd);
@@ -236,7 +249,7 @@ impl ClaudeSession {
         Ok(TurnOutcome {
             session_id: scan.session_id,
             assistant_text: collect_assistant_text(&full),
-            proposal: None,
+            proposal: proposal_path.and_then(read_proposal),
         })
     }
 }
@@ -266,7 +279,7 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
         let outcome = session
-            .turn("hi", "sonnet", None, None, dir.path(), tx)
+            .turn("hi", "sonnet", None, None, dir.path(), None, tx)
             .await
             .unwrap();
 
@@ -317,10 +330,54 @@ mod tests {
         };
         let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
         let err = session
-            .turn("hi", "sonnet", None, None, dir.path(), tx)
+            .turn("hi", "sonnet", None, None, dir.path(), None, tx)
             .await
             .unwrap_err();
         assert!(format!("{err:?}").contains("boom happened"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn turn_reads_a_proposal_written_by_the_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate.json");
+        let script = dir.path().join("fake-claude.sh");
+        // The fake agent writes a proposal to the gate path, then emits a clean turn.
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s' '{{\"commands\":[\"cargo test\"],\"working_dir\":\"\",\"rationale\":\"r\"}}' > {gate}\nprintf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s\"}}'\n",
+                gate = gate.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let session = ClaudeSession {
+            program: script.to_string_lossy().into_owned(),
+        };
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+        let outcome = session
+            .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx)
+            .await
+            .unwrap();
+        let proposal = outcome.proposal.expect("proposal read back");
+        assert_eq!(proposal.commands, vec!["cargo test".to_string()]);
+        // The stale artifact is deleted before the next turn: a second turn with no write yields None.
+        std::fs::remove_file(&script).ok();
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx2, _rx2) = mpsc::channel::<AgentEvent>(64);
+        let outcome2 = session
+            .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx2)
+            .await
+            .unwrap();
+        assert!(outcome2.proposal.is_none(), "stale proposal must be cleared before the turn");
     }
 
     #[test]

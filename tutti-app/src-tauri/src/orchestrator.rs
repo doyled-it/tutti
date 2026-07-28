@@ -137,6 +137,7 @@ pub async fn send_orchestrator_message(
             transcript.session_id.as_deref(),
             mcp_config_path.as_deref(),
             &repo_root,
+            None,
             tx,
         )
         .await;
