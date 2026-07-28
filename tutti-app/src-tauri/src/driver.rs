@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tutti_backend_claude::ClaudeBackend;
 use tutti_core::config::Config;
+use tutti_core::context::CodeGraph;
 use tutti_core::engine::Engine;
 use tutti_core::events::{EngineEvent, EngineHooks};
 use tutti_git::GitWorkspace;
@@ -87,10 +88,21 @@ async fn run_loop(
         Err(_) => return,
     };
     let backend = ClaudeBackend::default();
-    let workspace = GitWorkspace::new(repo_root);
+    let workspace = GitWorkspace::new(repo_root.clone());
     let engine = match Engine::new(&config, forge.as_ref(), &backend, Box::new(workspace)) {
         Ok(e) => e,
         Err(_) => return,
+    };
+    // codegraph context, gated by config and binary presence. `detect` returns None when
+    // the binary is absent, so this is a full no-op on machines without codegraph.
+    let codegraph = if config.codegraph_enabled() {
+        CodeGraph::detect(repo_root.clone())
+    } else {
+        None
+    };
+    let engine = match &codegraph {
+        Some(cg) => engine.with_context(cg),
+        None => engine,
     };
 
     let hooks = EngineHooks {
