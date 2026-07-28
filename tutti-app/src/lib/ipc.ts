@@ -79,7 +79,7 @@ export interface InitForm {
   gate_commands: string[];
 }
 
-export type MessageKind = "text" | "tool";
+export type MessageKind = "text" | "tool" | "proposal";
 export interface TranscriptMessage {
   role: "user" | "assistant";
   text: string;
@@ -90,6 +90,16 @@ export interface TranscriptMessage {
 export interface OrchestratorTranscript {
   session_id: string | null;
   messages: TranscriptMessage[];
+}
+
+export interface GateProposal {
+  commands: string[];
+  working_dir: string;
+  rationale: string;
+}
+export interface GateStatus {
+  commands: string[];
+  is_noop: boolean;
 }
 
 export type NamespaceKind = "User" | "Org" | "Group";
@@ -152,6 +162,10 @@ export const api = {
   onOrchestratorDone: (cb: () => void) => listen("orchestrator://done", () => cb()),
   onOrchestratorError: (cb: (msg: string) => void) =>
     listen<string>("orchestrator://error", (e) => cb(e.payload)),
+  onOrchestratorProposal: (cb: (p: GateProposal) => void) =>
+    listen<GateProposal>("orchestrator://proposal", (e) => cb(e.payload)),
+  applyGate: (commands: string[]) => invoke<GateStatus>("apply_gate", { commands }),
+  getGateStatus: () => invoke<GateStatus>("get_gate_status"),
   listNamespaces: (forgeKind: string, login: string | null) =>
     invoke<Namespace[]>("list_namespaces", { forgeKind, login }),
   listRepos: (forgeKind: string, login: string | null, namespace: Namespace) =>
