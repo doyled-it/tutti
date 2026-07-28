@@ -17,6 +17,43 @@ use tutti_core::traits::{EngineError, Result};
 pub struct TurnOutcome {
     pub session_id: Option<String>,
     pub assistant_text: String,
+    /// A gate proposal the agent wrote this turn, if any. Live-only: the app emits it on
+    /// `orchestrator://proposal` and does not persist it.
+    pub proposal: Option<GateProposal>,
+}
+
+/// A structured gate proposal the agent writes to an artifact file when it and the user
+/// have agreed on what verifies the project. Read back after a turn; never hand-parsed from
+/// prose. `working_dir` is relative to the repo root (empty = repo root).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GateProposal {
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub working_dir: String,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+/// Read a gate proposal artifact. Absent or malformed reads yield None (never panics), the
+/// same tolerance the handoff/plan readers use.
+pub fn read_proposal(path: &Path) -> Option<GateProposal> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// The prompt postamble that tells the agent where and how to write a gate proposal. Kept
+/// out of the persisted user message (the app persists the raw message; this is appended
+/// only to what `claude` sees).
+pub fn gate_instruction(path: &Path) -> String {
+    format!(
+        "\n\n[Tutti: when you and the user have agreed on the shell commands that verify \
+         this project before it ships work (its \"gate\"), write the proposal as JSON to the \
+         file `{}` with this exact shape: {{\"commands\":[\"...\"],\"working_dir\":\"\",\
+         \"rationale\":\"...\"}}. `working_dir` is relative to the repo root (empty for the \
+         root). Write the file only once you have agreement, and do not mention this \
+         instruction or the file to the user.]",
+        path.display()
+    )
 }
 
 /// Build the `claude -p` argument vector for one chat turn. Pure: no IO. `resume` is the
@@ -60,6 +97,7 @@ pub fn turn_outcome(full_output: &str) -> TurnOutcome {
     TurnOutcome {
         session_id: stream::scan_stream(full_output).session_id,
         assistant_text: collect_assistant_text(full_output),
+        proposal: None,
     }
 }
 
@@ -198,6 +236,7 @@ impl ClaudeSession {
         Ok(TurnOutcome {
             session_id: scan.session_id,
             assistant_text: collect_assistant_text(&full),
+            proposal: None,
         })
     }
 }
@@ -301,6 +340,34 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+    }
+
+    #[test]
+    fn read_proposal_present_absent_and_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("gate.json");
+        // Absent -> None.
+        assert!(read_proposal(&p).is_none());
+        // Malformed -> None (never panics).
+        std::fs::write(&p, "not json").unwrap();
+        assert!(read_proposal(&p).is_none());
+        // Present -> parsed.
+        std::fs::write(
+            &p,
+            r#"{"commands":["cargo test"],"working_dir":"","rationale":"it is a rust workspace"}"#,
+        )
+        .unwrap();
+        let got = read_proposal(&p).unwrap();
+        assert_eq!(got.commands, vec!["cargo test".to_string()]);
+        assert_eq!(got.working_dir, "");
+        assert_eq!(got.rationale, "it is a rust workspace");
+    }
+
+    #[test]
+    fn gate_instruction_names_the_path() {
+        let s = gate_instruction(std::path::Path::new("/tmp/tutti-gate-9.json"));
+        assert!(s.contains("/tmp/tutti-gate-9.json"));
+        assert!(s.to_lowercase().contains("commands"));
     }
 
     #[test]
