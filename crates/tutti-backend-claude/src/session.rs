@@ -377,7 +377,10 @@ mod tests {
             .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx2)
             .await
             .unwrap();
-        assert!(outcome2.proposal.is_none(), "stale proposal must be cleared before the turn");
+        assert!(
+            outcome2.proposal.is_none(),
+            "stale proposal must be cleared before the turn"
+        );
     }
 
     #[test]
