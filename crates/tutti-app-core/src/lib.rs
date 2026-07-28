@@ -367,6 +367,11 @@ impl OrchestratorTranscript {
 /// (the same identity `ProjectStore` keys on). Non-alphanumeric bytes become `_`, and a
 /// short hash of the full path is appended so two long dirs sharing an 80-char prefix
 /// cannot collide.
+///
+/// The hash is an explicit, fixed polynomial rather than `std::hash::DefaultHasher` on
+/// purpose: this key names a file on disk that must resolve to the same transcript across
+/// rebuilds, and `DefaultHasher`'s algorithm is not guaranteed stable across toolchain
+/// versions, so it would silently orphan transcripts after a Rust upgrade.
 pub fn transcript_key(dir: &str) -> String {
     let mut s: String = dir
         .chars()

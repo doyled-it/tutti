@@ -83,7 +83,9 @@ export type MessageKind = "text" | "tool";
 export interface TranscriptMessage {
   role: "user" | "assistant";
   text: string;
-  kind: MessageKind;
+  // Optional to mirror the Rust `#[serde(default)]`: a legacy transcript file written
+  // without `kind` decodes with the field absent. Callers default it to "text".
+  kind?: MessageKind;
 }
 export interface OrchestratorTranscript {
   session_id: string | null;
@@ -144,8 +146,10 @@ export const api = {
     listen<string>("orchestrator://delta", (e) => cb(e.payload)),
   onOrchestratorTool: (cb: (name: string) => void) =>
     listen<string>("orchestrator://tool", (e) => cb(e.payload)),
-  onOrchestratorDone: (cb: (text: string) => void) =>
-    listen<string>("orchestrator://done", (e) => cb(e.payload)),
+  // Turn-complete signal only (the streamed deltas are the source of truth for the
+  // transcript, and the authoritative reply is persisted backend-side). The payload text is
+  // intentionally not consumed here.
+  onOrchestratorDone: (cb: () => void) => listen("orchestrator://done", () => cb()),
   onOrchestratorError: (cb: (msg: string) => void) =>
     listen<string>("orchestrator://error", (e) => cb(e.payload)),
   listNamespaces: (forgeKind: string, login: string | null) =>

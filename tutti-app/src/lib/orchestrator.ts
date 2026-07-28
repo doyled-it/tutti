@@ -31,3 +31,15 @@ export function appendDelta(msgs: ChatMessage[], text: string): ChatMessage[] {
 export function appendTool(msgs: ChatMessage[], name: string): ChatMessage[] {
   return startAssistant([...msgs, { role: "assistant", text: name, kind: "tool" }]);
 }
+
+// Drop a trailing empty assistant text bubble. `appendTool` reopens a bubble for the text
+// that usually follows a tool call; a turn that ends on a tool (or produces no text) leaves
+// that bubble empty. Called on turn completion so the live view matches the persisted
+// transcript, which never stores an empty assistant message.
+export function dropTrailingEmptyAssistant(msgs: ChatMessage[]): ChatMessage[] {
+  const last = msgs[msgs.length - 1];
+  if (last && last.role === "assistant" && last.kind === "text" && last.text === "") {
+    return msgs.slice(0, -1);
+  }
+  return msgs;
+}

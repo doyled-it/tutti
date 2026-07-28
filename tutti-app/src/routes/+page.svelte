@@ -16,6 +16,7 @@
     selectedIssueId,
     view,
     section,
+    orchestratorBusy,
   } from "$lib/stores";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
@@ -284,7 +285,7 @@
   <Sidebar
     projects={$projects}
     activeDir={$activeDir}
-    runActive={$runStatus.state !== "idle"}
+    runActive={$runStatus.state !== "idle" || $orchestratorBusy}
     {onSwitch}
     {onAdd}
     {onNeedsInit}

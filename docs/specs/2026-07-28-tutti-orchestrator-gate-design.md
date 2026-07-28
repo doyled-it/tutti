@@ -117,10 +117,14 @@ New Tauri events, siblings of `engine://progress`, emitted from the turn driver:
 
 - `orchestrator://delta` — an assistant text chunk (append to the in-flight bubble).
 - `orchestrator://tool` — a tool-use notice (the tool name), rendered as a muted aside.
-- `orchestrator://done` — the turn finished. Carries the final assistant text, the
-  captured/updated `session_id`, and (PR B) any parsed proposal. The frontend uses this
-  as the authoritative turn-complete signal and clears the "thinking" state, the same way
-  the board uses `engine://run-ended` rather than a per-pass event.
+- `orchestrator://done` — the turn finished. The frontend uses it as the turn-complete
+  signal (clears the "thinking" state and drops any trailing empty bubble), the same way
+  the board uses `engine://run-ended` rather than a per-pass event. The streamed deltas are
+  the source of truth for the on-screen transcript, and the authoritative reply is persisted
+  backend-side, so the payload text is not consumed by the pane (a dropped delta self-heals
+  on the next reload via `get_transcript`). The captured `session_id` is persisted with the
+  transcript backend-side and is not sent to the UI, which never needs it. (PR B attaches any
+  parsed proposal to this event.)
 - `orchestrator://error` — the turn failed (spawn failure, non-zero exit, rate limit),
   carrying a short reason. The pane shows it inline and re-enables the composer.
 
@@ -130,9 +134,13 @@ returns. Mapping the `stream.rs` events (`Line` -> delta, `ToolUse` -> tool, `Do
 `result` -> done) reuses the parser wholesale. This event plumbing deliberately mirrors
 the engine's so the future subsession per-stage stream can adopt the same shape.
 
-A single-flight guard: only one orchestrator turn runs at a time per project (the composer
-is disabled while a turn is in flight). Independent of the engine run state, so you can
-brainstorm the gate while nothing is draining.
+A single-flight guard: only one orchestrator turn runs at a time. The composer is disabled
+while a turn is in flight, and the backend refuses a second concurrent
+`send_orchestrator_message` (an `orchestrator_busy` flag) so two turns cannot interleave the
+transcript read-modify-write even if the frontend guard is bypassed. While a turn is in
+flight the sidebar also blocks project switch/add/remove (the same posture as an active
+engine run), so a project cannot be swapped out from under a running turn. This is
+independent of the engine run state, so you can brainstorm the gate while nothing is draining.
 
 ## A4. Navigation and the pane
 
@@ -140,12 +148,29 @@ The sidebar nav gains real section-switching. `Board` and `Orchestrator` become 
 selectable items driving a `section` state; the center pane swaps between the existing
 board/lanes view and the new `OrchestratorPane`. `Subsessions` stays a `soon` placeholder.
 
-`OrchestratorPane.svelte`: a scrolling transcript (user bubbles, assistant bubbles with
-markdown rendered by the same sanitized `marked` + `DOMPurify` path the issue drawer uses,
-tool asides) plus a compose box that becomes a disabled/"thinking" state while a turn is
-in flight. Pure view helpers (event-to-transcript reduction, message classification) live
-in a vitest-covered `src/lib/orchestrator.ts`, following the `board.ts` / `browse.ts` /
-`create.ts` helper convention, so the reducer is tested without the webview.
+`OrchestratorPane.svelte`: a scrolling transcript (user bubbles, assistant bubbles, tool
+asides) plus a compose box that becomes a disabled/"thinking" state while a turn is in
+flight. Assistant bubbles render as **plain text** (`white-space: pre-wrap`), not markdown:
+the reply streams in delta by delta and re-rendering partial markdown on every chunk is
+janky, and plain text is also XSS-safe by construction. Rendering the final reply as
+sanitized markdown (the `marked` + `DOMPurify` path the issue drawer uses) is a reasonable
+later enhancement, deferred here. Pure view helpers (event-to-transcript reduction, message
+classification, trailing-empty-bubble cleanup) live in a vitest-covered
+`src/lib/orchestrator.ts`, following the `board.ts` / `browse.ts` / `create.ts` helper
+convention, so the reducer is tested without the webview.
+
+## A5. Agent permission posture
+
+The chat drives `claude -p --dangerously-skip-permissions`, the same posture as the
+autonomous backend. This is partly forced: headless `-p` cannot answer interactive
+permission prompts, so a turn with prompts enabled would hang. The consequence to be
+explicit about is that the chat agent is **not read-only**: it can edit files and run
+commands in the repo checkout, so "talk to the agent about the project" can, if the user
+asks, become "the agent changes the project." This is acceptable for PR A (a single-user
+local tool, the same trust already extended to the engine), but it is a deliberate decision,
+not an oversight. PR B, where the agent's job is to *propose* a gate rather than *apply*
+one, is the natural place to constrain the chat to a read-oriented tool set (`claude`'s
+`--allowedTools` / a restrictive permission mode), pending a live spike of the exact flags.
 
 ---
 

@@ -35,6 +35,11 @@ pub fn build_turn_args(
     args.push("stream-json".into());
     // `claude -p --output-format stream-json` refuses to launch without --verbose.
     args.push("--verbose".into());
+    // Headless `-p` cannot answer interactive permission prompts, so the chat runs with
+    // permissions skipped, the same posture as the autonomous backend. NOTE: this means the
+    // chat is NOT read-only; the agent can edit files and run commands in the checkout.
+    // Constraining it to a read-oriented tool set is a deliberate follow-up (see the design
+    // doc's "Agent permission posture" note), most relevant to PR B where it proposes a gate.
     args.push("--dangerously-skip-permissions".into());
     if let Some(id) = resume {
         args.push("--resume".into());
@@ -52,23 +57,26 @@ pub fn build_turn_args(
 /// the assistant's reply text. Reuses the `stream.rs` parser so text-block concatenation
 /// and tool_use handling stay in one place. Pure: no IO.
 pub fn turn_outcome(full_output: &str) -> TurnOutcome {
-    let scan = stream::scan_stream(full_output);
+    TurnOutcome {
+        session_id: stream::scan_stream(full_output).session_id,
+        assistant_text: collect_assistant_text(full_output),
+    }
+}
+
+/// Concatenate the assistant reply text across a turn's transcript, ignoring the system
+/// line, tool_use blocks, and the result line. `parse_stream_line` yields a Line for
+/// assistant/text content but also for the system/unknown lines (the result line maps to
+/// Done), so `is_assistant_text_line` gates on the JSON type first and only then parses.
+fn collect_assistant_text(full_output: &str) -> String {
     let mut assistant_text = String::new();
     for line in full_output.lines() {
-        if let Some(AgentEvent::Line(text)) = stream::parse_stream_line(line) {
-            // `parse_stream_line` yields a Line for assistant/text content, for unknown
-            // lines, and for the system line (the result line maps to Done instead), so
-            // restrict to lines the parser recognized as assistant content by re-checking
-            // the type.
-            if is_assistant_text_line(line) {
+        if is_assistant_text_line(line) {
+            if let Some(AgentEvent::Line(text)) = stream::parse_stream_line(line) {
                 assistant_text.push_str(&text);
             }
         }
     }
-    TurnOutcome {
-        session_id: scan.session_id,
-        assistant_text,
-    }
+    assistant_text
 }
 
 /// True when a stream-json line is an assistant/text message (not system/result/unknown),
@@ -185,7 +193,12 @@ impl ClaudeSession {
                 return Err(EngineError::Backend(reason));
             }
         }
-        Ok(turn_outcome(&full))
+        // Build the outcome from the `scan` already computed above (no second pass over the
+        // transcript); `turn_outcome` remains the pure entry point used by the unit tests.
+        Ok(TurnOutcome {
+            session_id: scan.session_id,
+            assistant_text: collect_assistant_text(&full),
+        })
     }
 }
 

@@ -5,7 +5,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api } from "$lib/ipc";
-  import { appendDelta, appendTool, type ChatMessage } from "$lib/orchestrator";
+  import {
+    appendDelta,
+    appendTool,
+    dropTrailingEmptyAssistant,
+    type ChatMessage,
+  } from "$lib/orchestrator";
+  import { orchestratorBusy } from "$lib/stores";
 
   let messages = $state<ChatMessage[]>([]);
   let draft = $state("");
@@ -22,7 +28,7 @@
     (async () => {
       try {
         const t = await api.getTranscript();
-        messages = t.messages.map((m) => ({ role: m.role, text: m.text, kind: m.kind }));
+        messages = t.messages.map((m) => ({ role: m.role, text: m.text, kind: m.kind ?? "text" }));
       } catch (e) {
         error = String(e);
       }
@@ -36,14 +42,25 @@
         messages = appendTool(messages, name);
       }),
       api.onOrchestratorDone(() => {
+        // Deltas built the transcript; on completion just drop a trailing empty bubble (left
+        // by a tool-final turn) so the live view matches what was persisted.
+        messages = dropTrailingEmptyAssistant(messages);
         thinking = false;
+        orchestratorBusy.set(false);
       }),
       api.onOrchestratorError((msg) => {
         error = msg;
         thinking = false;
+        orchestratorBusy.set(false);
       }),
     ];
-    return () => unlisteners.forEach((p) => p.then((u) => u()));
+    return () => {
+      unlisteners.forEach((p) => p.then((u) => u()));
+      // Defensive: if the pane unmounts mid-turn (e.g. switching to the board section), do
+      // not leave the sidebar's switch/add gated forever. The backend single-flight guard
+      // still prevents a second concurrent turn.
+      orchestratorBusy.set(false);
+    };
   });
 
   async function send() {
@@ -53,12 +70,14 @@
     messages = [...messages, { role: "user", text, kind: "text" }];
     draft = "";
     thinking = true;
+    orchestratorBusy.set(true);
     try {
       await api.sendOrchestratorMessage(text);
     } catch (e) {
       // The error event also fires; this catch covers a rejected invoke with no event.
       error = String(e);
       thinking = false;
+      orchestratorBusy.set(false);
     }
   }
 

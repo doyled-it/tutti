@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Left rail: the persisted project list, an "add project" affordance, per-row switch and
      remove, and the primary nav (Board and Orchestrator are live; Subsessions is a
-     placeholder). Switching is disabled while a run is active. Resizable via a drag handle
+     placeholder). Switching is disabled while a run or chat turn is active. Resizable via a drag handle
      on the right edge, with the width persisted to localStorage. -->
 <script lang="ts">
   import { api } from "$lib/ipc";
@@ -143,7 +143,7 @@
             class:on={p.dir === activeDir}
             class:disabled={runActive}
             disabled={runActive}
-            title={runActive ? "pause the run to switch" : undefined}
+            title={runActive ? "finish the current run or chat turn to switch" : undefined}
             onclick={() => handleSwitch(p.dir)}
           >
             <span class={dotClass(p.forge)}></span>
@@ -184,7 +184,8 @@
           class="add"
           onclick={beginAdd}
           disabled={runActive}
-          title={runActive ? "pause the run to add a project" : undefined}>+ Add project</button
+          title={runActive ? "finish the current run or chat turn to add a project" : undefined}
+          >+ Add project</button
         >
       {/if}
     </div>

@@ -62,6 +62,21 @@ pub async fn send_orchestrator_message(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    // Single-flight: refuse a second concurrent turn so two turns cannot interleave the
+    // transcript read-modify-write. The guard clears the flag on every exit path (including
+    // an early `?`), so a failed turn does not wedge the flag set.
+    if state.orchestrator_busy.swap(true, Ordering::SeqCst) {
+        return Err("a chat turn is already in progress".into());
+    }
+    struct BusyGuard<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for BusyGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _busy = BusyGuard(&state.orchestrator_busy);
+
     // Pull owned data out under the lock; nothing borrowed crosses the await points.
     let (dir, repo_root, model, codegraph_enabled) = {
         let guard = state.project.lock().await;
