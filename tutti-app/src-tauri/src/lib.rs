@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod commands;
 mod driver;
+mod orchestrator;
 mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -25,6 +26,8 @@ pub fn run() {
             commands::list_repos,
             commands::clone_repo,
             commands::create_repo,
+            orchestrator::send_orchestrator_message,
+            orchestrator::get_transcript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
