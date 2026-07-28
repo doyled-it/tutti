@@ -483,6 +483,19 @@ pub fn set_gate_commands(existing_toml: &str, commands: &[String]) -> Result<Str
     Ok(doc.to_string())
 }
 
+/// The status of a project's gate, surfaced to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateStatus {
+    pub commands: Vec<String>,
+    pub is_noop: bool,
+}
+
+/// True when the gate is the explicit no-op (`["true"]`), meaning nothing is verified before
+/// Tutti ships an issue's work. Matches the wizard's `NO_OP_GATE` seed.
+pub fn gate_is_noop(commands: &[String]) -> bool {
+    commands == ["true"]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -962,5 +975,13 @@ working_dir = ""
         std::fs::write(&path, &out).unwrap();
         let cfg = tutti_core::config::Config::load(&path).expect("edited toml loads");
         assert_eq!(cfg.gate.commands, vec!["cargo test".to_string()]);
+    }
+
+    #[test]
+    fn gate_is_noop_truth_table() {
+        assert!(gate_is_noop(&["true".to_string()]));
+        assert!(!gate_is_noop(&["cargo test".to_string()]));
+        assert!(!gate_is_noop(&["true".to_string(), "true".to_string()]));
+        assert!(!gate_is_noop(&[]));
     }
 }
