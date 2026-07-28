@@ -3,6 +3,7 @@
 
 pub mod artifact;
 pub mod prompt;
+pub mod session;
 pub mod stream;
 
 use async_trait::async_trait;
