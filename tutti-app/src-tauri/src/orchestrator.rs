@@ -130,11 +130,16 @@ pub async fn send_orchestrator_message(
     match result {
         Ok(outcome) => {
             transcript.session_id = outcome.session_id.clone().or(transcript.session_id);
-            transcript.push(TranscriptMessage {
-                role: "assistant".into(),
-                text: outcome.assistant_text.clone(),
-                kind: MessageKind::Text,
-            });
+            // Skip persisting an empty assistant bubble (e.g. a tool-only turn); still save
+            // so the updated session_id lands, and always emit done so the UI clears its
+            // thinking state.
+            if !outcome.assistant_text.is_empty() {
+                transcript.push(TranscriptMessage {
+                    role: "assistant".into(),
+                    text: outcome.assistant_text.clone(),
+                    kind: MessageKind::Text,
+                });
+            }
             save_transcript(&app, &dir, &transcript)?;
             let _ = app.emit("orchestrator://done", &outcome.assistant_text);
             Ok(())

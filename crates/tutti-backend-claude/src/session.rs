@@ -145,7 +145,14 @@ impl ClaudeSession {
             full.push_str(&line);
             full.push('\n');
             if let Some(ev) = stream::parse_stream_line(&line) {
-                let _ = events.send(ev).await;
+                // `parse_stream_line` degrades system/rate_limit/unknown lines to
+                // `Line(<raw JSON>)`, so only stream a `Line` when it is genuine assistant
+                // text. This keeps the live deltas identical to the persisted reply text
+                // (which `turn_outcome` filters the same way); `ToolUse`/`Done` always flow.
+                let deliver = !matches!(ev, AgentEvent::Line(_)) || is_assistant_text_line(&line);
+                if deliver {
+                    let _ = events.send(ev).await;
+                }
             }
         }
         let status = child
@@ -227,6 +234,14 @@ mod tests {
             .any(|e| matches!(e, AgentEvent::ToolUse(n) if n == "Bash")));
         assert!(events.iter().any(|e| matches!(e, AgentEvent::Line(_))));
         assert!(matches!(events.last(), Some(AgentEvent::Done)));
+        // No streamed Line is a raw protocol line (the `system` init line degrades to
+        // `Line(<raw JSON>)`; it must be filtered so the live bubble matches the reply).
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, AgentEvent::Line(t) if t.contains("\"type\":\"system\""))),
+            "raw system line leaked into the streamed deltas: {events:?}"
+        );
     }
 
     /// `claude -p` can exit 0 while the result line is flagged `is_error`; `turn` must still
