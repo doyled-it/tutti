@@ -6,19 +6,26 @@ use crate::traits::{AgentBackend, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::Sender;
 
 /// Maps each role to the outcome it should return. Missing roles error.
 pub struct FakeBackend {
     scripted: Mutex<HashMap<Role, Vec<AgentOutcome>>>,
+    seen_mcp: Arc<Mutex<Vec<Vec<crate::mcp::McpServer>>>>,
 }
 
 impl FakeBackend {
     pub fn new() -> Self {
         Self {
             scripted: Mutex::new(HashMap::new()),
+            seen_mcp: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns the `mcp_servers` of every task the backend has received, in order.
+    pub fn seen_mcp(&self) -> Arc<Mutex<Vec<Vec<crate::mcp::McpServer>>>> {
+        self.seen_mcp.clone()
     }
 
     /// Queue `outcome` to be returned on the next run of `role` (FIFO). For a
@@ -48,6 +55,7 @@ impl AgentBackend for FakeBackend {
         _worktree: &Path,
         events: Sender<AgentEvent>,
     ) -> Result<AgentOutcome> {
+        self.seen_mcp.lock().unwrap().push(task.mcp_servers.clone());
         let _ = events
             .send(AgentEvent::Line(format!("fake {:?}", task.playbook.role)))
             .await;

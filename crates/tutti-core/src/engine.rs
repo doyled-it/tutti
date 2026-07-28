@@ -33,6 +33,8 @@ pub struct Engine<'a> {
     pub routing: Box<dyn RoutingStrategy>,
     /// Creates and tears down an isolated worktree per issue (real git or a fake).
     pub workspace: Box<dyn Workspace>,
+    /// Optional context provider (codegraph). `None` = no MCP wiring, prior behavior.
+    pub context: Option<&'a dyn crate::context::ContextProvider>,
 }
 
 impl<'a> Engine<'a> {
@@ -50,7 +52,15 @@ impl<'a> Engine<'a> {
             backend,
             routing,
             workspace,
+            context: None,
         })
+    }
+
+    /// Attach a context provider (e.g. codegraph). Builder-style so existing callers that
+    /// do not wire context stay unchanged.
+    pub fn with_context(mut self, provider: &'a dyn crate::context::ContextProvider) -> Self {
+        self.context = Some(provider);
+        self
     }
 
     fn playbook(&self, role: Role) -> RolePlaybook {
@@ -68,13 +78,19 @@ impl<'a> Engine<'a> {
         worktree: &Path,
     ) -> Result<AgentOutcome> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+        let mcp_servers = if let Some(cx) = self.context {
+            cx.ensure_ready().await;
+            cx.mcp_servers()
+        } else {
+            Vec::new()
+        };
         let task = AgentTask {
             playbook: self.playbook(role),
             issue: issue.clone(),
             worktree_branch: format!("feat/issue-{}", issue.id.0),
             model: self.cfg.model.clone(),
             review,
-            mcp_servers: vec![],
+            mcp_servers,
         };
         // Drain events into logs so the channel never blocks.
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1183,5 +1199,70 @@ mod tests {
         };
         let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
         assert_eq!(shipped, 0);
+    }
+
+    struct FakeCtx;
+    #[async_trait::async_trait]
+    impl crate::context::ContextProvider for FakeCtx {
+        async fn ensure_ready(&self) {}
+        fn mcp_servers(&self) -> Vec<crate::mcp::McpServer> {
+            vec![crate::mcp::McpServer {
+                name: "codegraph".into(),
+                command: "codegraph".into(),
+                args: vec!["serve".into(), "--mcp".into()],
+            }]
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_stamps_mcp_servers_from_context_provider() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let seen = backend.seen_mcp();
+        let ctx = FakeCtx;
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap()
+        .with_context(&ctx);
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::Shipped);
+
+        let recorded = seen.lock().unwrap();
+        assert!(
+            recorded
+                .iter()
+                .any(|m| m.iter().any(|s| s.name == "codegraph")),
+            "the backend should have received codegraph in mcp_servers"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_without_context_leaves_mcp_servers_empty() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let seen = backend.seen_mcp();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::Shipped);
+
+        assert!(seen.lock().unwrap().iter().all(|m| m.is_empty()));
     }
 }
