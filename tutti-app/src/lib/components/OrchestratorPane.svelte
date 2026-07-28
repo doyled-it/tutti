@@ -13,7 +13,7 @@
     dropTrailingEmptyAssistant,
     type ChatMessage,
   } from "$lib/orchestrator";
-  import { orchestratorBusy } from "$lib/stores";
+  import { gateStatus, orchestratorBusy } from "$lib/stores";
 
   let messages = $state<ChatMessage[]>([]);
   let draft = $state("");
@@ -88,7 +88,8 @@
 
   async function applyProposal(index: number, commands: string[]) {
     try {
-      await api.applyGate(commands);
+      const status = await api.applyGate(commands);
+      gateStatus.set(status);
       messages = removeProposalAt(messages, index);
     } catch (e) {
       error = String(e);

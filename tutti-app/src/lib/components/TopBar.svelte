@@ -8,16 +8,20 @@
     project,
     view,
     runStatus,
+    gateNoop = false,
     onViewChange,
     onRun,
     onPause,
+    onOpenOrchestrator,
   }: {
     project: ProjectEntry | null;
     view: "board" | "lanes";
     runStatus: RunUi;
+    gateNoop?: boolean;
     onViewChange: (v: "board" | "lanes") => void;
     onRun: () => void;
     onPause: () => void;
+    onOpenOrchestrator?: () => void;
   } = $props();
 
   const statusLabel: Record<RunUi["state"], string> = {
@@ -29,6 +33,16 @@
 
 <div class="top-bar">
   <strong class="title">{project ? project.repo : "Tutti"}</strong>
+
+  {#if gateNoop}
+    <button
+      class="gate-badge"
+      title="This project has no verification gate. Nothing is checked before Tutti ships work. Open the Orchestrator to set one."
+      onclick={() => onOpenOrchestrator?.()}
+    >
+      No gate
+    </button>
+  {/if}
 
   <div class="seg" role="tablist">
     <button
@@ -79,6 +93,16 @@
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .gate-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--coral, #ff8c6b);
+    color: var(--coral, #ff8c6b);
+    background: transparent;
+    cursor: pointer;
     white-space: nowrap;
   }
   .seg {
