@@ -856,8 +856,16 @@ mod tests {
             session_id: Some("s-9".into()),
             ..Default::default()
         };
-        t.push(TranscriptMessage { role: "user".into(), text: "hi".into(), kind: MessageKind::Text });
-        t.push(TranscriptMessage { role: "assistant".into(), text: "hello".into(), kind: MessageKind::Text });
+        t.push(TranscriptMessage {
+            role: "user".into(),
+            text: "hi".into(),
+            kind: MessageKind::Text,
+        });
+        t.push(TranscriptMessage {
+            role: "assistant".into(),
+            text: "hello".into(),
+            kind: MessageKind::Text,
+        });
         let back = OrchestratorTranscript::from_json(&t.to_json());
         assert_eq!(back.session_id.as_deref(), Some("s-9"));
         assert_eq!(back.messages.len(), 2);

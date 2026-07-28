@@ -65,7 +65,10 @@ pub fn turn_outcome(full_output: &str) -> TurnOutcome {
             }
         }
     }
-    TurnOutcome { session_id: scan.session_id, assistant_text }
+    TurnOutcome {
+        session_id: scan.session_id,
+        assistant_text,
+    }
 }
 
 /// True when a stream-json line is an assistant/text message (not system/result/unknown),
@@ -89,7 +92,9 @@ pub struct ClaudeSession {
 
 impl Default for ClaudeSession {
     fn default() -> Self {
-        Self { program: "claude".into() }
+        Self {
+            program: "claude".into(),
+        }
     }
 }
 
@@ -153,7 +158,9 @@ impl ClaudeSession {
         let scan = stream::scan_stream(&full);
         if !status.success() {
             let snippet: String = stderr.trim().chars().take(500).collect();
-            return Err(EngineError::Backend(format!("claude exited non-zero: {snippet}")));
+            return Err(EngineError::Backend(format!(
+                "claude exited non-zero: {snippet}"
+            )));
         }
         if scan.rate_limited {
             return Err(EngineError::Backend("usage/rate limit".into()));
@@ -187,12 +194,17 @@ mod tests {
     async fn turn_streams_events_and_returns_outcome() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/session-turn.jsonl");
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/session-turn.jsonl"
+        );
         let script = dir.path().join("fake-claude.sh");
         std::fs::write(&script, format!("#!/bin/sh\ncat {fixture}\n")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let session = ClaudeSession { program: script.to_string_lossy().into_owned() };
+        let session = ClaudeSession {
+            program: script.to_string_lossy().into_owned(),
+        };
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
         let outcome = session
             .turn("hi", "sonnet", None, None, dir.path(), tx)
@@ -200,14 +212,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(outcome.session_id.as_deref(), Some("fix-1"));
-        assert_eq!(outcome.assistant_text, "Looking at your repo. It is a Rust workspace.");
+        assert_eq!(
+            outcome.assistant_text,
+            "Looking at your repo. It is a Rust workspace."
+        );
 
         // The stream surfaced a tool_use event and at least one text line, ending in Done.
         let mut events = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             events.push(ev);
         }
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolUse(n) if n == "Bash")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolUse(n) if n == "Bash")));
         assert!(events.iter().any(|e| matches!(e, AgentEvent::Line(_))));
         assert!(matches!(events.last(), Some(AgentEvent::Done)));
     }
@@ -228,7 +245,9 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let session = ClaudeSession { program: script.to_string_lossy().into_owned() };
+        let session = ClaudeSession {
+            program: script.to_string_lossy().into_owned(),
+        };
         let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
         let err = session
             .turn("hi", "sonnet", None, None, dir.path(), tx)
@@ -251,16 +270,22 @@ mod tests {
     fn later_turn_resumes_and_wires_mcp() {
         let args = build_turn_args("next", "sonnet", Some("abc-123"), Some("/tmp/mcp.json"));
         assert!(args.windows(2).any(|w| w == ["--resume", "abc-123"]));
-        assert!(args.windows(2).any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
     }
 
     #[test]
     fn turn_outcome_collects_assistant_text_and_session_id() {
         let stream = concat!(
-            r#"{"type":"system","subtype":"init","session_id":"s-1"}"#, "\n",
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "}]}}"#, "\n",
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"world"}]}}"#, "\n",
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"system","subtype":"init","session_id":"s-1"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"world"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+            "\n",
             r#"{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}"#,
         );
         let outcome = turn_outcome(stream);
