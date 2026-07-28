@@ -105,10 +105,14 @@ runs plainly.
 - Default provider `None` → `mcp_servers` stays empty → today's behavior, unchanged.
 - Indexing errors are logged and swallowed; the run proceeds un-wired.
 
-### 5. Wiring in the app (`tutti-app`)
+### 5. Wiring in the drivers (`tutti-app` and `tutti-cli`)
 
-- Build the `CodeGraph` provider once (via `detect()`), gated by config, and hand it to the
-  engine driver. When `None` or disabled, pass no provider.
+- Build the `CodeGraph` provider once (via `detect()`), gated by `config.codegraph_enabled()`,
+  and hand it to the engine via `with_context`. When `None` or disabled, pass no provider.
+- Both production drivers wire it identically: the Tauri app run driver
+  (`tutti-app/src-tauri/src/driver.rs`) and the `tutti` CLI (`tutti-cli/src/main.rs`, which is
+  how the autonomous engine runs). Wiring only one would leave the other production path
+  without codegraph context, so both get the same `detect + gate + with_context` block.
 
 ## The worktree-indexing question — RESOLVED
 

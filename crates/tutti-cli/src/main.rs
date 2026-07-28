@@ -124,6 +124,17 @@ async fn run(
         Box::new(adapters.workspace),
     )
     .map_err(|e| e.to_string())?;
+    // codegraph context, gated by config and binary presence. `detect` returns None when
+    // the binary is absent, so this is a full no-op on machines without codegraph.
+    let codegraph = if cfg.codegraph_enabled() {
+        tutti_core::context::CodeGraph::detect(repo_root.clone())
+    } else {
+        None
+    };
+    let engine = match &codegraph {
+        Some(cg) => engine.with_context(cg),
+        None => engine,
+    };
     let (shipped, plan) = engine.drain().await.map_err(|e| e.to_string())?;
     Ok((shipped, plan))
 }
