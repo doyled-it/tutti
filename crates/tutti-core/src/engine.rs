@@ -439,6 +439,7 @@ mod tests {
             forge: Default::default(),
             roles: crate::config::default_roles(),
             merge_mode: crate::domain::MergeMode::Merge,
+            codegraph: None,
         }
     }
 

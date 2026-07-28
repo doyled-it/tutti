@@ -30,6 +30,7 @@ fn cfg() -> Config {
         forge: Default::default(),
         roles: default_roles(),
         merge_mode: tutti_core::domain::MergeMode::Merge,
+        codegraph: None,
     }
 }
 

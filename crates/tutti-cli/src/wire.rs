@@ -91,6 +91,7 @@ mod tests {
             merge_mode: tutti_core::domain::MergeMode::Merge,
             status: Default::default(),
             forge: ForgeConfig::default(),
+            codegraph: None,
         }
     }
 
