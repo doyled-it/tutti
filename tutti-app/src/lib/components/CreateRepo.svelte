@@ -356,9 +356,6 @@
     cursor: default;
     z-index: 50;
   }
-  .scrim:hover {
-    background: rgba(0, 0, 0, 0.5);
-  }
   .modal {
     position: fixed;
     z-index: 51;
@@ -570,7 +567,7 @@
     font-size: 13px;
     cursor: pointer;
   }
-  button:hover:not(:disabled) {
+  button:not(.scrim):hover:not(:disabled) {
     background: var(--hover);
   }
   button.primary {
