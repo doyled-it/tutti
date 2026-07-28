@@ -462,6 +462,27 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
     })
 }
 
+/// Surgically set `[gate].commands` in an existing `tutti.toml`, preserving every other key,
+/// comment, and formatting. Handles all three shapes: an existing `commands` array (replaced),
+/// a `[gate]` table without `commands` (inserted), and no `[gate]` table (created).
+pub fn set_gate_commands(existing_toml: &str, commands: &[String]) -> Result<String> {
+    let mut doc = existing_toml
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| EngineError::Forge(format!("parse tutti.toml: {e}")))?;
+    let mut arr = toml_edit::Array::new();
+    for c in commands {
+        arr.push(c.as_str());
+    }
+    // `doc["gate"]` auto-vivifies an implicit table if absent; make it explicit so it renders
+    // as `[gate]` rather than being folded away when empty.
+    let gate = doc["gate"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    if let Some(t) = gate.as_table_mut() {
+        t.set_implicit(false);
+    }
+    doc["gate"]["commands"] = toml_edit::value(arr);
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,5 +905,62 @@ mod tests {
         assert!(!k.is_empty());
         assert_eq!(k, transcript_key("/Users/me/projects/tutti")); // stable
         assert_ne!(k, transcript_key("/Users/me/projects/other"));
+    }
+
+    #[test]
+    fn set_gate_commands_preserves_everything_else() {
+        let existing = r#"
+# a hand comment
+repo = "o/r"
+trunk = "main"
+merge_mode = "merge"
+
+[gate]
+working_dir = "server"
+commands = ["true"]
+"#;
+        let out =
+            set_gate_commands(existing, &["cargo test".into(), "cargo clippy".into()]).unwrap();
+        assert!(out.contains("# a hand comment"));
+        assert!(out.contains(r#"merge_mode = "merge""#));
+        assert!(out.contains(r#"working_dir = "server""#));
+        assert!(out.contains(r#""cargo test""#));
+        assert!(out.contains(r#""cargo clippy""#));
+        assert!(!out.contains(r#""true""#));
+    }
+
+    #[test]
+    fn set_gate_commands_inserts_when_missing() {
+        // [gate] table with no commands key.
+        let a = set_gate_commands("[gate]\nworking_dir = \"\"\n", &["cargo test".into()]).unwrap();
+        assert!(a.contains("cargo test"));
+        // No [gate] table at all.
+        let b = set_gate_commands("trunk = \"main\"\n", &["cargo test".into()]).unwrap();
+        assert!(b.contains("[gate]"));
+        assert!(b.contains("cargo test"));
+    }
+
+    #[test]
+    fn set_gate_commands_output_still_loads() {
+        let existing = r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "staging"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = []
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#;
+        let out = set_gate_commands(existing, &["cargo test".into()]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tutti.toml");
+        std::fs::write(&path, &out).unwrap();
+        let cfg = tutti_core::config::Config::load(&path).expect("edited toml loads");
+        assert_eq!(cfg.gate.commands, vec!["cargo test".to_string()]);
     }
 }
