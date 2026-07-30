@@ -66,7 +66,10 @@ in hand, so the pane stays dumb:
 - Reviewer: keys on `ReviewReport::needs_fixes()` (verdict `RequestChanges`, or any finding
   `Blocking`, forces fixes even on an `Approve` verdict), not on the verdict alone:
   `needs_fixes() -> ("changes needed (N findings)", false)`, else `("approved", true)`.
-- Planner: `("plan: {action:?}", true)`.
+- Planner: a decision -> `("plan: {label}", true)`, where `{label}` is a stable per-action
+  string (`next issue` / `create issues` / `close milestone` / `stop`) rather than the raw
+  `{:?}` of the action (which would dump the whole `CreateIssues` vector); no decision ->
+  `("no decision", false)`.
 - A `run_role` that returns `Err` (backend/spawn failure): `("error: {e}", false)`.
 
 A small pure helper `subsession_summary(role, &Result<AgentOutcome>) -> (String, bool)` holds

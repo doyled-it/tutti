@@ -58,10 +58,10 @@
           {/each}
         </div>
         {#if selected.summary}
+          <!-- The footer renders only once `summary` is set, which happens on Completed, so
+               the status here is always done or error, never the running state. -->
           <div class="footer {selected.status}">
-            <span class="glyph"
-              >{selected.status === "done" ? "✓" : selected.status === "error" ? "⚠" : "…"}</span
-            >
+            <span class="glyph">{selected.status === "done" ? "✓" : "⚠"}</span>
             {selected.summary}
           </div>
         {/if}
