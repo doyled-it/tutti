@@ -1535,4 +1535,23 @@ mod tests {
             }
         )));
     }
+
+    #[tokio::test]
+    async fn drain_without_subsession_sink_still_ships() {
+        // Default hooks have no subsession sink; the forwarder must still drain the backend
+        // channel so nothing blocks, and the issue must ship exactly as before.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+    }
 }
