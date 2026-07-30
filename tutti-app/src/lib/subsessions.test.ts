@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect } from "vitest";
-import { emptySubsessions, applySubsession, roleLabel } from "./subsessions";
+import { emptySubsessions, applySubsession, roleLabel, selectSubsession } from "./subsessions";
 
 describe("applySubsession", () => {
   it("opens a subsession on started and selects it", () => {
@@ -100,5 +100,13 @@ describe("applySubsession", () => {
   it("labels the planner without an issue number", () => {
     expect(roleLabel({ issue: 0, role: "planner" })).toBe("Planner");
     expect(roleLabel({ issue: 42, role: "fix_applier" })).toBe("#42 Fix applier");
+  });
+
+  it("selects an existing key", () => {
+    let s = emptySubsessions();
+    s = applySubsession(s, { kind: "started", issue: 42, role: "implementer", title: "t" });
+    s = applySubsession(s, { kind: "started", issue: 42, role: "reviewer", title: "t" });
+    s = selectSubsession(s, "42:implementer");
+    expect(s.selected).toBe("42:implementer");
   });
 });

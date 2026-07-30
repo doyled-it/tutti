@@ -6,14 +6,21 @@
      `subsessions` store; the pure reducer is in $lib/subsessions.ts. -->
 <script lang="ts">
   import { subsessions } from "$lib/stores";
-  import { roleLabel } from "$lib/subsessions";
+  import { roleLabel, selectSubsession, type SubStatus } from "$lib/subsessions";
 
   let selected = $derived($subsessions.list.find((s) => s.key === $subsessions.selected) ?? null);
 
-  function statusClass(status: string): string {
+  function statusClass(status: SubStatus): string {
     if (status === "done") return "dot done";
     if (status === "error") return "dot error";
     return "dot running";
+  }
+
+  // Text equivalent for the status dot, so running/done/error is not color-only information.
+  function statusWord(status: SubStatus): string {
+    if (status === "done") return "done";
+    if (status === "error") return "error";
+    return "running";
   }
 </script>
 
@@ -27,9 +34,9 @@
           type="button"
           class="row"
           class:on={s.key === $subsessions.selected}
-          onclick={() => subsessions.update((st) => ({ ...st, selected: s.key }))}
+          onclick={() => subsessions.update((st) => selectSubsession(st, s.key))}
         >
-          <span class={statusClass(s.status)}></span>
+          <span class={statusClass(s.status)} aria-label={statusWord(s.status)}></span>
           <span class="row-label">{roleLabel(s)}</span>
         </button>
       {/each}
@@ -67,6 +74,9 @@
 
 <style>
   .pane {
+    --status-running: var(--accent);
+    --status-done: #5fd3c4;
+    --status-error: #ff8c6b;
     flex: 1;
     display: flex;
     min-width: 0;
@@ -125,13 +135,13 @@
     background: var(--text-faint);
   }
   .dot.running {
-    background: var(--accent);
+    background: var(--status-running);
   }
   .dot.done {
-    background: #5fd3c4;
+    background: var(--status-done);
   }
   .dot.error {
-    background: #ff8c6b;
+    background: var(--status-error);
   }
   .detail {
     flex: 1;
@@ -171,7 +181,7 @@
     display: flex;
   }
   .bubble {
-    max-width: 80%;
+    max-width: 70%;
     padding: 8px 12px;
     border-radius: 10px;
     background: var(--bg-panel);
@@ -196,9 +206,9 @@
     gap: 6px;
   }
   .footer.done .glyph {
-    color: #5fd3c4;
+    color: var(--status-done);
   }
   .footer.error .glyph {
-    color: #ff8c6b;
+    color: var(--status-error);
   }
 </style>

@@ -69,6 +69,12 @@ function edit(
   return { ...state, list: [...state.list.slice(0, i), updated, ...state.list.slice(i + 1)] };
 }
 
+// Set the selected key. A small, pure setter so the pane's row click goes through the same
+// reducer module as every other transition, instead of hand-rolling a store update.
+export function selectSubsession(state: SubsessionState, key: string): SubsessionState {
+  return { ...state, selected: key };
+}
+
 export function applySubsession(state: SubsessionState, ev: SubsessionEvent): SubsessionState {
   const key = keyOf(ev.issue, ev.role);
   switch (ev.kind) {
