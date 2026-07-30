@@ -131,6 +131,16 @@ export type EngineEvent =
   | { kind: "issue_released"; id: number }
   | { kind: "drain_complete"; shipped: number };
 
+// Mirrors tutti_core::message::Role (serde snake_case).
+export type Role = "implementer" | "reviewer" | "fix_applier" | "planner";
+
+// Discriminated union mirroring SubsessionEvent (serde tag = "kind", snake_case).
+export type SubsessionEvent =
+  | { kind: "started"; issue: number; role: Role; title: string }
+  | { kind: "delta"; issue: number; role: Role; text: string }
+  | { kind: "tool"; issue: number; role: Role; name: string }
+  | { kind: "completed"; issue: number; role: Role; summary: string; ok: boolean };
+
 export const api = {
   listProjects: () => invoke<ProjectList>("list_projects"),
   addProject: (dir: string, repo?: string) =>
@@ -146,6 +156,8 @@ export const api = {
   pauseRun: () => invoke<void>("pause_run"),
   onProgress: (cb: (ev: EngineEvent) => void) =>
     listen<EngineEvent>("engine://progress", (e) => cb(e.payload)),
+  onSubsession: (cb: (ev: SubsessionEvent) => void) =>
+    listen<SubsessionEvent>("subsession://event", (e) => cb(e.payload)),
   // Fired once when a whole run ends (any exit path, including error), so the UI can
   // leave the running state even when no terminal DrainComplete was emitted.
   onRunEnded: (cb: () => void) => listen("engine://run-ended", () => cb()),
