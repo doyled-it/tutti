@@ -59,6 +59,7 @@ impl AgentBackend for FakeBackend {
         let _ = events
             .send(AgentEvent::Line(format!("fake {:?}", task.playbook.role)))
             .await;
+        let _ = events.send(AgentEvent::ToolUse("fake_tool".into())).await;
         let _ = events.send(AgentEvent::Done).await;
         let mut map = self.scripted.lock().unwrap();
         let queue = map.get_mut(&task.playbook.role);

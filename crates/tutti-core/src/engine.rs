@@ -4,11 +4,11 @@
 
 use crate::config::Config;
 use crate::domain::Issue;
-use crate::events::{EngineEvent, EngineHooks};
+use crate::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
     AgentEvent, AgentOutcome, AgentStatus, AgentTask, PlanAction, PlanDecision, ReviewReport, Role,
-    RolePlaybook, Verdict,
+    RolePlaybook,
 };
 use crate::routing;
 use crate::traits::{AgentBackend, EngineError, Forge, Result, RoutingStrategy};
@@ -95,7 +95,7 @@ impl<'a> Engine<'a> {
         };
 
         let issue_id = issue.id.0;
-        hooks.emit_subsession(crate::events::SubsessionEvent::Started {
+        hooks.emit_subsession(SubsessionEvent::Started {
             issue: issue_id,
             role,
             title: issue.title.clone(),
@@ -110,12 +110,12 @@ impl<'a> Engine<'a> {
             while let Some(ev) = rx.recv().await {
                 let Some(sink) = &sink else { continue };
                 let out = match ev {
-                    AgentEvent::Line(text) => Some(crate::events::SubsessionEvent::Delta {
+                    AgentEvent::Line(text) => Some(SubsessionEvent::Delta {
                         issue: issue_id,
                         role,
                         text,
                     }),
-                    AgentEvent::ToolUse(name) => Some(crate::events::SubsessionEvent::Tool {
+                    AgentEvent::ToolUse(name) => Some(SubsessionEvent::Tool {
                         issue: issue_id,
                         role,
                         name,
@@ -132,7 +132,7 @@ impl<'a> Engine<'a> {
         let _ = forward.await;
 
         let (summary, ok) = subsession_summary(role, &out);
-        hooks.emit_subsession(crate::events::SubsessionEvent::Completed {
+        hooks.emit_subsession(SubsessionEvent::Completed {
             issue: issue_id,
             role,
             summary,
@@ -474,17 +474,17 @@ pub(crate) fn subsession_summary(role: Role, out: &Result<AgentOutcome>) -> (Str
             }
         }
         Role::Reviewer => match &outcome.review {
-            Some(r) if r.verdict == Verdict::RequestChanges => {
+            Some(r) if r.needs_fixes() => {
                 let n = r.findings.len();
                 let noun = if n == 1 { "finding" } else { "findings" };
-                (format!("request changes ({n} {noun})"), false)
+                (format!("changes needed ({n} {noun})"), false)
             }
             Some(_) => ("approved".to_string(), true),
             None => ("no review".to_string(), false),
         },
         Role::Planner => match &outcome.plan {
             Some(d) => (format!("plan: {}", plan_action_label(&d.action)), true),
-            None => ("no decision".to_string(), true),
+            None => ("no decision".to_string(), false),
         },
     }
 }
@@ -1418,7 +1418,7 @@ mod tests {
         };
         assert_eq!(
             subsession_summary(Role::Reviewer, &Ok(changes)),
-            ("request changes (2 findings)".to_string(), false)
+            ("changes needed (2 findings)".to_string(), false)
         );
     }
 
@@ -1443,7 +1443,6 @@ mod tests {
 
     #[tokio::test]
     async fn drain_emits_subsession_streams_per_role() {
-        use crate::events::SubsessionEvent;
         // One ready issue whose review requests changes, so all three worker roles run.
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
@@ -1518,11 +1517,17 @@ mod tests {
             SubsessionEvent::Delta { issue: 1, role: Role::Implementer, text } if text.contains("Implementer")
         )));
 
-        // The reviewer's Completed carries the request-changes summary and ok=false.
+        // FakeBackend also emits AgentEvent::ToolUse("fake_tool"), forwarded as a Tool.
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            SubsessionEvent::Tool { role: Role::Implementer, name, .. } if name == "fake_tool"
+        )));
+
+        // The reviewer's Completed carries the changes-needed summary and ok=false.
         assert!(evs.iter().any(|e| matches!(
             e,
             SubsessionEvent::Completed { role: Role::Reviewer, ok: false, summary, .. }
-                if summary.contains("request changes")
+                if summary.contains("changes needed")
         )));
         // The implementer's Completed is a successful ship.
         assert!(evs.iter().any(|e| matches!(

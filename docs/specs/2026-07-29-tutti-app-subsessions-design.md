@@ -63,7 +63,9 @@ in hand, so the pane stays dumb:
 
 - Implementer / FixApplier: `ok = status == ReadyToShip`; `"ready to ship"` or
   `"blocked: {reason}"`.
-- Reviewer: `Approve -> ("approved", true)`; `RequestChanges -> ("request changes (N findings)", false)`.
+- Reviewer: keys on `ReviewReport::needs_fixes()` (verdict `RequestChanges`, or any finding
+  `Blocking`, forces fixes even on an `Approve` verdict), not on the verdict alone:
+  `needs_fixes() -> ("changes needed (N findings)", false)`, else `("approved", true)`.
 - Planner: `("plan: {action:?}", true)`.
 - A `run_role` that returns `Err` (backend/spawn failure): `("error: {e}", false)`.
 
