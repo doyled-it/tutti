@@ -10,6 +10,36 @@
 
   let selected = $derived($subsessions.list.find((s) => s.key === $subsessions.selected) ?? null);
 
+  // Sticky-bottom autoscroll for the live transcript. `transcriptEl` is reactive so the effect
+  // re-runs once the element binds; `stick` and `lastKey` are plain locals (bookkeeping across
+  // effect runs), deliberately NOT $state, so writing them in the effect cannot loop it.
+  let transcriptEl = $state<HTMLDivElement | null>(null);
+  let stick = true;
+  let lastKey: string | null = null;
+
+  function onTranscriptScroll() {
+    const el = transcriptEl;
+    if (!el) return;
+    // "Near the bottom" tolerance so a reader parked at the end stays stuck through a delta.
+    stick = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }
+
+  $effect(() => {
+    const key = selected?.key ?? null;
+    // Touch the length so the effect re-runs as the transcript grows.
+    void (selected?.messages.length ?? 0);
+    const el = transcriptEl;
+    if (!el) return;
+    if (key !== lastKey) {
+      // Switched (or first-shown) subsession: jump to the latest and re-arm sticky.
+      lastKey = key;
+      stick = true;
+      el.scrollTop = el.scrollHeight;
+    } else if (stick) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
   function statusClass(status: SubStatus): string {
     if (status === "done") return "dot done";
     if (status === "error") return "dot error";
@@ -48,7 +78,7 @@
           <span class="head-label">{roleLabel(selected)}</span>
           <span class="head-title">{selected.title}</span>
         </div>
-        <div class="transcript">
+        <div class="transcript" bind:this={transcriptEl} onscroll={onTranscriptScroll}>
           {#each selected.messages as m}
             {#if m.kind === "tool"}
               <div class="msg assistant tool"><span class="tool">ran {m.text}</span></div>
