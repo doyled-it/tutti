@@ -1150,6 +1150,7 @@ mod tests {
         let hooks = EngineHooks {
             sink: Some(tx),
             cancel: None,
+            subsession: None,
         };
         let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
         assert_eq!(shipped, 2);
@@ -1197,6 +1198,7 @@ mod tests {
         let hooks = EngineHooks {
             sink: None,
             cancel: Some(cancel),
+            subsession: None,
         };
         let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
         assert_eq!(shipped, 0);
