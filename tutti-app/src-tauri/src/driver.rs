@@ -12,7 +12,7 @@ use tutti_backend_claude::ClaudeBackend;
 use tutti_core::config::Config;
 use tutti_core::context::CodeGraph;
 use tutti_core::engine::Engine;
-use tutti_core::events::{EngineEvent, EngineHooks};
+use tutti_core::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use tutti_git::GitWorkspace;
 
 /// Start a continuous run. Fails if a run is already active.
@@ -52,10 +52,19 @@ pub async fn start(
         }
     });
 
+    // Subsession channel: engine per-role streams -> forwarder task -> webview.
+    let (sub_tx, mut sub_rx) = tokio::sync::mpsc::unbounded_channel::<SubsessionEvent>();
+    let app_sub = app.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = sub_rx.recv().await {
+            let _ = app_sub.emit("subsession://event", &ev);
+        }
+    });
+
     let run_cancel = cancel.clone();
     let app_run = app.clone();
     tokio::spawn(async move {
-        run_loop(config, repo, repo_root, run_cancel, tx).await;
+        run_loop(config, repo, repo_root, run_cancel, tx, sub_tx).await;
 
         let st = app_run.state::<AppState>();
         {
@@ -82,6 +91,7 @@ async fn run_loop(
     repo_root: std::path::PathBuf,
     cancel: Arc<AtomicBool>,
     tx: tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    sub_tx: tokio::sync::mpsc::UnboundedSender<SubsessionEvent>,
 ) {
     let forge = match build_forge(&config, &repo, repo_root.clone()) {
         Ok(f) => f,
@@ -108,6 +118,7 @@ async fn run_loop(
     let hooks = EngineHooks {
         sink: Some(tx),
         cancel: Some(cancel.clone()),
+        subsession: Some(sub_tx),
     };
 
     loop {
