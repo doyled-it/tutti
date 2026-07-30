@@ -4,6 +4,7 @@
 pub mod artifact;
 pub mod prompt;
 pub mod session;
+mod spawn;
 pub mod stream;
 
 use async_trait::async_trait;
@@ -241,8 +242,8 @@ impl AgentBackend for ClaudeBackend {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
+        let mut child = crate::spawn::spawn_with_etxtbsy_retry(&mut cmd)
+            .await
             .map_err(|e| EngineError::Backend(format!("spawn claude: {e}")))?;
         let stdout = child
             .stdout

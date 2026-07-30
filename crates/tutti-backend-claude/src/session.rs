@@ -180,25 +180,11 @@ impl ClaudeSession {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        // Spawning can transiently fail with ETXTBSY ("text file busy") when the target
-        // program was very recently written and a sibling process still holds a write handle
-        // to it across a fork. The real claude binary is never freshly written, so in practice
-        // this only bites the hermetic tests (which write a fake-claude script then exec it)
-        // under parallel load, but ETXTBSY is inherently transient and safe to retry.
-        let mut child = {
-            let mut attempt = 0u32;
-            loop {
-                match cmd.spawn() {
-                    Ok(c) => break c,
-                    // 26 == ETXTBSY on Linux and macOS.
-                    Err(e) if e.raw_os_error() == Some(26) && attempt < 10 => {
-                        attempt += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    }
-                    Err(e) => return Err(EngineError::Backend(format!("spawn claude: {e}"))),
-                }
-            }
-        };
+        // Retries a transient ETXTBSY spawn (see spawn::spawn_with_etxtbsy_retry); shared with
+        // ClaudeBackend::run so the two spawn sites cannot drift.
+        let mut child = crate::spawn::spawn_with_etxtbsy_retry(&mut cmd)
+            .await
+            .map_err(|e| EngineError::Backend(format!("spawn claude: {e}")))?;
         let stdout = child
             .stdout
             .take()
