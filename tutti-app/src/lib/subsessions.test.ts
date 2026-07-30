@@ -21,8 +21,10 @@ describe("applySubsession", () => {
     s = applySubsession(s, { kind: "tool", issue: 42, role: "implementer", name: "Edit" });
     const msgs = s.list[0].messages;
     // first bubble accumulates the deltas, then a tool aside, then a reopened empty bubble
+    expect(msgs).toHaveLength(3);
     expect(msgs[0]).toMatchObject({ role: "assistant", kind: "text", text: "hello world" });
     expect(msgs.some((m) => m.kind === "tool" && m.text === "Edit")).toBe(true);
+    expect(msgs[2]).toMatchObject({ role: "assistant", kind: "text", text: "" });
   });
 
   it("marks completed with status + summary and drops a trailing empty bubble", () => {
@@ -41,6 +43,34 @@ describe("applySubsession", () => {
     expect(sub.summary).toBe("request changes (2 findings)");
     // the empty text bubble reopened after the tool aside is dropped on completion
     expect(sub.messages[sub.messages.length - 1].kind).not.toBe("text");
+  });
+
+  it("marks completed with status done on the ok:true happy path", () => {
+    let s = emptySubsessions();
+    s = applySubsession(s, { kind: "started", issue: 42, role: "implementer", title: "t" });
+    s = applySubsession(s, {
+      kind: "completed",
+      issue: 42,
+      role: "implementer",
+      summary: "ready to ship",
+      ok: true,
+    });
+    const sub = s.list[0];
+    expect(sub.status).toBe("done");
+    expect(sub.summary).toBe("ready to ship");
+  });
+
+  it("does not mutate the prior state when applying an event", () => {
+    let s = emptySubsessions();
+    s = applySubsession(s, { kind: "started", issue: 42, role: "implementer", title: "t" });
+    const priorList = s.list;
+    Object.freeze(s);
+    Object.freeze(s.list);
+    const next = applySubsession(s, { kind: "delta", issue: 42, role: "implementer", text: "x" });
+    expect(next).not.toBe(s);
+    expect(next.list).not.toBe(priorList);
+    expect(s.list).toBe(priorList);
+    expect(s.list[0].messages[0].text).toBe("");
   });
 
   it("advances selection to the newest started (follows the live edge)", () => {
