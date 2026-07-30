@@ -26,11 +26,23 @@ pub enum EngineEvent {
 pub enum SubsessionEvent {
     /// A role turn began. `title` is the issue title (carried so the pane needs no lookup;
     /// the Planner uses the synthetic planner issue's title).
-    Started { issue: u64, role: Role, title: String },
+    Started {
+        issue: u64,
+        role: Role,
+        title: String,
+    },
     /// A chunk of assistant text.
-    Delta { issue: u64, role: Role, text: String },
+    Delta {
+        issue: u64,
+        role: Role,
+        text: String,
+    },
     /// A tool-use aside (the tool name).
-    Tool { issue: u64, role: Role, name: String },
+    Tool {
+        issue: u64,
+        role: Role,
+        name: String,
+    },
     /// The turn finished. `summary` is a role-aware one-liner; `ok` drives the status dot.
     Completed {
         issue: u64,
