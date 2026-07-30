@@ -8,7 +8,7 @@ use crate::events::{EngineEvent, EngineHooks};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
     AgentEvent, AgentOutcome, AgentStatus, AgentTask, PlanAction, PlanDecision, ReviewReport, Role,
-    RolePlaybook,
+    RolePlaybook, Verdict,
 };
 use crate::routing;
 use crate::traits::{AgentBackend, EngineError, Forge, Result, RoutingStrategy};
@@ -405,6 +405,50 @@ pub fn plan_is_auto_executable(decision: &PlanDecision) -> bool {
         decision.action,
         PlanAction::NextIssue | PlanAction::CreateIssues(_)
     )
+}
+
+/// Compose the one-line outcome shown under a subsession, plus whether it succeeded (drives
+/// the status dot). Role-aware because each role's "result" lives in a different field of the
+/// outcome. Pure, so it is unit-tested directly.
+pub(crate) fn subsession_summary(role: Role, out: &Result<AgentOutcome>) -> (String, bool) {
+    let outcome = match out {
+        Ok(o) => o,
+        Err(e) => return (format!("error: {e}"), false),
+    };
+    match role {
+        Role::Implementer | Role::FixApplier => {
+            if outcome.status == AgentStatus::ReadyToShip {
+                ("ready to ship".to_string(), true)
+            } else {
+                let reason = outcome.blocked_reason.as_deref().unwrap_or("no reason given");
+                (format!("blocked: {reason}"), false)
+            }
+        }
+        Role::Reviewer => match &outcome.review {
+            Some(r) if r.verdict == Verdict::RequestChanges => {
+                let n = r.findings.len();
+                let noun = if n == 1 { "finding" } else { "findings" };
+                (format!("request changes ({n} {noun})"), false)
+            }
+            Some(_) => ("approved".to_string(), true),
+            None => ("no review".to_string(), false),
+        },
+        Role::Planner => match &outcome.plan {
+            Some(d) => (format!("plan: {}", plan_action_label(&d.action)), true),
+            None => ("no decision".to_string(), true),
+        },
+    }
+}
+
+/// A short, stable label for a plan action (avoids leaking `{:?}` of the whole `CreateIssues`
+/// vector into the UI).
+fn plan_action_label(action: &PlanAction) -> &'static str {
+    match action {
+        PlanAction::NextIssue => "next issue",
+        PlanAction::CreateIssues(_) => "create issues",
+        PlanAction::CloseMilestone(_) => "close milestone",
+        PlanAction::Stop => "stop",
+    }
 }
 
 #[cfg(test)]
@@ -1267,5 +1311,83 @@ mod tests {
         assert_eq!(outcome, IterOutcome::Shipped);
 
         assert!(seen.lock().unwrap().iter().all(|m| m.is_empty()));
+    }
+
+    #[test]
+    fn summary_for_implementer_ready_and_blocked() {
+        let ready = ship_outcome(1);
+        assert_eq!(
+            subsession_summary(Role::Implementer, &Ok(ready)),
+            ("ready to ship".to_string(), true)
+        );
+        let blocked = AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "x".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("needs a device".into()),
+        };
+        assert_eq!(
+            subsession_summary(Role::Implementer, &Ok(blocked)),
+            ("blocked: needs a device".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn summary_for_reviewer_approve_and_request_changes() {
+        let approve = clean_review();
+        assert_eq!(
+            subsession_summary(Role::Reviewer, &Ok(approve)),
+            ("approved".to_string(), true)
+        );
+        let changes = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![
+                    Finding {
+                        severity: Severity::Blocking,
+                        file: "a.rs".into(),
+                        line: None,
+                        claim: "bug".into(),
+                    },
+                    Finding {
+                        severity: Severity::Minor,
+                        file: "b.rs".into(),
+                        line: None,
+                        claim: "nit".into(),
+                    },
+                ],
+                verdict: Verdict::RequestChanges,
+            }),
+            plan: None,
+            summary: "changes".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        assert_eq!(
+            subsession_summary(Role::Reviewer, &Ok(changes)),
+            ("request changes (2 findings)".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn summary_for_planner_and_error() {
+        let planned_stop = planned(PlanDecision {
+            action: PlanAction::Stop,
+            rationale: "done".into(),
+            needs_human: false,
+        });
+        assert_eq!(
+            subsession_summary(Role::Planner, &Ok(planned_stop)),
+            ("plan: stop".to_string(), true)
+        );
+        let err: Result<AgentOutcome> =
+            Err(crate::traits::EngineError::Backend("spawn claude: nope".into()));
+        let (text, ok) = subsession_summary(Role::FixApplier, &err);
+        assert!(!ok);
+        assert!(text.starts_with("error:"), "got {text}");
     }
 }
