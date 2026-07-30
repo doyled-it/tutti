@@ -34,6 +34,12 @@ export function emptySubsessions(): SubsessionState {
   return { list: [], selected: null };
 }
 
+// Cap on retained subsessions so a long drain does not grow transcripts without bound. A run
+// processes issues sequentially (roughly 3-4 role turns each), and eviction only ever removes
+// the oldest entries that are neither running nor currently selected, so the live edge and
+// anything the viewer has open are always kept.
+export const MAX_SUBSESSIONS = 100;
+
 const keyOf = (issue: number, role: Role): string => `${issue}:${role}`;
 
 const ROLE_WORDS: Record<Role, string> = {
@@ -55,6 +61,19 @@ function upsert(list: Subsession[], sub: Subsession): Subsession[] {
   const i = list.findIndex((s) => s.key === sub.key);
   if (i === -1) return [...list, sub];
   return [...list.slice(0, i), sub, ...list.slice(i + 1)];
+}
+
+// Evict the oldest completed, non-selected subsessions once the list exceeds MAX_SUBSESSIONS.
+function capList(list: Subsession[], selected: string | null): Subsession[] {
+  if (list.length <= MAX_SUBSESSIONS) return list;
+  let toDrop = list.length - MAX_SUBSESSIONS;
+  return list.filter((s) => {
+    if (toDrop > 0 && s.status !== "running" && s.key !== selected) {
+      toDrop--;
+      return false;
+    }
+    return true;
+  });
 }
 
 // Apply `fn` to the subsession at `key`; no-op if absent.
@@ -89,7 +108,7 @@ export function applySubsession(state: SubsessionState, ev: SubsessionEvent): Su
         summary: undefined,
       };
       // Follow the live edge: select the newest started turn.
-      return { list: upsert(state.list, sub), selected: key };
+      return { list: capList(upsert(state.list, sub), key), selected: key };
     }
     case "delta":
       return edit(state, key, (s) => ({ ...s, messages: appendDelta(s.messages, ev.text) }));

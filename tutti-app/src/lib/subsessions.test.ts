@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect } from "vitest";
-import { emptySubsessions, applySubsession, roleLabel, selectSubsession } from "./subsessions";
+import {
+  emptySubsessions,
+  applySubsession,
+  roleLabel,
+  selectSubsession,
+  MAX_SUBSESSIONS,
+} from "./subsessions";
 
 describe("applySubsession", () => {
   it("opens a subsession on started and selects it", () => {
@@ -108,5 +114,41 @@ describe("applySubsession", () => {
     s = applySubsession(s, { kind: "started", issue: 42, role: "reviewer", title: "t" });
     s = selectSubsession(s, "42:implementer");
     expect(s.selected).toBe("42:implementer");
+  });
+
+  it("evicts the oldest completed subsession once past the cap", () => {
+    let s = emptySubsessions();
+    const total = MAX_SUBSESSIONS + 3;
+    for (let issue = 1; issue <= total; issue++) {
+      s = applySubsession(s, { kind: "started", issue, role: "implementer", title: "t" });
+      s = applySubsession(s, {
+        kind: "completed",
+        issue,
+        role: "implementer",
+        summary: "ready to ship",
+        ok: true,
+      });
+    }
+    expect(s.list).toHaveLength(MAX_SUBSESSIONS);
+    expect(s.list.some((x) => x.key === "1:implementer")).toBe(false);
+    expect(s.list.some((x) => x.key === `${total}:implementer`)).toBe(true);
+  });
+
+  it("never evicts a running or the selected subsession", () => {
+    let s = emptySubsessions();
+    s = applySubsession(s, { kind: "started", issue: 1, role: "implementer", title: "t" });
+    const total = MAX_SUBSESSIONS + 3;
+    for (let issue = 2; issue <= total; issue++) {
+      s = applySubsession(s, { kind: "started", issue, role: "implementer", title: "t" });
+      s = applySubsession(s, {
+        kind: "completed",
+        issue,
+        role: "implementer",
+        summary: "ready to ship",
+        ok: true,
+      });
+    }
+    expect(s.list.some((x) => x.key === "1:implementer")).toBe(true);
+    expect(s.list.find((x) => x.key === "1:implementer")?.status).toBe("running");
   });
 });
