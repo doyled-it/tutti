@@ -30,8 +30,8 @@
     onBrowse: () => void;
     onCreate: () => void;
     onRemove: (dir: string) => void;
-    section?: "board" | "orchestrator";
-    onSection?: (s: "board" | "orchestrator") => void;
+    section?: "board" | "orchestrator" | "subsessions";
+    onSection?: (s: "board" | "orchestrator" | "subsessions") => void;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
