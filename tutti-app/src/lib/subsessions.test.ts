@@ -6,6 +6,8 @@ import {
   roleLabel,
   selectSubsession,
   MAX_SUBSESSIONS,
+  MAX_TRANSCRIPT_MESSAGES,
+  MAX_BUBBLE_CHARS,
 } from "./subsessions";
 
 describe("applySubsession", () => {
@@ -150,5 +152,56 @@ describe("applySubsession", () => {
     }
     expect(s.list.some((x) => x.key === "1:implementer")).toBe(true);
     expect(s.list.find((x) => x.key === "1:implementer")?.status).toBe("running");
+  });
+
+  it("caps a transcript's message count, keeping the newest", () => {
+    let s = applySubsession(emptySubsessions(), {
+      kind: "started",
+      issue: 1,
+      role: "implementer",
+      title: "t",
+    });
+    // Each tool aside adds two messages (the aside plus a reopened bubble), so this
+    // comfortably overshoots the cap.
+    for (let i = 0; i < MAX_TRANSCRIPT_MESSAGES + 20; i++) {
+      s = applySubsession(s, { kind: "tool", issue: 1, role: "implementer", name: `t${i}` });
+    }
+    const msgs = s.list[0].messages;
+    expect(msgs.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_MESSAGES);
+    // The newest aside survived; the oldest was dropped.
+    const names = msgs.filter((m) => m.kind === "tool").map((m) => m.text);
+    expect(names).toContain(`t${MAX_TRANSCRIPT_MESSAGES + 19}`);
+    expect(names).not.toContain("t0");
+  });
+
+  it("caps the live bubble's length, keeping the tail and marking the elision", () => {
+    let s = applySubsession(emptySubsessions(), {
+      kind: "started",
+      issue: 1,
+      role: "implementer",
+      title: "t",
+    });
+    const chunk = "x".repeat(5000);
+    for (let i = 0; i < 6; i++) {
+      s = applySubsession(s, { kind: "delta", issue: 1, role: "implementer", text: chunk });
+    }
+    s = applySubsession(s, { kind: "delta", issue: 1, role: "implementer", text: "TAIL" });
+    const text = s.list[0].messages[s.list[0].messages.length - 1].text;
+    expect(text.length).toBeLessThanOrEqual(MAX_BUBBLE_CHARS + 64);
+    expect(text.endsWith("TAIL")).toBe(true);
+    expect(text.startsWith("[... earlier output trimmed ...]")).toBe(true);
+  });
+
+  it("leaves a short transcript's array identity untouched", () => {
+    let s = applySubsession(emptySubsessions(), {
+      kind: "started",
+      issue: 1,
+      role: "implementer",
+      title: "t",
+    });
+    s = applySubsession(s, { kind: "delta", issue: 1, role: "implementer", text: "hi" });
+    const msgs = s.list[0].messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("hi");
   });
 });
