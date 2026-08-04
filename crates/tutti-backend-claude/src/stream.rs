@@ -6,6 +6,39 @@
 use serde_json::Value;
 use tutti_core::message::AgentEvent;
 
+/// Parse one stream-json line into an event fit to show a human, or None when the line
+/// carries no displayable content.
+///
+/// `parse_stream_line` deliberately degrades system/rate_limit/unknown lines to
+/// `Line(<raw JSON>)` so a CLI change can never break the adapter, but that raw JSON must
+/// never reach a transcript: it would render as assistant prose. This gates on
+/// `is_assistant_text_line` so only genuine assistant text streams as a `Line`;
+/// `ToolUse`/`Done` always flow.
+///
+/// Both live streaming paths (`ClaudeSession::turn` for the orchestrator chat and
+/// `ClaudeBackend::run` for the engine's per-role subsessions) go through this one
+/// function, so their filtering cannot drift.
+pub fn parse_display_event(line: &str) -> Option<AgentEvent> {
+    let ev = parse_stream_line(line)?;
+    match ev {
+        AgentEvent::Line(_) if !is_assistant_text_line(line) => None,
+        ev => Some(ev),
+    }
+}
+
+/// True when a stream-json line is an assistant/text message (not system/result/unknown),
+/// so only genuine reply text is streamed or accumulated.
+pub fn is_assistant_text_line(line: &str) -> bool {
+    serde_json::from_str::<Value>(line.trim())
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "assistant" || t == "text")
+        })
+        .unwrap_or(false)
+}
+
 /// Parse one stream-json line. Returns None for blank lines only.
 pub fn parse_stream_line(line: &str) -> Option<AgentEvent> {
     let trimmed = line.trim();
@@ -343,6 +376,43 @@ mod tests {
     fn real_result_line_maps_to_done() {
         // Line 4: the terminal result event.
         assert_eq!(parse_stream_line(real_line(4)).unwrap(), AgentEvent::Done);
+    }
+
+    #[test]
+    fn display_event_drops_the_raw_protocol_lines_of_a_real_transcript() {
+        // The captured transcript's system-init (0) and rate_limit_event (3) lines degrade to
+        // `Line(<raw JSON>)` under `parse_stream_line`. They must never reach a transcript:
+        // `parse_display_event` drops them, while text/tool_use/result still flow.
+        assert_eq!(parse_display_event(real_line(0)), None);
+        assert_eq!(parse_display_event(real_line(3)), None);
+        assert_eq!(
+            parse_display_event(real_line(1)),
+            Some(AgentEvent::Line("hello".into()))
+        );
+        assert_eq!(
+            parse_display_event(real_line(2)),
+            Some(AgentEvent::ToolUse("Edit".into()))
+        );
+        assert_eq!(parse_display_event(real_line(4)), Some(AgentEvent::Done));
+    }
+
+    #[test]
+    fn display_event_drops_unparseable_and_unknown_lines() {
+        // A non-JSON line and an unknown `type` both degrade to a raw `Line`; neither is
+        // assistant text, so neither is displayable.
+        assert_eq!(parse_display_event("not json at all"), None);
+        assert_eq!(parse_display_event(r#"{"type":"user","message":{}}"#), None);
+        assert_eq!(parse_display_event("   "), None);
+    }
+
+    #[test]
+    fn is_assistant_text_line_gates_on_the_json_type() {
+        assert!(is_assistant_text_line(
+            r#"{"type":"assistant","message":{"content":"hi"}}"#
+        ));
+        assert!(is_assistant_text_line(r#"{"type":"text","text":"hi"}"#));
+        assert!(!is_assistant_text_line(r#"{"type":"system"}"#));
+        assert!(!is_assistant_text_line("garbage"));
     }
 
     #[test]
