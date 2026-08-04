@@ -107,6 +107,22 @@ Because the sink is optional and cloned into a `'static` task, and `issue_id`/`r
 still drains the channel (so the backend never blocks) but sends nothing: behavior identical
 to today.
 
+### The backend must filter raw protocol lines first
+
+`stream::parse_stream_line` deliberately degrades every unmodelled line type (`system` init,
+`rate_limit_event`, `user` tool-result echoes, anything a future CLI adds) to
+`Line(<raw JSON>)`, so a CLI change can never break the adapter. That was harmless while
+`run_role` discarded the stream; the moment the stream reaches a transcript, that raw JSON
+renders as assistant prose. The orchestrator chat already hit this and fixed it locally in
+`session.rs`.
+
+So the predicate moves into `stream.rs` as `parse_display_event` (gated by
+`is_assistant_text_line`), and **both** live streaming paths go through it:
+`ClaudeSession::turn` for the chat and `ClaudeBackend::run` for these subsessions. One
+function, both consumers, no drift — the same reasoning as sharing the ETXTBSY spawn retry.
+`ClaudeBackend::run` still accumulates every raw line into `full`, so `scan_stream` keeps its
+complete view of the transcript for outcome detection.
+
 Call-site threading (mechanical, no control-flow change):
 
 - `run_stages`'s three `run_role` calls already hold `hooks`.
@@ -179,6 +195,31 @@ export function applySubsession(state: SubsessionState, ev: SubsessionEvent): Su
 `Role` on the frontend is `"implementer" | "reviewer" | "fix_applier" | "planner"` (snake_case
 matches the serde wire), added to `ipc.ts`.
 
+#### Bounded growth
+
+A drain is open-ended, so nothing here may grow without a bound:
+
+- `MAX_SUBSESSIONS` (100) caps how many subsessions are retained. Eviction takes the oldest
+  entries that are neither `running` nor currently selected, so the live edge and whatever the
+  viewer has open always survive.
+- `MAX_TRANSCRIPT_MESSAGES` (400) caps one subsession's message count, dropping from the front.
+- `MAX_BUBBLE_CHARS` (20k) caps the trailing live text bubble, dropping from its front behind
+  an explicit elision marker so a trimmed view never reads as the whole turn.
+
+The last two matter for cost as well as memory: `appendDelta` copies the message array and the
+open bubble on every delta, so an unbounded transcript makes accumulation quadratic in its
+length. Bounding both axes makes every append constant-bounded. The orchestrator chat needs no
+equivalent — it is human-paced — which is why these live in `subsessions.ts` rather than in the
+shared primitives.
+
+#### Planner subsession reuse
+
+The Planner runs on the sentinel issue 0, so its key is always `0:planner`. `drain_with` calls
+`plan()` after every shipped issue, and `started` resets the transcript at that key, so a
+multi-issue drain shows only the most recent planning turn, and the row stays at its original
+insertion position rather than moving to the live edge. Accepted: the view is explicitly the
+current run, not a history. The same reuse-and-reset applies to a re-attempted issue's roles.
+
 ### `stores.ts`
 
 - `export const subsessions = writable<SubsessionState>(emptySubsessions())`.
@@ -233,6 +274,13 @@ signature. (The nav no longer has any `soon` placeholder.)
   started/delta/tool/completed/clear; live-edge selection advancing on each `started` and the
   user's manual selection surviving until the next `started`; Planner keying (`0:planner`,
   label "Planner"); an unknown-key delta is a no-op.
+- **Rust, protocol filtering**: `parse_display_event` over the captured real transcript
+  (`tests/fixtures/real-stream.jsonl`) drops the system-init and `rate_limit_event` lines and
+  keeps text/tool_use/result; a spawn-level test drives `ClaudeBackend::run` against that same
+  fixture and asserts no streamed `Line` carries raw protocol JSON. The latter is the one that
+  would have caught this on the engine path, since `FakeBackend` only ever emits clean events.
+- **Frontend, bounded growth**: message-count and bubble-length caps each overshoot their
+  bound and assert the newest output survives behind the elision marker.
 - **Manual / live** (noted, not CI, matching Tutti's spike-then-trust rhythm): run the app
   against a real project, start a drain, and watch each role's pane stream and its outcome
   footer land. This is the acceptance check the hermetic tests cannot exercise.
