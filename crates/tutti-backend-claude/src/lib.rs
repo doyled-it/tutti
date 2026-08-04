@@ -4,6 +4,7 @@
 pub mod artifact;
 pub mod prompt;
 pub mod session;
+mod spawn;
 pub mod stream;
 
 use async_trait::async_trait;
@@ -241,8 +242,8 @@ impl AgentBackend for ClaudeBackend {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
+        let mut child = crate::spawn::spawn_with_etxtbsy_retry(&mut cmd)
+            .await
             .map_err(|e| EngineError::Backend(format!("spawn claude: {e}")))?;
         let stdout = child
             .stdout
@@ -269,7 +270,11 @@ impl AgentBackend for ClaudeBackend {
         {
             full.push_str(&line);
             full.push('\n');
-            if let Some(ev) = stream::parse_stream_line(&line) {
+            // Only displayable events go out on the channel: the engine forwards this stream
+            // to the app's Subsessions pane, where a raw-JSON system/rate_limit line would
+            // render as assistant prose. `full` still accumulates every line, so
+            // `scan_stream` below keeps its complete view of the transcript.
+            if let Some(ev) = stream::parse_display_event(&line) {
                 let _ = events.send(ev).await;
             }
         }
@@ -554,5 +559,58 @@ mod outcome_tests {
             .unwrap();
         assert_eq!(out.status, AgentStatus::Error);
         assert!(out.blocked_reason.as_deref().unwrap().contains("boom"));
+    }
+
+    /// The engine forwards this event stream to the app's Subsessions pane, so a raw-JSON
+    /// system/rate_limit line reaching it would render as assistant prose. Drives the real
+    /// spawn + stream + parse loop against the captured transcript, hermetically.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_streams_only_displayable_events() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/real-stream.jsonl"
+        );
+        let script = dir.path().join("fake-claude.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat {fixture}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let be = ClaudeBackend {
+            program: script.to_string_lossy().into_owned(),
+            extra_args: vec![],
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+        let _ = be
+            .run(task(Role::Implementer), dir.path(), tx)
+            .await
+            .unwrap();
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+
+        // The assistant text and the tool_use both surfaced.
+        assert!(
+            events.contains(&AgentEvent::Line("hello".into())),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(&AgentEvent::ToolUse("Edit".into())),
+            "{events:?}"
+        );
+        // No streamed Line carries raw protocol JSON: the fixture's system-init and
+        // rate_limit_event lines degrade to `Line(<raw JSON>)` and must be filtered out.
+        for ev in &events {
+            if let AgentEvent::Line(text) = ev {
+                assert!(
+                    !text.contains(r#""type":"system""#)
+                        && !text.contains(r#""type":"rate_limit_event""#),
+                    "raw protocol line leaked into the streamed events: {text}"
+                );
+            }
+        }
     }
 }

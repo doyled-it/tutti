@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Left rail: the persisted project list, an "add project" affordance, per-row switch and
-     remove, and the primary nav (Board and Orchestrator are live; Subsessions is a
-     placeholder). Switching is disabled while a run or chat turn is active. Resizable via a drag handle
+     remove, and the primary nav (Board, Orchestrator, and Subsessions are all live).
+     Switching is disabled while a run or chat turn is active. Resizable via a drag handle
      on the right edge, with the width persisted to localStorage. -->
 <script lang="ts">
   import { api } from "$lib/ipc";
@@ -30,8 +30,8 @@
     onBrowse: () => void;
     onCreate: () => void;
     onRemove: (dir: string) => void;
-    section?: "board" | "orchestrator";
-    onSection?: (s: "board" | "orchestrator") => void;
+    section?: "board" | "orchestrator" | "subsessions";
+    onSection?: (s: "board" | "orchestrator" | "subsessions") => void;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
@@ -199,7 +199,11 @@
         class:on={section === "orchestrator"}
         onclick={() => onSection?.("orchestrator")}>Orchestrator</button
       >
-      <div class="nav-item soon">Subsessions (soon)</div>
+      <button
+        class="nav-item"
+        class:on={section === "subsessions"}
+        onclick={() => onSection?.("subsessions")}>Subsessions</button
+      >
     </nav>
   </aside>
   <Resizer {onResize} ariaLabel="Resize sidebar" />
@@ -381,9 +385,6 @@
   .nav-item.on {
     background: var(--hover);
     font-weight: 600;
-  }
-  .nav-item.soon {
-    color: var(--text-faint);
   }
   button.nav-item {
     display: block;

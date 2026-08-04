@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { api } from "$lib/ipc";
-  import type { InitForm, IssueDetail, Probe } from "$lib/ipc";
+  import type { InitForm, IssueDetail, Probe, SubsessionEvent } from "$lib/ipc";
   import {
     projects,
     activeDir,
@@ -18,7 +18,10 @@
     section,
     orchestratorBusy,
     gateStatus,
+    subsessions,
+    clearSubsessions,
   } from "$lib/stores";
+  import { applySubsession } from "$lib/subsessions";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
   import RoadmapRail from "$lib/components/RoadmapRail.svelte";
@@ -29,6 +32,7 @@
   import BrowseForge from "$lib/components/BrowseForge.svelte";
   import CreateRepo from "$lib/components/CreateRepo.svelte";
   import OrchestratorPane from "$lib/components/OrchestratorPane.svelte";
+  import SubsessionsPane from "$lib/components/SubsessionsPane.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
@@ -228,9 +232,13 @@
 
   async function run() {
     try {
+      // Clear BEFORE the await: `start_run` returns as soon as the run loop is spawned, so a
+      // subsession event from the new run can arrive while this is suspended and would be
+      // wiped by a clear placed after. Clearing early costs nothing if the start then fails.
+      clearSubsessions();
       await api.startRun();
-      // Optimistic + per-run reset: show running immediately and zero the shipped count
-      // for this run (the backend confirms via DrainStarted, and ends via run-ended).
+      // Optimistic: show running immediately and zero the shipped count for this run (the
+      // backend confirms via DrainStarted, and ends via run-ended).
       runStatus.set({ state: "running", shipped: 0 });
     } catch (e) {
       loadError = String(e);
@@ -287,9 +295,13 @@
         // No project loaded, or the read failed; the current board state stands.
       }
     });
+    const subsessionPromise = api.onSubsession((ev: SubsessionEvent) => {
+      subsessions.update((s) => applySubsession(s, ev));
+    });
     return () => {
       progressPromise.then((unlisten) => unlisten());
       endedPromise.then((unlisten) => unlisten());
+      subsessionPromise.then((unlisten) => unlisten());
     };
   });
 </script>
@@ -326,7 +338,9 @@
     {/if}
 
     <div class="work">
-      {#if $section === "orchestrator"}
+      {#if $section === "subsessions"}
+        <SubsessionsPane />
+      {:else if $section === "orchestrator"}
         {#if $board}
           {#key $activeDir}
             <OrchestratorPane />

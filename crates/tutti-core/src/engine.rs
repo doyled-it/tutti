@@ -4,7 +4,7 @@
 
 use crate::config::Config;
 use crate::domain::Issue;
-use crate::events::{EngineEvent, EngineHooks};
+use crate::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
     AgentEvent, AgentOutcome, AgentStatus, AgentTask, PlanAction, PlanDecision, ReviewReport, Role,
@@ -76,6 +76,7 @@ impl<'a> Engine<'a> {
         issue: &Issue,
         review: Option<ReviewReport>,
         worktree: &Path,
+        hooks: &EngineHooks,
     ) -> Result<AgentOutcome> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
         let mcp_servers = if let Some(cx) = self.context {
@@ -92,10 +93,51 @@ impl<'a> Engine<'a> {
             review,
             mcp_servers,
         };
-        // Drain events into logs so the channel never blocks.
-        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        let issue_id = issue.id.0;
+        hooks.emit_subsession(SubsessionEvent::Started {
+            issue: issue_id,
+            role,
+            title: issue.title.clone(),
+        });
+
+        // Forward each AgentEvent out as a SubsessionEvent instead of discarding it. The sink
+        // is optional and cloned into the 'static task; issue_id and role are Copy. When the
+        // sink is None the task still drains the channel (so the backend never blocks) but
+        // sends nothing: behavior identical to the old discard.
+        let sink = hooks.subsession.clone();
+        let forward = tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                let Some(sink) = &sink else { continue };
+                let out = match ev {
+                    AgentEvent::Line(text) => Some(SubsessionEvent::Delta {
+                        issue: issue_id,
+                        role,
+                        text,
+                    }),
+                    AgentEvent::ToolUse(name) => Some(SubsessionEvent::Tool {
+                        issue: issue_id,
+                        role,
+                        name,
+                    }),
+                    AgentEvent::Done => None,
+                };
+                if let Some(ev) = out {
+                    let _ = sink.send(ev);
+                }
+            }
+        });
+
         let out = self.backend.run(task, worktree, tx).await;
-        let _ = drain.await;
+        let _ = forward.await;
+
+        let (summary, ok) = subsession_summary(role, &out);
+        hooks.emit_subsession(SubsessionEvent::Completed {
+            issue: issue_id,
+            role,
+            summary,
+            ok,
+        });
         out
     }
 
@@ -163,7 +205,9 @@ impl<'a> Engine<'a> {
         let wt = handle.path.as_path();
 
         // Stage: implement.
-        let impl_out = self.run_role(Role::Implementer, issue, None, wt).await?;
+        let impl_out = self
+            .run_role(Role::Implementer, issue, None, wt, hooks)
+            .await?;
         if impl_out.status != AgentStatus::ReadyToShip {
             hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
             self.forge.release(issue.id).await?;
@@ -180,7 +224,9 @@ impl<'a> Engine<'a> {
         };
 
         // Stage: review (fresh agent).
-        let review_out = self.run_role(Role::Reviewer, issue, None, wt).await?;
+        let review_out = self
+            .run_role(Role::Reviewer, issue, None, wt, hooks)
+            .await?;
         let report = review_out.review.unwrap_or(ReviewReport {
             findings: vec![],
             verdict: crate::message::Verdict::Approve,
@@ -189,7 +235,7 @@ impl<'a> Engine<'a> {
         // Stage: apply-fixes if the review demands it.
         if report.needs_fixes() {
             let fix_out = self
-                .run_role(Role::FixApplier, issue, Some(report), wt)
+                .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
                 .await?;
             if fix_out.status != AgentStatus::ReadyToShip {
                 hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
@@ -295,7 +341,7 @@ impl<'a> Engine<'a> {
             }
         }
         let plan = if shipped > 0 {
-            let decision = self.plan().await?;
+            let decision = self.plan(hooks).await?;
             self.execute_plan(&decision).await?;
             Some(decision)
         } else {
@@ -343,7 +389,7 @@ impl<'a> Engine<'a> {
     /// returns its `PlanDecision`. The planner needs no isolated worktree, so it runs in
     /// the repo/working dir. If the planner produced no decision, default to `Stop` so the
     /// loop halts safely rather than acting on nothing.
-    async fn plan(&self) -> Result<PlanDecision> {
+    async fn plan(&self, hooks: &EngineHooks) -> Result<PlanDecision> {
         let snapshot = self.plan_snapshot().await?;
         // A synthetic issue carries the snapshot as context; id 0 is the planner sentinel.
         let planner_issue = Issue {
@@ -360,7 +406,7 @@ impl<'a> Engine<'a> {
             workdir
         };
         let outcome = self
-            .run_role(Role::Planner, &planner_issue, None, workdir)
+            .run_role(Role::Planner, &planner_issue, None, workdir, hooks)
             .await?;
         Ok(outcome.plan.unwrap_or(PlanDecision {
             action: PlanAction::Stop,
@@ -405,6 +451,53 @@ pub fn plan_is_auto_executable(decision: &PlanDecision) -> bool {
         decision.action,
         PlanAction::NextIssue | PlanAction::CreateIssues(_)
     )
+}
+
+/// Compose the one-line outcome shown under a subsession, plus whether it succeeded (drives
+/// the status dot). Role-aware because each role's "result" lives in a different field of the
+/// outcome. Pure, so it is unit-tested directly.
+pub(crate) fn subsession_summary(role: Role, out: &Result<AgentOutcome>) -> (String, bool) {
+    let outcome = match out {
+        Ok(o) => o,
+        Err(e) => return (format!("error: {e}"), false),
+    };
+    match role {
+        Role::Implementer | Role::FixApplier => {
+            if outcome.status == AgentStatus::ReadyToShip {
+                ("ready to ship".to_string(), true)
+            } else {
+                let reason = outcome
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("no reason given");
+                (format!("blocked: {reason}"), false)
+            }
+        }
+        Role::Reviewer => match &outcome.review {
+            Some(r) if r.needs_fixes() => {
+                let n = r.findings.len();
+                let noun = if n == 1 { "finding" } else { "findings" };
+                (format!("changes needed ({n} {noun})"), false)
+            }
+            Some(_) => ("approved".to_string(), true),
+            None => ("no review".to_string(), false),
+        },
+        Role::Planner => match &outcome.plan {
+            Some(d) => (format!("plan: {}", plan_action_label(&d.action)), true),
+            None => ("no decision".to_string(), false),
+        },
+    }
+}
+
+/// A short, stable label for a plan action (avoids leaking `{:?}` of the whole `CreateIssues`
+/// vector into the UI).
+fn plan_action_label(action: &PlanAction) -> &'static str {
+    match action {
+        PlanAction::NextIssue => "next issue",
+        PlanAction::CreateIssues(_) => "create issues",
+        PlanAction::CloseMilestone(_) => "close milestone",
+        PlanAction::Stop => "stop",
+    }
 }
 
 #[cfg(test)]
@@ -1150,6 +1243,7 @@ mod tests {
         let hooks = EngineHooks {
             sink: Some(tx),
             cancel: None,
+            subsession: None,
         };
         let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
         assert_eq!(shipped, 2);
@@ -1197,6 +1291,7 @@ mod tests {
         let hooks = EngineHooks {
             sink: None,
             cancel: Some(cancel),
+            subsession: None,
         };
         let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
         assert_eq!(shipped, 0);
@@ -1265,5 +1360,203 @@ mod tests {
         assert_eq!(outcome, IterOutcome::Shipped);
 
         assert!(seen.lock().unwrap().iter().all(|m| m.is_empty()));
+    }
+
+    #[test]
+    fn summary_for_implementer_ready_and_blocked() {
+        let ready = ship_outcome(1);
+        assert_eq!(
+            subsession_summary(Role::Implementer, &Ok(ready)),
+            ("ready to ship".to_string(), true)
+        );
+        let blocked = AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "x".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("needs a device".into()),
+        };
+        assert_eq!(
+            subsession_summary(Role::Implementer, &Ok(blocked)),
+            ("blocked: needs a device".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn summary_for_reviewer_approve_and_request_changes() {
+        let approve = clean_review();
+        assert_eq!(
+            subsession_summary(Role::Reviewer, &Ok(approve)),
+            ("approved".to_string(), true)
+        );
+        let changes = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![
+                    Finding {
+                        severity: Severity::Blocking,
+                        file: "a.rs".into(),
+                        line: None,
+                        claim: "bug".into(),
+                    },
+                    Finding {
+                        severity: Severity::Minor,
+                        file: "b.rs".into(),
+                        line: None,
+                        claim: "nit".into(),
+                    },
+                ],
+                verdict: Verdict::RequestChanges,
+            }),
+            plan: None,
+            summary: "changes".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        assert_eq!(
+            subsession_summary(Role::Reviewer, &Ok(changes)),
+            ("changes needed (2 findings)".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn summary_for_planner_and_error() {
+        let planned_stop = planned(PlanDecision {
+            action: PlanAction::Stop,
+            rationale: "done".into(),
+            needs_human: false,
+        });
+        assert_eq!(
+            subsession_summary(Role::Planner, &Ok(planned_stop)),
+            ("plan: stop".to_string(), true)
+        );
+        let err: Result<AgentOutcome> = Err(crate::traits::EngineError::Backend(
+            "spawn claude: nope".into(),
+        ));
+        let (text, ok) = subsession_summary(Role::FixApplier, &err);
+        assert!(!ok);
+        assert!(text.starts_with("error:"), "got {text}");
+    }
+
+    #[tokio::test]
+    async fn drain_emits_subsession_streams_per_role() {
+        // One ready issue whose review requests changes, so all three worker roles run.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let dirty_review = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![Finding {
+                    severity: Severity::Blocking,
+                    file: "a.rs".into(),
+                    line: None,
+                    claim: "bug".into(),
+                }],
+                verdict: Verdict::RequestChanges,
+            }),
+            plan: None,
+            summary: "changes".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, dirty_review)
+            .script(Role::FixApplier, ship_outcome(1))
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::Stop,
+                    rationale: "done".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hooks = EngineHooks {
+            sink: None,
+            cancel: None,
+            subsession: Some(tx),
+        };
+        let (shipped, _) = engine.drain_with(&hooks).await.unwrap();
+        assert_eq!(shipped, 1);
+
+        let mut evs = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            evs.push(ev);
+        }
+
+        // Each of the four roles produced a Started keyed to its issue+role. The three
+        // worker roles run on issue 1; the Planner runs on the sentinel issue 0.
+        let started_roles: Vec<(u64, Role)> = evs
+            .iter()
+            .filter_map(|e| match e {
+                SubsessionEvent::Started { issue, role, .. } => Some((*issue, *role)),
+                _ => None,
+            })
+            .collect();
+        assert!(started_roles.contains(&(1, Role::Implementer)));
+        assert!(started_roles.contains(&(1, Role::Reviewer)));
+        assert!(started_roles.contains(&(1, Role::FixApplier)));
+        assert!(started_roles.contains(&(0, Role::Planner)));
+
+        // FakeBackend emits AgentEvent::Line("fake {Role}"), forwarded as a Delta.
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            SubsessionEvent::Delta { issue: 1, role: Role::Implementer, text } if text.contains("Implementer")
+        )));
+
+        // FakeBackend also emits AgentEvent::ToolUse("fake_tool"), forwarded as a Tool.
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            SubsessionEvent::Tool { role: Role::Implementer, name, .. } if name == "fake_tool"
+        )));
+
+        // The reviewer's Completed carries the changes-needed summary and ok=false.
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            SubsessionEvent::Completed { role: Role::Reviewer, ok: false, summary, .. }
+                if summary.contains("changes needed")
+        )));
+        // The implementer's Completed is a successful ship.
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            SubsessionEvent::Completed {
+                issue: 1,
+                role: Role::Implementer,
+                ok: true,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn drain_without_subsession_sink_still_ships() {
+        // Default hooks have no subsession sink; the forwarder must still drain the backend
+        // channel so nothing blocks, and the issue must ship exactly as before.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
     }
 }

@@ -111,26 +111,13 @@ pub fn turn_outcome(full_output: &str) -> TurnOutcome {
 fn collect_assistant_text(full_output: &str) -> String {
     let mut assistant_text = String::new();
     for line in full_output.lines() {
-        if is_assistant_text_line(line) {
+        if stream::is_assistant_text_line(line) {
             if let Some(AgentEvent::Line(text)) = stream::parse_stream_line(line) {
                 assistant_text.push_str(&text);
             }
         }
     }
     assistant_text
-}
-
-/// True when a stream-json line is an assistant/text message (not system/result/unknown),
-/// so only genuine reply text is accumulated.
-fn is_assistant_text_line(line: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(line.trim())
-        .ok()
-        .and_then(|v| {
-            v.get("type")
-                .and_then(|t| t.as_str())
-                .map(|t| t == "assistant" || t == "text")
-        })
-        .unwrap_or(false)
 }
 
 /// Drives `claude -p` as an interactive chat session. `program` is the executable (usually
@@ -180,8 +167,10 @@ impl ClaudeSession {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
+        // Retries a transient ETXTBSY spawn (see spawn::spawn_with_etxtbsy_retry); shared with
+        // ClaudeBackend::run so the two spawn sites cannot drift.
+        let mut child = crate::spawn::spawn_with_etxtbsy_retry(&mut cmd)
+            .await
             .map_err(|e| EngineError::Backend(format!("spawn claude: {e}")))?;
         let stdout = child
             .stdout
@@ -206,15 +195,11 @@ impl ClaudeSession {
         {
             full.push_str(&line);
             full.push('\n');
-            if let Some(ev) = stream::parse_stream_line(&line) {
-                // `parse_stream_line` degrades system/rate_limit/unknown lines to
-                // `Line(<raw JSON>)`, so only stream a `Line` when it is genuine assistant
-                // text. This keeps the live deltas identical to the persisted reply text
-                // (which `turn_outcome` filters the same way); `ToolUse`/`Done` always flow.
-                let deliver = !matches!(ev, AgentEvent::Line(_)) || is_assistant_text_line(&line);
-                if deliver {
-                    let _ = events.send(ev).await;
-                }
+            // `parse_display_event` drops the raw-JSON system/rate_limit/unknown lines, so the
+            // live deltas stay identical to the persisted reply text (which
+            // `collect_assistant_text` gates on the same predicate); `ToolUse`/`Done` flow.
+            if let Some(ev) = stream::parse_display_event(&line) {
+                let _ = events.send(ev).await;
             }
         }
         let status = child

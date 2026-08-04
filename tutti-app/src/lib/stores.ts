@@ -4,6 +4,7 @@
 
 import { writable } from "svelte/store";
 import type { Board, EngineEvent, GateStatus, IssueCard, ProjectEntry } from "./ipc";
+import { emptySubsessions, type SubsessionState } from "./subsessions";
 
 /** The full saved project list, restored on launch and kept in sync with the backend. */
 export const projects = writable<ProjectEntry[]>([]);
@@ -30,8 +31,8 @@ export const selectedIssueId = writable<number | null>(null);
 /** Which main-pane view is active: the Kanban board or the milestone lanes. */
 export const view = writable<"board" | "lanes">("board");
 
-/** Which sidebar section is active: the project board or the orchestrator chat. */
-export const section = writable<"board" | "orchestrator">("board");
+/** Which sidebar section is active: the project board, orchestrator chat, or subsessions. */
+export const section = writable<"board" | "orchestrator" | "subsessions">("board");
 
 /**
  * True while an orchestrator chat turn is in flight. The sidebar blocks project switch/add/
@@ -40,6 +41,17 @@ export const section = writable<"board" | "orchestrator">("board");
  * this store only gates the UI.
  */
 export const orchestratorBusy = writable(false);
+
+/**
+ * Live subsession state for the current run (in-memory, never persisted). Populated by the
+ * subsession://event stream via applySubsession, and cleared when a new run starts.
+ */
+export const subsessions = writable<SubsessionState>(emptySubsessions());
+
+/** Reset the subsessions view. Called when a run starts (the "new run" boundary). */
+export function clearSubsessions(): void {
+  subsessions.set(emptySubsessions());
+}
 
 /** Pure reducer: apply one engine event to a board + run-status snapshot. Exported for tests. */
 export function applyEvent(
