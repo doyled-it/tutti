@@ -66,7 +66,10 @@
           class:on={s.key === $subsessions.selected}
           onclick={() => subsessions.update((st) => selectSubsession(st, s.key))}
         >
-          <span class={statusClass(s.status)} aria-label={statusWord(s.status)}></span>
+          <!-- role="img" so the label is actually exposed: aria-label on a bare generic
+               element is not required to be announced, which would leave running/done/error
+               as color-only information. -->
+          <span class={statusClass(s.status)} role="img" aria-label={statusWord(s.status)}></span>
           <span class="row-label">{roleLabel(s)}</span>
         </button>
       {/each}

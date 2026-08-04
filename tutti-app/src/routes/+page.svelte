@@ -232,10 +232,13 @@
 
   async function run() {
     try {
-      await api.startRun();
-      // Optimistic + per-run reset: show running immediately, zero the shipped count, and
-      // clear the previous run's subsessions so the pane repopulates for this run.
+      // Clear BEFORE the await: `start_run` returns as soon as the run loop is spawned, so a
+      // subsession event from the new run can arrive while this is suspended and would be
+      // wiped by a clear placed after. Clearing early costs nothing if the start then fails.
       clearSubsessions();
+      await api.startRun();
+      // Optimistic: show running immediately and zero the shipped count for this run (the
+      // backend confirms via DrainStarted, and ends via run-ended).
       runStatus.set({ state: "running", shipped: 0 });
     } catch (e) {
       loadError = String(e);
