@@ -12,7 +12,6 @@
     removeProposalAt,
     dropTrailingEmptyAssistant,
     type ChatMessage,
-    type GateProposal,
   } from "$lib/orchestrator";
   import { gateStatus, orchestratorBusy } from "$lib/stores";
   import TriageProposalCard from "./TriageProposalCard.svelte";
@@ -91,13 +90,6 @@
     }
   }
 
-  // Narrowing helper: Svelte's `{#if}` narrows `m.proposal` for the markup it guards, but
-  // not inside an event handler closure, which runs later. This re-asserts the variant the
-  // surrounding branch already established.
-  function gateOf(m: ChatMessage): GateProposal {
-    return m.proposal as GateProposal;
-  }
-
   async function applyGateProposal(index: number, commands: string[]) {
     try {
       const status = await api.applyGate(commands);
@@ -127,6 +119,10 @@
         {#if m.kind === "tool"}
           <span class="tool">ran {m.text}</span>
         {:else if m.kind === "proposal" && m.proposal?.kind === "gate"}
+          <!-- `{@const}` rather than a cast: `{#if}` narrows m.proposal for the markup, but
+               not inside a handler closure, which runs later. Binding the narrowed value
+               here makes the compiler carry it into the closure. -->
+          {@const gate = m.proposal}
           <div class="proposal">
             <div class="proposal-title">Set the verification gate?</div>
             <ul class="proposal-cmds">
@@ -141,7 +137,7 @@
               <button
                 class="apply"
                 disabled={m.proposal.commands.length === 0}
-                onclick={() => applyGateProposal(i, gateOf(m).commands)}
+                onclick={() => applyGateProposal(i, gate.commands)}
               >
                 Apply
               </button>

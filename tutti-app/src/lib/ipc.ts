@@ -33,7 +33,7 @@ export interface Board {
   needs_human: IssueCard[];
 }
 
-/// Which triage decision to apply to a selection of untriaged issues.
+/** Which triage decision to apply to a selection of issues. */
 export type TriageTarget = "ready" | "needs_human";
 
 export interface TriageFailure {

@@ -10,12 +10,10 @@
     triageGap,
     toggleSelected,
     isSelectable,
-    selectColumn,
-    deselectColumn,
+    toggleColumn,
+    columnFullySelected,
     pruneSelection,
-    clearSelection,
     triageSummary,
-    type ColumnKey,
   } from "$lib/board";
 
   let {
@@ -45,11 +43,6 @@
     if (pruned !== selected) selected = pruned;
   });
 
-  /** Is every card in this column already selected? Drives the header's toggle label. */
-  function allPicked(key: ColumnKey): boolean {
-    return board[key].length > 0 && board[key].every((c) => selected.has(c.id));
-  }
-
   async function apply(to: TriageTarget) {
     if (selected.size === 0 || applying) return;
     applying = true;
@@ -58,7 +51,7 @@
     try {
       const outcome = await api.applyTriage([...selected], to);
       note = triageSummary(outcome, to);
-      selected = clearSelection();
+      selected = new Set();
       onTriaged?.();
     } catch (e) {
       error = String(e);
@@ -93,12 +86,9 @@
           {#if isSelectable(col.key)}
             <button
               class="col-action"
-              onclick={() =>
-                (selected = allPicked(col.key)
-                  ? deselectColumn(selected, board, col.key)
-                  : selectColumn(selected, board, col.key))}
+              onclick={() => (selected = toggleColumn(selected, board, col.key))}
             >
-              {allPicked(col.key) ? "Clear" : "Select all"}
+              {columnFullySelected(selected, board, col.key) ? "Clear" : "Select all"}
             </button>
           {/if}
         </div>
@@ -127,7 +117,6 @@
             {:else}
               <button
                 class="card"
-                class:hu={card.status === "needs_human"}
                 class:ip={card.status === "in_progress"}
                 class:dn={card.status === "done"}
                 onclick={() => onSelectIssue(card.id)}
@@ -156,7 +145,7 @@
         <button class="act" disabled={applying} onclick={() => apply("needs_human")}>
           Park (needs human)
         </button>
-        <button class="act ghost" disabled={applying} onclick={() => (selected = clearSelection())}>
+        <button class="act ghost" disabled={applying} onclick={() => (selected = new Set())}>
           Cancel
         </button>
       {/if}

@@ -44,29 +44,8 @@ impl GitHubForge {
     /// already-absent label is a no-op.
     async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
         let t = self.status_labels.transition(to);
-        self.write_labels(issue, std::slice::from_ref(&t.add), &t.remove)
+        self.edit_labels(issue, std::slice::from_ref(&t.add), &t.remove)
             .await
-    }
-
-    /// The single `gh issue edit` that every label write goes through, so the status path
-    /// and the triage path cannot drift. A call with nothing to add or remove is skipped
-    /// rather than shelling out to a no-op edit.
-    async fn write_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
-        if add.is_empty() && remove.is_empty() {
-            return Ok(());
-        }
-        let n = issue.0.to_string();
-        let mut args: Vec<&str> = vec!["issue", "edit", &n, "--repo", &self.repo];
-        for a in add {
-            args.push("--add-label");
-            args.push(a);
-        }
-        for r in remove {
-            args.push("--remove-label");
-            args.push(r);
-        }
-        self.gh(&args).await?;
-        Ok(())
     }
 }
 
@@ -166,13 +145,30 @@ impl Forge for GitHubForge {
         Ok(())
     }
 
+    /// The single `gh issue edit` that every label write goes through, so the status path
+    /// and the triage path cannot drift. A call with nothing to add or remove is skipped
+    /// rather than shelling out to a no-op edit.
+    async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        let n = issue.0.to_string();
+        let mut args: Vec<&str> = vec!["issue", "edit", &n, "--repo", &self.repo];
+        for a in add {
+            args.push("--add-label");
+            args.push(a);
+        }
+        for r in remove {
+            args.push("--remove-label");
+            args.push(r);
+        }
+        self.gh(&args).await?;
+        Ok(())
+    }
+
     // Note: `gh issue edit --add-label/--remove-label` is idempotent and does not error
     // if the issue is already in-progress, so this is NOT the atomic race-guard the design
     // describes; the single-runner `PidLock` provides that guarantee.
-    async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
-        self.write_labels(issue, add, remove).await
-    }
-
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         self.set_status(issue, Status::InProgress).await?;
         Ok(ClaimGuard::new(issue))

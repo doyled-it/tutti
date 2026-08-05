@@ -6,7 +6,7 @@
      `subsessions` store; the pure reducer is in $lib/subsessions.ts. -->
 <script lang="ts">
   import { subsessions } from "$lib/stores";
-  import { roleLabel, selectSubsession, type SubStatus } from "$lib/subsessions";
+  import { roleLabel, selectSubsession } from "$lib/subsessions";
 
   let selected = $derived($subsessions.list.find((s) => s.key === $subsessions.selected) ?? null);
 
@@ -39,19 +39,6 @@
       el.scrollTop = el.scrollHeight;
     }
   });
-
-  function statusClass(status: SubStatus): string {
-    if (status === "done") return "dot done";
-    if (status === "error") return "dot error";
-    return "dot running";
-  }
-
-  // Text equivalent for the status dot, so running/done/error is not color-only information.
-  function statusWord(status: SubStatus): string {
-    if (status === "done") return "done";
-    if (status === "error") return "error";
-    return "running";
-  }
 </script>
 
 <div class="pane">
@@ -68,8 +55,9 @@
         >
           <!-- role="img" so the label is actually exposed: aria-label on a bare generic
                element is not required to be announced, which would leave running/done/error
-               as color-only information. -->
-          <span class={statusClass(s.status)} role="img" aria-label={statusWord(s.status)}></span>
+               as color-only information. The status word IS the class name, so neither
+               needs a mapping function. -->
+          <span class="dot {s.status}" role="img" aria-label={s.status}></span>
           <span class="row-label">{roleLabel(s)}</span>
         </button>
       {/each}

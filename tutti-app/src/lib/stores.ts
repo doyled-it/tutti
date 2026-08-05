@@ -5,6 +5,7 @@
 import { writable } from "svelte/store";
 import type { Board, EngineEvent, GateStatus, IssueCard, ProjectEntry } from "./ipc";
 import { emptySubsessions, type SubsessionState } from "./subsessions";
+import { BOARD_BUCKETS } from "./board";
 
 /** The full saved project list, restored on launch and kept in sync with the backend. */
 export const projects = writable<ProjectEntry[]>([]);
@@ -65,8 +66,8 @@ export function applyEvent(
     // stale relative to the forge (an issue was relabeled status:ready and claimed before
     // the next full refresh), a claim event can target a card still sitting in untriaged
     // or needs-human. Missing a bucket leaves a phantom copy there as well as in the
-    // moved-to column. Any new bucket must be added here too.
-    const all = [...b.ready, ...b.in_progress, ...b.done, ...b.untriaged, ...b.needs_human];
+    // moved-to column, so the search is derived from BOARD_BUCKETS rather than spelled out.
+    const all = BOARD_BUCKETS.flatMap((k) => b[k]);
     const found = all.find((c) => c.id === id);
     const strip = (xs: IssueCard[]) => xs.filter((c) => c.id !== id);
     const nb: Board = {

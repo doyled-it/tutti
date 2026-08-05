@@ -63,28 +63,9 @@ impl GitLabForge {
     /// removal is explicit; removing an absent label is tolerated.
     async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
         let t = self.status_labels.transition(to);
-        self.write_labels(issue, std::slice::from_ref(&t.add), &t.remove)
+        self.edit_labels(issue, std::slice::from_ref(&t.add), &t.remove)
             .await
     }
-
-    /// The single label write both the status path and the triage path go through. GitLab
-    /// takes comma-separated `add_labels`/`remove_labels` on one issue update, and removing
-    /// a label the issue does not carry is a no-op.
-    async fn write_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
-        if add.is_empty() && remove.is_empty() {
-            return Ok(());
-        }
-        let add = add.join(",");
-        let remove = remove.join(",");
-        self.api(
-            "PUT",
-            &self.endpoint(&format!("issues/{}", issue.0)),
-            &[("add_labels", &add), ("remove_labels", &remove)],
-        )
-        .await?;
-        Ok(())
-    }
-
     /// Resolve the project's parent GROUP id, or None if the project is in a user
     /// namespace (no group -> epics unavailable). GitLab epics are group-level.
     async fn group_id(&self) -> Result<Option<u64>> {
@@ -151,8 +132,22 @@ impl Forge for GitLabForge {
         Ok(())
     }
 
+    /// The single label write both the status path and the triage path go through. GitLab
+    /// takes comma-separated `add_labels`/`remove_labels` on one issue update, and removing
+    /// a label the issue does not carry is a no-op.
     async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
-        self.write_labels(issue, add, remove).await
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        let add = add.join(",");
+        let remove = remove.join(",");
+        self.api(
+            "PUT",
+            &self.endpoint(&format!("issues/{}", issue.0)),
+            &[("add_labels", &add), ("remove_labels", &remove)],
+        )
+        .await?;
+        Ok(())
     }
 
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {

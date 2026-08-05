@@ -6,10 +6,9 @@ import {
   triageGap,
   toggleSelected,
   isSelectable,
-  selectColumn,
-  deselectColumn,
+  toggleColumn,
+  columnFullySelected,
   pruneSelection,
-  clearSelection,
   triageSummary,
 } from "./board";
 import type { Board, IssueCard, TriageOutcome } from "./ipc";
@@ -127,16 +126,23 @@ describe("selection helpers", () => {
       untriaged: [card(1, "untriaged"), card(2, "untriaged")],
       needs_human: [card(3, "needs_human")],
     });
-    const s = selectColumn(new Set([3]), b, "untriaged");
-    expect([...s].sort()).toEqual([1, 2, 3]);
+    expect([...toggleColumn(new Set([3]), b, "untriaged")].sort()).toEqual([1, 2, 3]);
   });
 
-  it("deselects exactly one column", () => {
+  it("toggling a fully selected column clears exactly that column", () => {
     const b = board({
       untriaged: [card(1, "untriaged"), card(2, "untriaged")],
       needs_human: [card(3, "needs_human")],
     });
-    expect([...deselectColumn(new Set([1, 2, 3]), b, "untriaged")]).toEqual([3]);
+    expect([...toggleColumn(new Set([1, 2, 3]), b, "untriaged")]).toEqual([3]);
+  });
+
+  it("reports whether a column is fully selected", () => {
+    const b = board({ untriaged: [card(1, "untriaged"), card(2, "untriaged")] });
+    expect(columnFullySelected(new Set([1]), b, "untriaged")).toBe(false);
+    expect(columnFullySelected(new Set([1, 2]), b, "untriaged")).toBe(true);
+    // An empty column is not "fully selected", or the header would offer to clear nothing.
+    expect(columnFullySelected(new Set(), board({}), "untriaged")).toBe(false);
   });
 
   it("prunes ids that left the selectable columns", () => {
@@ -155,10 +161,6 @@ describe("selection helpers", () => {
     const b = board({ untriaged: [card(1, "untriaged")] });
     const s = new Set([1]);
     expect(pruneSelection(s, b)).toBe(s);
-  });
-
-  it("clears to an empty set", () => {
-    expect([...clearSelection()]).toEqual([]);
   });
 });
 

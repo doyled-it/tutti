@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Pure reducer for the Subsessions pane. Folds the pushed SubsessionEvent stream into a
 // keyed, in-memory collection of per-role transcripts. Live-only (never persisted). Reuses
-// the orchestrator chat's transcript primitives so the two panes render identically. Kept
+// the orchestrator chat's transcript REDUCER primitives (startAssistant/appendDelta/
+// appendTool/dropTrailingEmptyAssistant); the rendering is still each pane's own. Kept
 // pure and vitest-covered per the board.ts / browse.ts / orchestrator.ts convention.
 
 import type { Role, SubsessionEvent } from "./ipc";
