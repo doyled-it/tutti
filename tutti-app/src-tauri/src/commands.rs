@@ -210,12 +210,33 @@ pub async fn apply_triage(
     to: TriageTarget,
     state: tauri::State<'_, AppState>,
 ) -> Result<TriageOutcome, String> {
-    if !matches!(state.run.lock().await.state, RunState::Idle) {
-        return Err("finish the current run before triaging issues".into());
-    }
-    let guard = state.project.lock().await;
-    let p = guard.as_ref().ok_or("no project loaded")?;
-    apply_triage_core(p.forge.as_ref(), &p.config, &issues, to)
+    // Copy what we need out of the project and release it, following `driver::start`.
+    // Triaging a converted backlog is dozens of sequential forge writes, tens of seconds;
+    // holding `project` across them would block `get_board`, `get_issue`, the orchestrator
+    // and the run driver for the duration, leaving every button in the app hanging with no
+    // explanation.
+    let (config, repo, repo_root) = {
+        let guard = state.project.lock().await;
+        let p = guard.as_ref().ok_or("no project loaded")?;
+        (p.config.clone(), p.repo.clone(), p.repo_root.clone())
+    };
+
+    // Then take the run lock and HOLD it for the whole operation. The previous version
+    // checked `RunState::Idle` and dropped the guard before doing anything, so a run
+    // starting in that window would drain against labels being rewritten underneath it.
+    // Holding it makes "no run starts mid-triage" a lock invariant instead of a
+    // check-then-act. Acquired after `project` is released, never while holding it, which
+    // is the order `driver::start` uses; taking them the other way round would deadlock.
+    let _run = {
+        let run = state.run.lock().await;
+        if !matches!(run.state, RunState::Idle) {
+            return Err("finish the current run before triaging issues".into());
+        }
+        run
+    };
+
+    let forge = build_forge(&config, &repo, repo_root).map_err(|e| e.to_string())?;
+    apply_triage_core(forge.as_ref(), &config, &issues, to)
         .await
         .map_err(|e| e.to_string())
 }

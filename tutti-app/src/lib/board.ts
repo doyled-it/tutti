@@ -10,6 +10,20 @@ export type ColumnKey = keyof Pick<
   "untriaged" | "needs_human" | "ready" | "in_progress" | "done"
 >;
 
+/**
+ * Every bucket the board splits issues into. Derived from rather than duplicated by the
+ * places that need to walk them all: `stores.ts` previously spelled the list out twice and
+ * carried a comment warning that a new bucket must be added there too, which is a drift
+ * hazard documented instead of removed.
+ */
+export const BOARD_BUCKETS: ColumnKey[] = [
+  "untriaged",
+  "needs_human",
+  "ready",
+  "in_progress",
+  "done",
+];
+
 /** A lane chip: one card plus the short style class its status maps to. */
 export type LaneChip = { card: IssueCard; cls: string };
 
@@ -56,12 +70,7 @@ export function laneChips(board: Board): LaneChip[] {
  */
 export function triageGap(board: Board): TriageGap {
   return {
-    total:
-      board.untriaged.length +
-      board.needs_human.length +
-      board.ready.length +
-      board.in_progress.length +
-      board.done.length,
+    total: BOARD_BUCKETS.reduce((n, k) => n + board[k].length, 0),
     untriaged: board.untriaged.length,
     ready: board.ready.length,
     needsHuman: board.needs_human.length,
@@ -73,7 +82,7 @@ export function triageGap(board: Board): TriageGap {
  * progress and Done are absent on purpose: the in-progress label IS the claim lock, and
  * shipped work is never re-opened. Needs human is present so parking is not a one-way door.
  */
-export const SELECTABLE_COLUMNS: ColumnKey[] = ["untriaged", "needs_human"];
+const SELECTABLE_COLUMNS: ColumnKey[] = ["untriaged", "needs_human"];
 
 export function isSelectable(key: ColumnKey): boolean {
   return SELECTABLE_COLUMNS.includes(key);
@@ -86,19 +95,26 @@ export function toggleSelected(selected: Set<number>, id: number): Set<number> {
   return next;
 }
 
-/** Select every card in one selectable column, leaving any other column's selection alone. */
-export function selectColumn(selected: Set<number>, board: Board, key: ColumnKey): Set<number> {
+/** True when every card in `key` is selected. Drives the header toggle's label. */
+export function columnFullySelected(selected: Set<number>, board: Board, key: ColumnKey): boolean {
+  return board[key].length > 0 && board[key].every((c) => selected.has(c.id));
+}
+
+/**
+ * Select every card in one column, or clear them if they are all already selected. Other
+ * columns' selections are left alone, so a selection can span both upstream columns. The
+ * branch lives here rather than in the template so it is a unit-tested fact.
+ */
+export function toggleColumn(selected: Set<number>, board: Board, key: ColumnKey): Set<number> {
+  if (columnFullySelected(selected, board, key)) {
+    const drop = new Set(board[key].map((c) => c.id));
+    return new Set([...selected].filter((id) => !drop.has(id)));
+  }
   return new Set([...selected, ...board[key].map((c) => c.id)]);
 }
 
-/** Drop every id belonging to one column, the inverse of `selectColumn`. */
-export function deselectColumn(selected: Set<number>, board: Board, key: ColumnKey): Set<number> {
-  const drop = new Set(board[key].map((c) => c.id));
-  return new Set([...selected].filter((id) => !drop.has(id)));
-}
-
 /** Every id currently selectable, used to prune a selection after the board refreshes. */
-export function selectableIds(board: Board): Set<number> {
+function selectableIds(board: Board): Set<number> {
   return new Set(SELECTABLE_COLUMNS.flatMap((k) => board[k].map((c) => c.id)));
 }
 
@@ -111,10 +127,6 @@ export function pruneSelection(selected: Set<number>, board: Board): Set<number>
   const live = selectableIds(board);
   const kept = [...selected].filter((id) => live.has(id));
   return kept.length === selected.size ? selected : new Set(kept);
-}
-
-export function clearSelection(): Set<number> {
-  return new Set();
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

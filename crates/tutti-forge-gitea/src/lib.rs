@@ -71,49 +71,9 @@ impl GiteaForge {
     /// exist in the repo; a name that does not resolve is a setup error.
     async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
         let t = self.status_labels.transition(to);
-        self.write_labels(issue, std::slice::from_ref(&t.add), &t.remove)
+        self.edit_labels(issue, std::slice::from_ref(&t.add), &t.remove)
             .await
     }
-
-    /// The single label write both the status path and the triage path go through. Gitea
-    /// works in label ids, so every name is resolved against the repo's label list first.
-    /// An unknown name to *add* is a setup error (the label must exist); an unknown name to
-    /// *remove* is simply absent from the issue, so it is skipped.
-    async fn write_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
-        if add.is_empty() && remove.is_empty() {
-            return Ok(());
-        }
-        let map = self.label_ids().await?;
-        let n = issue.0;
-        if !add.is_empty() {
-            let mut ids = Vec::with_capacity(add.len());
-            for name in add {
-                let id = Self::id_for(&map, name).ok_or_else(|| {
-                    EngineError::Forge(format!("label {name:?} not found in repo"))
-                })?;
-                ids.push(id.to_string());
-            }
-            self.api(
-                "POST",
-                &self.endpoint(&format!("issues/{n}/labels")),
-                Some(&format!("{{\"labels\":[{}]}}", ids.join(","))),
-            )
-            .await?;
-        }
-        for name in remove {
-            if let Some(rid) = Self::id_for(&map, name) {
-                // Deleting an absent label still succeeds, so this is unconditional.
-                self.api(
-                    "DELETE",
-                    &self.endpoint(&format!("issues/{n}/labels/{rid}")),
-                    None,
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
     /// Derive the `epic:<slug>` label name for an epic title (lowercase, non-alnum -> '-').
     fn epic_label(title: &str) -> String {
         let slug: String = title
@@ -212,8 +172,43 @@ impl Forge for GiteaForge {
         Ok(())
     }
 
+    /// The single label write both the status path and the triage path go through. Gitea
+    /// works in label ids, so every name is resolved against the repo's label list first.
+    /// An unknown name to *add* is a setup error (the label must exist); an unknown name to
+    /// *remove* is simply absent from the issue, so it is skipped.
     async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
-        self.write_labels(issue, add, remove).await
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        let map = self.label_ids().await?;
+        let n = issue.0;
+        if !add.is_empty() {
+            let mut ids = Vec::with_capacity(add.len());
+            for name in add {
+                let id = Self::id_for(&map, name).ok_or_else(|| {
+                    EngineError::Forge(format!("label {name:?} not found in repo"))
+                })?;
+                ids.push(id.to_string());
+            }
+            self.api(
+                "POST",
+                &self.endpoint(&format!("issues/{n}/labels")),
+                Some(&format!("{{\"labels\":[{}]}}", ids.join(","))),
+            )
+            .await?;
+        }
+        for name in remove {
+            if let Some(rid) = Self::id_for(&map, name) {
+                // Deleting an absent label still succeeds, so this is unconditional.
+                self.api(
+                    "DELETE",
+                    &self.endpoint(&format!("issues/{n}/labels/{rid}")),
+                    None,
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {

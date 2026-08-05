@@ -173,6 +173,20 @@ impl Config {
                 status.ready, self.select.require_label
             )));
         }
+        // A skip label that is also a status label makes the project incoherent, and the
+        // failures are quiet rather than loud. `require_label` as a skip label means
+        // `next_ready_issue` matches nothing, so a drain silently does no work. And triage
+        // builds its label writes from both sets: `triage_labels(Ready)` would emit the same
+        // name in `add` and `remove` (adapter-dependent), and if the first skip label is
+        // `status.done` then "Park" writes `status:done` and marks live work shipped. One
+        // rejection here removes the whole class rather than special-casing it downstream.
+        for skip in &self.select.skip_labels {
+            if [&status.ready, &status.in_progress, &status.done].contains(&skip) {
+                return Err(EngineError::Guardrail(format!(
+                    "select.skip_labels must not contain a status label, but it contains {skip:?}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -418,6 +432,49 @@ working_dir = ""
         )
         .unwrap();
         Config::load(&p).unwrap()
+    }
+
+    #[test]
+    fn a_skip_label_that_is_also_a_status_label_is_rejected() {
+        // Each of these is a quiet failure rather than a loud one, which is why it belongs
+        // here rather than being handled downstream.
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["status:ready", "status:in-progress", "status:done"] {
+            let p = dir.path().join("tutti.toml");
+            std::fs::write(
+                &p,
+                format!(
+                    r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "version/v0.1"
+model = "m"
+
+[select]
+require_label = "status:ready"
+skip_labels = ["{bad}"]
+
+[gate]
+commands = ["true"]
+working_dir = ""
+"#
+                ),
+            )
+            .unwrap();
+            let err = Config::load(&p).expect_err("must be rejected");
+            assert!(
+                err.to_string().contains(bad),
+                "the error should name the offending label, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_skip_label_is_still_accepted() {
+        assert_eq!(
+            cfg_with_select("").select.skip_labels,
+            vec!["status:needs-human".to_string()]
+        );
     }
 
     #[test]

@@ -115,9 +115,10 @@ fn classify(issue: &Issue, labels: &StatusLabels, skip: &[String]) -> Status {
     }
 }
 
-/// The board status of a single issue under `cfg`. The public entry point to `classify`, so
-/// callers that need to check eligibility (the triage command re-reading the forge before it
-/// writes) bucket an issue exactly the way the board does, from one implementation.
+/// The board status of a single issue under `cfg`. The entry point to `classify` for every
+/// caller outside `assemble_board`, which hoists `status_labels()` out of its loop
+/// deliberately rather than cloning it per issue. Triage's eligibility re-read and the
+/// drawer both go through here, so they cannot bucket an issue differently from the board.
 pub fn issue_status(issue: &Issue, cfg: &Config) -> Status {
     classify(issue, &cfg.status_labels(), &cfg.select.skip_labels)
 }
@@ -641,7 +642,6 @@ pub async fn apply_triage(
 
 /// Find `id` among all issues and build its drawer detail.
 pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<IssueDetail> {
-    let labels = cfg.status_labels();
     let issue = forge
         .list_issues()
         .await?
@@ -674,7 +674,7 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
         body: issue.body.clone(),
         labels: chips,
         milestone: issue.milestone.clone(),
-        status: classify(&issue, &labels, &cfg.select.skip_labels),
+        status: issue_status(&issue, cfg),
         branch: format!("feat/issue-{id}"),
     })
 }
