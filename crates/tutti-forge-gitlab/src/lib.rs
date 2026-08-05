@@ -57,11 +57,23 @@ impl GitLabForge {
     /// removal is explicit; removing an absent label is tolerated.
     async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
         let t = self.status_labels.transition(to);
-        let remove = t.remove.join(",");
+        self.write_labels(issue, std::slice::from_ref(&t.add), &t.remove)
+            .await
+    }
+
+    /// The single label write both the status path and the triage path go through. GitLab
+    /// takes comma-separated `add_labels`/`remove_labels` on one issue update, and removing
+    /// a label the issue does not carry is a no-op.
+    async fn write_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        let add = add.join(",");
+        let remove = remove.join(",");
         self.api(
             "PUT",
             &self.endpoint(&format!("issues/{}", issue.0)),
-            &[("add_labels", &t.add), ("remove_labels", &remove)],
+            &[("add_labels", &add), ("remove_labels", &remove)],
         )
         .await?;
         Ok(())
@@ -112,6 +124,10 @@ impl Forge for GitLabForge {
         )
         .await?;
         Ok(())
+    }
+
+    async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
+        self.write_labels(issue, add, remove).await
     }
 
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {

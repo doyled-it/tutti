@@ -72,6 +72,15 @@ pub trait Forge: Send + Sync {
     /// Create a label with a hex color (without '#'). Callers create only labels that do
     /// not already exist (diffed against list_labels), so this need not be idempotent.
     async fn create_label(&self, name: &str, color: &str) -> Result<()>;
+    /// Add and remove labels on an issue in one call. Removing a label the issue does not
+    /// carry MUST be a no-op rather than an error, so a caller can express a transition
+    /// ("add ready, clear the other two") without first reading the issue's label set.
+    ///
+    /// This is the primitive every status write is built from. It is public on the trait
+    /// because triage (moving an untriaged issue to ready, or parking it as needs-human)
+    /// needs to write labels that no forge can derive on its own: the skip labels live in
+    /// `SelectFilter`, which is config the adapters never see.
+    async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()>;
     /// Flip ready -> in-progress. The label flip is the lock.
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard>;
     /// Flip in-progress -> ready (failure path).

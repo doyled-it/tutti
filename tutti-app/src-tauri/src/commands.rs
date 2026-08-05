@@ -7,7 +7,8 @@ use crate::state::{AppState, Project, RunState};
 use std::path::PathBuf;
 use tauri::Manager;
 use tutti_app_core::{
-    assemble_board, issue_detail, Board, IssueDetail, ProjectEntry, ProjectStore,
+    apply_triage as apply_triage_core, assemble_board, issue_detail, Board, IssueDetail,
+    ProjectEntry, ProjectStore, TriageOutcome, TriageTarget,
 };
 use tutti_core::browse::{ForgeBrowser, Namespace, NewRepo, RemoteRepo};
 use tutti_core::config::{Config, ForgeKind};
@@ -177,6 +178,28 @@ pub async fn get_board(
     let guard = state.project.lock().await;
     let p = guard.as_ref().ok_or("no project loaded")?;
     assemble_board(p.forge.as_ref(), &p.config, milestone.map(MilestoneId))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Apply a triage decision to `issues`. The work lives in `tutti_app_core::apply_triage`
+/// (hermetic, tested against a FakeForge); this wrapper adds the two things that need
+/// managed state.
+///
+/// Run-guarded, mirroring `apply_gate`: relabelling changes what the drain selects, so doing
+/// it mid-run means the engine's next selection differs from the one the user was looking at.
+#[tauri::command]
+pub async fn apply_triage(
+    issues: Vec<u64>,
+    to: TriageTarget,
+    state: tauri::State<'_, AppState>,
+) -> Result<TriageOutcome, String> {
+    if !matches!(state.run.lock().await.state, RunState::Idle) {
+        return Err("finish the current run before triaging issues".into());
+    }
+    let guard = state.project.lock().await;
+    let p = guard.as_ref().ok_or("no project loaded")?;
+    apply_triage_core(p.forge.as_ref(), &p.config, &issues, to)
         .await
         .map_err(|e| e.to_string())
 }

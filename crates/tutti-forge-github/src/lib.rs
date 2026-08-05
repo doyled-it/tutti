@@ -36,18 +36,25 @@ impl GitHubForge {
     /// `gh issue edit --add-label/--remove-label` is idempotent, so removing an
     /// already-absent label is a no-op.
     async fn set_status(&self, issue: IssueId, to: Status) -> Result<()> {
-        let n = issue.0.to_string();
         let t = self.status_labels.transition(to);
-        let mut args: Vec<&str> = vec![
-            "issue",
-            "edit",
-            &n,
-            "--repo",
-            &self.repo,
-            "--add-label",
-            &t.add,
-        ];
-        for r in &t.remove {
+        self.write_labels(issue, std::slice::from_ref(&t.add), &t.remove)
+            .await
+    }
+
+    /// The single `gh issue edit` that every label write goes through, so the status path
+    /// and the triage path cannot drift. A call with nothing to add or remove is skipped
+    /// rather than shelling out to a no-op edit.
+    async fn write_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
+        if add.is_empty() && remove.is_empty() {
+            return Ok(());
+        }
+        let n = issue.0.to_string();
+        let mut args: Vec<&str> = vec!["issue", "edit", &n, "--repo", &self.repo];
+        for a in add {
+            args.push("--add-label");
+            args.push(a);
+        }
+        for r in remove {
             args.push("--remove-label");
             args.push(r);
         }
@@ -155,6 +162,10 @@ impl Forge for GitHubForge {
     // Note: `gh issue edit --add-label/--remove-label` is idempotent and does not error
     // if the issue is already in-progress, so this is NOT the atomic race-guard the design
     // describes; the single-runner `PidLock` provides that guarantee.
+    async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
+        self.write_labels(issue, add, remove).await
+    }
+
     async fn claim(&self, issue: IssueId) -> Result<ClaimGuard> {
         self.set_status(issue, Status::InProgress).await?;
         Ok(ClaimGuard::new(issue))

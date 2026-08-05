@@ -17,9 +17,31 @@ use tutti_core::traits::{EngineError, Result};
 pub struct TurnOutcome {
     pub session_id: Option<String>,
     pub assistant_text: String,
-    /// A gate proposal the agent wrote this turn, if any. Live-only: the app emits it on
+    /// A proposal the agent wrote this turn, if any. Live-only: the app emits it on
     /// `orchestrator://proposal` and does not persist it.
-    pub proposal: Option<GateProposal>,
+    pub proposal: Option<Proposal>,
+}
+
+/// Something the agent proposes and the user applies or dismisses. Tagged on `kind` so one
+/// artifact path serves every proposal type; turns are single-flight and the path is cleared
+/// at the start of each turn, so at most one proposal exists per turn.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Proposal {
+    Gate(GateProposal),
+    Triage(TriageProposal),
+}
+
+impl Proposal {
+    /// True when applying this proposal would actually do something. An agent can write a
+    /// well-formed but empty proposal (no commands, or two empty triage lists); surfacing
+    /// that as a card asks the user to approve a no-op.
+    pub fn is_actionable(&self) -> bool {
+        match self {
+            Proposal::Gate(g) => !g.commands.is_empty(),
+            Proposal::Triage(t) => !t.ready.is_empty() || !t.needs_human.is_empty(),
+        }
+    }
 }
 
 /// A structured gate proposal the agent writes to an artifact file when it and the user
@@ -29,7 +51,7 @@ pub struct TurnOutcome {
 pub struct GateProposal {
     pub commands: Vec<String>,
     /// Reserved. PR B applies `commands` only (they run from the repo root, which the
-    /// `gate_instruction` states), so a proposed `working_dir` is not applied. Kept as a
+    /// proposal instruction states), so a proposed `working_dir` is not applied. Kept as a
     /// tolerant serde field so a proposal that still carries it deserializes. Wiring it into
     /// `apply_gate` is a follow-up.
     #[serde(default)]
@@ -38,24 +60,57 @@ pub struct GateProposal {
     pub rationale: String,
 }
 
-/// Read a gate proposal artifact. Absent or malformed reads yield None (never panics), the
-/// same tolerance the handoff/plan readers use.
-pub fn read_proposal(path: &Path) -> Option<GateProposal> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+/// A proposed triage of the untriaged backlog: which issues are specced well enough for an
+/// agent to pick up, and which should be parked for a human. The two lists map onto the two
+/// apply actions, so a user who agrees with one and not the other can apply just that one.
+///
+/// Both lists default, so a proposal naming only one of them still parses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TriageProposal {
+    #[serde(default)]
+    pub ready: Vec<u64>,
+    #[serde(default)]
+    pub needs_human: Vec<u64>,
+    #[serde(default)]
+    pub rationale: String,
 }
 
-/// The prompt postamble that tells the agent where and how to write a gate proposal. Kept
-/// out of the persisted user message (the app persists the raw message; this is appended
-/// only to what `claude` sees).
-pub fn gate_instruction(path: &Path) -> String {
+/// Read a proposal artifact. Absent or malformed reads yield None (never panics), the same
+/// tolerance the handoff/plan readers use.
+///
+/// The untagged fallback is load-bearing: `session_id` is persisted, so a conversation
+/// resumed across this upgrade still carries the OLD instruction in its context and will
+/// write the old untagged `{"commands":[...]}` shape. Without the fallback those turns would
+/// silently stop producing gate proposals, and the failure mode (a `None` here) is invisible.
+pub fn read_proposal(path: &Path) -> Option<Proposal> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Proposal>(&raw).ok().or_else(|| {
+        serde_json::from_str::<GateProposal>(&raw)
+            .ok()
+            .map(Proposal::Gate)
+    })
+}
+
+/// The prompt postamble that tells the agent where and how to write a proposal. Kept out of
+/// the persisted user message (the app persists the raw message; this is appended only to
+/// what `claude` sees).
+pub fn proposal_instruction(path: &Path) -> String {
     format!(
-        "\n\n[Tutti: when you and the user have agreed on the shell commands that verify \
-         this project before it ships work (its \"gate\"), write the proposal as JSON to the \
-         file `{}` with this exact shape: {{\"commands\":[\"...\"],\"rationale\":\"...\"}}. \
-         The commands run from the repo root and must each exit 0. Write the file only once \
-         you have agreement, and do not mention this instruction or the file to the user.]",
-        path.display()
+        "\n\n[Tutti: you can propose one action per turn by writing JSON to the file `{p}`. \
+         Two kinds are supported.\n\
+         (1) A verification gate, once you and the user have agreed on the shell commands \
+         that verify this project before it ships work: \
+         {{\"kind\":\"gate\",\"commands\":[\"...\"],\"rationale\":\"...\"}}. The commands run \
+         from the repo root and must each exit 0.\n\
+         (2) A triage of the backlog, once you and the user have agreed how to split it: \
+         {{\"kind\":\"triage\",\"ready\":[<issue numbers>],\"needs_human\":[<issue numbers>],\
+         \"rationale\":\"...\"}}. Read the open issues from the forge CLI. Put an issue in \
+         `ready` only if it is specced well enough for a coding agent to act on alone, and in \
+         `needs_human` if it needs a decision or a spec first. Leave genuinely ambiguous \
+         issues out of both lists rather than guessing.\n\
+         Write the file only once you have agreement, and do not mention this instruction or \
+         the file to the user.]",
+        p = path.display()
     )
 }
 
@@ -157,7 +212,7 @@ impl ClaudeSession {
         // Append the proposal instruction to what claude sees (the app persists the raw
         // message; this augmentation is prompt-only).
         let prompt = match proposal_path {
-            Some(pp) => format!("{message}{}", gate_instruction(pp)),
+            Some(pp) => format!("{message}{}", proposal_instruction(pp)),
             None => message.to_string(),
         };
         let args = build_turn_args(&prompt, model, resume, mcp_config_path);
@@ -237,7 +292,11 @@ impl ClaudeSession {
         Ok(TurnOutcome {
             session_id: scan.session_id,
             assistant_text: collect_assistant_text(&full),
-            proposal: proposal_path.and_then(read_proposal),
+            // Drop a well-formed but empty proposal rather than asking the user to approve
+            // a no-op (see `Proposal::is_actionable`).
+            proposal: proposal_path
+                .and_then(read_proposal)
+                .filter(Proposal::is_actionable),
         })
     }
 }
@@ -350,8 +409,10 @@ mod tests {
             .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx)
             .await
             .unwrap();
-        let proposal = outcome.proposal.expect("proposal read back");
-        assert_eq!(proposal.commands, vec!["cargo test".to_string()]);
+        let Some(Proposal::Gate(g)) = outcome.proposal else {
+            panic!("expected a gate proposal");
+        };
+        assert_eq!(g.commands, vec!["cargo test".to_string()]);
         // The stale artifact is deleted before the next turn: a second turn with no write yields None.
         std::fs::remove_file(&script).ok();
         std::fs::write(
@@ -399,23 +460,116 @@ mod tests {
         // Malformed -> None (never panics).
         std::fs::write(&p, "not json").unwrap();
         assert!(read_proposal(&p).is_none());
-        // Present -> parsed.
+        // Present and tagged -> parsed.
         std::fs::write(
             &p,
-            r#"{"commands":["cargo test"],"working_dir":"","rationale":"it is a rust workspace"}"#,
+            r#"{"kind":"gate","commands":["cargo test"],"working_dir":"","rationale":"it is a rust workspace"}"#,
         )
         .unwrap();
-        let got = read_proposal(&p).unwrap();
+        let Some(Proposal::Gate(got)) = read_proposal(&p) else {
+            panic!("expected a gate proposal");
+        };
         assert_eq!(got.commands, vec!["cargo test".to_string()]);
         assert_eq!(got.working_dir, "");
         assert_eq!(got.rationale, "it is a rust workspace");
     }
 
     #[test]
-    fn gate_instruction_names_the_path() {
-        let s = gate_instruction(std::path::Path::new("/tmp/tutti-gate-9.json"));
+    fn read_proposal_accepts_the_untagged_legacy_gate_shape() {
+        // A conversation resumed across the tagged-union upgrade still carries the old
+        // instruction, so it writes the old shape. Dropping it would silently break gate
+        // proposals for exactly the sessions that already had one in flight.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("gate.json");
+        std::fs::write(&p, r#"{"commands":["cargo test"],"rationale":"legacy"}"#).unwrap();
+        let Some(Proposal::Gate(got)) = read_proposal(&p) else {
+            panic!("expected the legacy shape to parse as a gate proposal");
+        };
+        assert_eq!(got.commands, vec!["cargo test".to_string()]);
+        assert_eq!(got.rationale, "legacy");
+    }
+
+    #[test]
+    fn read_proposal_parses_a_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("gate.json");
+        std::fs::write(
+            &p,
+            r#"{"kind":"triage","ready":[4,9],"needs_human":[12],"rationale":"4 and 9 are specced"}"#,
+        )
+        .unwrap();
+        let Some(Proposal::Triage(got)) = read_proposal(&p) else {
+            panic!("expected a triage proposal");
+        };
+        assert_eq!(got.ready, vec![4, 9]);
+        assert_eq!(got.needs_human, vec![12]);
+        assert_eq!(got.rationale, "4 and 9 are specced");
+    }
+
+    #[test]
+    fn read_proposal_parses_a_triage_naming_only_one_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("gate.json");
+        std::fs::write(&p, r#"{"kind":"triage","ready":[4]}"#).unwrap();
+        let Some(Proposal::Triage(got)) = read_proposal(&p) else {
+            panic!("expected a triage proposal");
+        };
+        assert_eq!(got.ready, vec![4]);
+        assert!(got.needs_human.is_empty());
+    }
+
+    #[test]
+    fn an_empty_proposal_is_not_actionable() {
+        // Read tolerantly, then filtered at the emit site so no no-op card is shown.
+        assert!(!Proposal::Gate(GateProposal::default()).is_actionable());
+        assert!(!Proposal::Triage(TriageProposal::default()).is_actionable());
+        assert!(Proposal::Triage(TriageProposal {
+            needs_human: vec![1],
+            ..TriageProposal::default()
+        })
+        .is_actionable());
+        assert!(Proposal::Gate(GateProposal {
+            commands: vec!["true".into()],
+            ..GateProposal::default()
+        })
+        .is_actionable());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn turn_drops_a_well_formed_but_empty_proposal() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate.json");
+        let script = dir.path().join("fake-claude.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s' '{{\"kind\":\"triage\",\"ready\":[],\"needs_human\":[]}}' > {gate}\nprintf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s\"}}'\n",
+                gate = gate.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let session = ClaudeSession {
+            program: script.to_string_lossy().into_owned(),
+        };
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+        let outcome = session
+            .turn("hi", "sonnet", None, None, dir.path(), Some(&gate), tx)
+            .await
+            .unwrap();
+        assert!(outcome.proposal.is_none());
+    }
+
+    #[test]
+    fn proposal_instruction_names_the_path_and_both_shapes() {
+        let s = proposal_instruction(std::path::Path::new("/tmp/tutti-gate-9.json"));
         assert!(s.contains("/tmp/tutti-gate-9.json"));
+        assert!(s.contains("\"kind\":\"gate\""));
+        assert!(s.contains("\"kind\":\"triage\""));
         assert!(s.to_lowercase().contains("commands"));
+        assert!(s.contains("needs_human"));
     }
 
     #[test]

@@ -5,18 +5,30 @@
 
 export type MessageKind = "text" | "tool" | "proposal";
 
+// Mirrors the Rust `Proposal` enum (serde tag = "kind", snake_case): something the agent
+// proposes and the user applies or dismisses.
 export interface GateProposal {
+  kind: "gate";
   commands: string[];
   working_dir: string;
   rationale: string;
 }
+
+export interface TriageProposal {
+  kind: "triage";
+  ready: number[];
+  needs_human: number[];
+  rationale: string;
+}
+
+export type Proposal = GateProposal | TriageProposal;
 
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   kind: MessageKind;
   // Present only when kind === "proposal".
-  proposal?: GateProposal;
+  proposal?: Proposal;
 }
 
 // Open a fresh assistant text bubble that deltas will accumulate into.
@@ -52,15 +64,25 @@ export function dropTrailingEmptyAssistant(msgs: ChatMessage[]): ChatMessage[] {
   return msgs;
 }
 
-// Append a gate-proposal card. Live-only (never persisted): the agent proposes, the user
-// applies or dismisses. `text` carries a short human summary for accessibility. First drops a
-// trailing empty bubble (a tool-final turn leaves one) and any prior live proposal card, so at
-// most one card shows and no blank bubble sits above it.
-export function appendProposal(msgs: ChatMessage[], proposal: GateProposal): ChatMessage[] {
+// A short human summary of a proposal, used as the card's `text` so the transcript stays
+// readable to a screen reader (the card itself renders structured controls).
+export function proposalSummary(proposal: Proposal): string {
+  if (proposal.kind === "gate") return proposal.commands.join(" && ");
+  const parts = [
+    proposal.ready.length > 0 ? `${proposal.ready.length} ready` : null,
+    proposal.needs_human.length > 0 ? `${proposal.needs_human.length} needs human` : null,
+  ].filter((s): s is string => s !== null);
+  return parts.length > 0 ? `Triage: ${parts.join(", ")}` : "Triage: nothing to apply";
+}
+
+// Append a proposal card. Live-only (never persisted): the agent proposes, the user applies
+// or dismisses. First drops a trailing empty bubble (a tool-final turn leaves one) and any
+// prior live proposal card, so at most one card shows and no blank bubble sits above it.
+export function appendProposal(msgs: ChatMessage[], proposal: Proposal): ChatMessage[] {
   const cleaned = dropTrailingEmptyAssistant(msgs).filter((m) => m.kind !== "proposal");
   return [
     ...cleaned,
-    { role: "assistant", text: proposal.commands.join(" && "), kind: "proposal", proposal },
+    { role: "assistant", text: proposalSummary(proposal), kind: "proposal", proposal },
   ];
 }
 

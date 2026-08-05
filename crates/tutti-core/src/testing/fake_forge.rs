@@ -32,6 +32,8 @@ struct State {
     milestone_of: HashMap<IssueId, MilestoneId>,
     /// Fresh issue-number counter for `create_issue` / `create_epic`.
     next_issue: u64,
+    /// Issues whose `edit_labels` is scripted to fail (see `fail_label_edits_for`).
+    label_edit_failures: HashSet<IssueId>,
 }
 
 /// A scriptable in-memory forge. Configure CI outcomes per-branch via `set_ci_for_next_pr`.
@@ -115,12 +117,27 @@ impl FakeForge {
     /// label, remove the other two.
     fn apply_status(st: &mut State, issue: IssueId, to: Status) {
         let t = StatusLabels::default().transition(to);
+        Self::apply_labels(st, issue, std::slice::from_ref(&t.add), &t.remove);
+    }
+
+    /// The shared label write: remove first, then add, skipping duplicates. Removing an
+    /// absent label is a no-op, matching every real adapter.
+    fn apply_labels(st: &mut State, issue: IssueId, add: &[String], remove: &[String]) {
         if let Some(i) = st.issues.iter_mut().find(|i| i.id == issue) {
-            i.labels.retain(|l| !t.remove.contains(l));
-            if !i.labels.contains(&t.add) {
-                i.labels.push(t.add.clone());
+            i.labels.retain(|l| !remove.contains(l));
+            for a in add {
+                if !i.labels.contains(a) {
+                    i.labels.push(a.clone());
+                }
             }
         }
+    }
+
+    /// Make `edit_labels` fail for `issue`, so a caller's partial-failure accounting can be
+    /// tested. Only `edit_labels` honours this; the status writes are left alone so existing
+    /// engine tests are unaffected.
+    pub fn fail_label_edits_for(&self, issue: IssueId) {
+        self.state.lock().unwrap().label_edit_failures.insert(issue);
     }
 }
 
@@ -151,6 +168,21 @@ impl Forge for FakeForge {
     }
 
     async fn create_label(&self, _name: &str, _color: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn edit_labels(&self, issue: IssueId, add: &[String], remove: &[String]) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if st.label_edit_failures.contains(&issue) {
+            return Err(EngineError::Forge(format!(
+                "scripted label-edit failure for issue {}",
+                issue.0
+            )));
+        }
+        if !st.issues.iter().any(|i| i.id == issue) {
+            return Err(EngineError::Forge(format!("no such issue {}", issue.0)));
+        }
+        Self::apply_labels(&mut st, issue, add, remove);
         Ok(())
     }
 
@@ -442,6 +474,74 @@ mod tests {
         assert_eq!(children[0].id, created.id);
         assert_eq!(children[0].milestone.as_deref(), Some("v0.1"));
         assert!(created.has_label("status:ready"));
+    }
+
+    #[tokio::test]
+    async fn edit_labels_adds_and_removes() {
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        forge
+            .edit_labels(
+                IssueId(1),
+                &["status:needs-human".into()],
+                &["status:ready".into()],
+            )
+            .await
+            .unwrap();
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
+    }
+
+    #[tokio::test]
+    async fn edit_labels_removing_an_absent_label_is_a_no_op() {
+        // Callers express transitions without first reading the label set, so removing a
+        // label the issue never carried must succeed.
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        forge
+            .edit_labels(IssueId(1), &[], &["status:done".into()])
+            .await
+            .unwrap();
+        assert_eq!(
+            forge.labels_of(IssueId(1)),
+            vec!["status:ready".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_labels_does_not_duplicate_a_label_already_present() {
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        forge
+            .edit_labels(IssueId(1), &["status:ready".into()], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            forge.labels_of(IssueId(1)),
+            vec!["status:ready".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_labels_errors_on_an_unknown_issue() {
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        assert!(forge
+            .edit_labels(IssueId(99), &["x".into()], &[])
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scripted_label_edit_failure_is_surfaced() {
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        forge.fail_label_edits_for(IssueId(1));
+        assert!(forge
+            .edit_labels(IssueId(1), &["x".into()], &[])
+            .await
+            .is_err());
+        // The failure must not have partially applied.
+        assert_eq!(
+            forge.labels_of(IssueId(1)),
+            vec!["status:ready".to_string()]
+        );
     }
 
     #[tokio::test]
