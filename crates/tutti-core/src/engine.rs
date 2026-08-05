@@ -3,7 +3,7 @@
 //! apply-fixes, gate, merge (via the executor), record, plan.
 
 use crate::config::Config;
-use crate::domain::Issue;
+use crate::domain::{Issue, SelectFilter};
 use crate::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
@@ -152,7 +152,7 @@ impl<'a> Engine<'a> {
     /// adds hook calls at claim, ship, and release.
     async fn run_one_hooked(&self, hooks: &EngineHooks) -> Result<IterOutcome> {
         // GUARDRAIL #1: selection skips needs-human etc. via SelectFilter.
-        let Some(issue) = self.forge.next_ready_issue(&self.cfg.select).await? else {
+        let Some(issue) = self.select_ready_issue().await? else {
             return Ok(IterOutcome::NoReadyWork);
         };
         // Bind the guard so the claim's lifetime is clear for the duration of the
@@ -170,6 +170,38 @@ impl<'a> Engine<'a> {
             let _ = self.forge.release(issue.id).await;
         }
         result
+    }
+
+    /// Pick the issue this iteration works on, applying the milestone floor if it is on.
+    ///
+    /// The floor asks the same selector once per open milestone, earliest first, and takes
+    /// the first hit. "This milestone is drained" therefore means "it has no ready issue
+    /// left", which is a broader and more useful test here than `Progress::is_drained`: an
+    /// issue parked behind `status:needs-human` should not pin the floor to a milestone the
+    /// loop cannot make progress on.
+    ///
+    /// The last probe is deliberately unscoped. That is what makes the floor *soft*: once
+    /// no open milestone has ready work, issues that carry no milestone at all still get
+    /// picked up, so turning the floor on can reorder the drain but can never starve it.
+    ///
+    /// Cost: one `list_milestones` plus up to one selector call per open milestone, per
+    /// iteration. Both are cheap forge reads, and the whole path is skipped when the floor
+    /// is off (the default) or when `select.milestone` already pins a single scope.
+    async fn select_ready_issue(&self) -> Result<Option<Issue>> {
+        if !self.cfg.select.milestone_floor || self.cfg.select.milestone.is_some() {
+            return self.forge.next_ready_issue(&self.cfg.select).await;
+        }
+        let milestones = self.forge.list_milestones().await?;
+        for m in crate::tracking::milestone_floor_order(&milestones) {
+            let scoped = SelectFilter {
+                milestone: Some(m.title.clone()),
+                ..self.cfg.select.clone()
+            };
+            if let Some(issue) = self.forge.next_ready_issue(&scoped).await? {
+                return Ok(Some(issue));
+            }
+        }
+        self.forge.next_ready_issue(&self.cfg.select).await
     }
 
     /// The claimed body of one iteration. Creates an isolated worktree per issue,
@@ -428,11 +460,32 @@ impl<'a> Engine<'a> {
         match &decision.action {
             PlanAction::NextIssue => {}
             PlanAction::CreateIssues(list) => {
+                // Resolve the planner's title hints to forge ids once for the whole batch,
+                // not once per issue, and only fetch a list some issue actually references.
+                // `list_epics` in particular is an N+1 on GitHub, so an epic-free plan (the
+                // common case today) must not pay for it.
+                let milestones = if list.iter().any(|n| n.milestone.is_some()) {
+                    self.forge.list_milestones().await?
+                } else {
+                    Vec::new()
+                };
+                let epics = if list.iter().any(|n| n.epic.is_some()) {
+                    self.forge.list_epics().await?
+                } else {
+                    Vec::new()
+                };
                 for new in list {
-                    // Slice 3A: NewIssue carries no milestone/epic hints yet, so new issues
-                    // are created at the top level (None/None). Milestone/epic placement is
-                    // a later enhancement.
-                    self.forge.create_issue(new, None, None).await?;
+                    let milestone = new
+                        .milestone
+                        .as_deref()
+                        .and_then(|t| resolve_by_title(&milestones, t, |m| &m.title))
+                        .map(|m| m.id);
+                    let epic = new
+                        .epic
+                        .as_deref()
+                        .and_then(|t| resolve_by_title(&epics, t, |e| &e.title))
+                        .map(|e| e.id);
+                    self.forge.create_issue(new, milestone, epic).await?;
                 }
             }
             // Non-whitelisted actions never reach here (guarded by plan_is_auto_executable).
@@ -440,6 +493,23 @@ impl<'a> Engine<'a> {
         }
         Ok(())
     }
+}
+
+/// Resolve a planner-supplied title to the tracking item it names.
+///
+/// Exact match first, then a case-insensitive pass. The planner retypes titles it read out
+/// of the tracking snapshot, and an LLM retyping `v0.1 MVP` as `v0.1 mvp` should still land
+/// the issue in the right milestone. Returning `None` is not an error: the caller files the
+/// issue at the top level, where a human will see it, rather than dropping proposed work.
+fn resolve_by_title<'a, T>(
+    items: &'a [T],
+    title: &str,
+    name: impl Fn(&T) -> &str,
+) -> Option<&'a T> {
+    items
+        .iter()
+        .find(|it| name(it) == title)
+        .or_else(|| items.iter().find(|it| name(it).eq_ignore_ascii_case(title)))
 }
 
 /// GUARDRAIL #3 helper: is this plan action safe to auto-execute?
@@ -523,6 +593,7 @@ mod tests {
                 require_label: "status:ready".into(),
                 skip_labels: vec!["status:needs-human".into()],
                 milestone: None,
+                milestone_floor: false,
             },
             gate: Gate {
                 commands: vec!["true".into()],
@@ -985,6 +1056,8 @@ mod tests {
             title: title.into(),
             body: String::new(),
             labels: vec![],
+            milestone: None,
+            epic: None,
         }
     }
 
@@ -1081,6 +1154,7 @@ mod tests {
             require_label: "status:ready".into(),
             skip_labels: vec![],
             milestone: Some("v0.1".into()),
+            milestone_floor: false,
         };
         let got = forge.next_ready_issue(&scoped).await.unwrap().unwrap();
         assert_eq!(got.id, IssueId(1));
@@ -1089,6 +1163,7 @@ mod tests {
             require_label: "status:ready".into(),
             skip_labels: vec![],
             milestone: None,
+            milestone_floor: false,
         };
         // With no scope, selection order is unchanged: the first seeded ready issue.
         let got = forge.next_ready_issue(&unscoped).await.unwrap().unwrap();
@@ -1140,6 +1215,306 @@ mod tests {
         assert_eq!(forge.issue_count(), 2);
         assert!(forge.issue_titles().contains(&"follow-up work".to_string()));
         assert!(matches!(plan.unwrap().action, PlanAction::CreateIssues(_)));
+    }
+
+    /// A ready issue already scoped to a milestone by title, seeded directly so a test can
+    /// control both list order and labels (which `FakeForge::create_issue` normalises).
+    fn ready_in(id: u64, milestone: &str) -> Issue {
+        Issue {
+            milestone: Some(milestone.into()),
+            ..ready(id)
+        }
+    }
+
+    /// A milestone-scoped issue the selector must refuse, so a test can express "this
+    /// milestone has work left, but none of it is workable".
+    fn blocked_in(id: u64, milestone: &str) -> Issue {
+        let mut issue = ready_in(id, milestone);
+        issue.labels.push("status:needs-human".into());
+        issue
+    }
+
+    fn floor_cfg() -> Config {
+        let mut cfg = cfg();
+        cfg.select.milestone_floor = true;
+        cfg
+    }
+
+    /// Build an engine over `forge` with no scripted agent work. The floor tests exercise
+    /// selection only, so the backend is never reached.
+    fn selector_engine<'a>(
+        cfg: &'a Config,
+        forge: &'a FakeForge,
+        backend: &'a FakeBackend,
+    ) -> Engine<'a> {
+        Engine::new(
+            cfg,
+            forge,
+            backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn milestone_floor_prefers_the_earliest_open_milestone() {
+        // The later milestone's issue is seeded first, so an unscoped selector would take
+        // it. The floor must reach past list order to the earlier milestone's work.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(
+            vec![ready_in(1, "v0.2"), ready_in(2, "v0.1")],
+            CiState::Pass,
+        );
+        forge
+            .create_milestone("v0.2", Some("2026-09-01"), "")
+            .await
+            .unwrap();
+        forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
+    }
+
+    #[tokio::test]
+    async fn milestone_floor_falls_through_a_milestone_with_no_workable_issue() {
+        // v0.1 still has an open child, but it is parked behind needs-human. The floor must
+        // treat "no ready work" as drained and advance, or the loop stalls forever.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(
+            vec![blocked_in(1, "v0.1"), ready_in(2, "v0.2")],
+            CiState::Pass,
+        );
+        forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        forge
+            .create_milestone("v0.2", Some("2026-09-01"), "")
+            .await
+            .unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
+    }
+
+    #[tokio::test]
+    async fn milestone_floor_skips_closed_milestones() {
+        // Closing v0.1 advances the floor even though its due date is still the earliest.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(
+            vec![ready_in(1, "v0.1"), ready_in(2, "v0.2")],
+            CiState::Pass,
+        );
+        let closed = forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        forge
+            .create_milestone("v0.2", Some("2026-09-01"), "")
+            .await
+            .unwrap();
+        forge.close_milestone(closed.id).await.unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
+    }
+
+    #[tokio::test]
+    async fn milestone_floor_is_soft_and_still_finds_unmilestoned_work() {
+        // No open milestone has ready work, so the final unscoped probe must still pick up
+        // an issue that belongs to no milestone at all. This is what stops the floor from
+        // starving the drain.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(vec![blocked_in(1, "v0.1"), ready(2)], CiState::Pass);
+        forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
+    }
+
+    #[tokio::test]
+    async fn milestone_floor_reports_no_work_when_there_is_none() {
+        // Every probe misses. The floor must not invent work, or `run_one` would never
+        // reach NoReadyWork and the drain would not terminate.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(vec![blocked_in(1, "v0.1")], CiState::Pass);
+        forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        assert!(engine.select_ready_issue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_milestone_scope_wins_over_the_floor() {
+        // `select.milestone` is a hard answer to the same question, so the floor must not
+        // reorder around it: v0.1 has ready work, but the pinned scope is v0.2.
+        let mut cfg = floor_cfg();
+        cfg.select.milestone = Some("v0.2".into());
+        let forge = FakeForge::new(
+            vec![ready_in(1, "v0.1"), ready_in(2, "v0.2")],
+            CiState::Pass,
+        );
+        forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        forge
+            .create_milestone("v0.2", Some("2026-09-01"), "")
+            .await
+            .unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(2));
+    }
+
+    #[tokio::test]
+    async fn selection_order_is_unchanged_when_the_floor_is_off() {
+        // The default. Same seeding as the "prefers earliest" test, opposite expectation,
+        // so the two together pin the flag as the only thing that moves selection.
+        let cfg = cfg();
+        let forge = FakeForge::new(
+            vec![ready_in(1, "v0.2"), ready_in(2, "v0.1")],
+            CiState::Pass,
+        );
+        forge
+            .create_milestone("v0.2", Some("2026-09-01"), "")
+            .await
+            .unwrap();
+        forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(1));
+    }
+
+    /// A planner-proposed issue carrying placement hints.
+    fn placed_issue(title: &str, milestone: Option<&str>, epic: Option<&str>) -> NewIssue {
+        NewIssue {
+            milestone: milestone.map(str::to_string),
+            epic: epic.map(str::to_string),
+            ..new_issue(title)
+        }
+    }
+
+    /// Ship issue 1, then run the planner's `CreateIssues` decision through the engine.
+    async fn drain_creating(forge: &FakeForge, cfg: &Config, list: Vec<NewIssue>) {
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review())
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::CreateIssues(list),
+                    rationale: "spotted a gap".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            cfg,
+            forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        let (shipped, _) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 1);
+    }
+
+    #[tokio::test]
+    async fn planner_files_a_created_issue_under_the_milestone_it_named() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let ms = forge.create_milestone("v0.1", None, "").await.unwrap();
+        drain_creating(
+            &forge,
+            &cfg,
+            vec![placed_issue("follow-up work", Some("v0.1"), None)],
+        )
+        .await;
+
+        let children = forge.milestone_children(ms.id).await.unwrap();
+        assert_eq!(
+            children
+                .iter()
+                .map(|c| c.title.as_str())
+                .collect::<Vec<_>>(),
+            ["follow-up work"]
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_milestone_hint_matches_a_title_case_insensitively() {
+        // The planner retypes the title out of the snapshot; case drift must not silently
+        // dump the issue at the top level.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let ms = forge.create_milestone("v0.1 MVP", None, "").await.unwrap();
+        drain_creating(
+            &forge,
+            &cfg,
+            vec![placed_issue("follow-up work", Some("v0.1 mvp"), None)],
+        )
+        .await;
+
+        assert_eq!(forge.milestone_children(ms.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn planner_hint_naming_nothing_still_creates_the_issue_at_top_level() {
+        // An unresolvable hint costs placement, never the issue: a human sees the work.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let ms = forge.create_milestone("v0.1", None, "").await.unwrap();
+        drain_creating(
+            &forge,
+            &cfg,
+            vec![placed_issue("follow-up work", Some("v9.9"), Some("nope"))],
+        )
+        .await;
+
+        assert!(forge.issue_titles().contains(&"follow-up work".to_string()));
+        assert!(forge.milestone_children(ms.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn planner_files_a_created_issue_under_the_epic_it_named() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let epic = forge.create_epic("Tracking rails", "").await.unwrap();
+        drain_creating(
+            &forge,
+            &cfg,
+            vec![placed_issue("follow-up work", None, Some("Tracking rails"))],
+        )
+        .await;
+
+        let epics = forge.list_epics().await.unwrap();
+        let updated = epics.iter().find(|e| e.id == epic.id).unwrap();
+        assert_eq!(updated.children.len(), 1);
     }
 
     #[tokio::test]

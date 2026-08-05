@@ -40,6 +40,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_core::message::PlanAction;
 
     #[test]
     fn absent_file_is_none() {
@@ -70,6 +71,29 @@ mod tests {
         .unwrap();
         let plan = read_plan(&p).unwrap().unwrap();
         assert!(!plan.needs_human);
+        // A planner that omits the placement hints still parses, and its issues land at
+        // the top level rather than failing the whole decision.
+        let PlanAction::CreateIssues(list) = plan.action else {
+            panic!("expected CreateIssues");
+        };
+        assert_eq!(list[0].milestone, None);
+        assert_eq!(list[0].epic, None);
+    }
+
+    #[test]
+    fn plan_carries_placement_hints_when_the_planner_sets_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("plan.json");
+        std::fs::write(
+            &p,
+            r#"{"action":{"CreateIssues":[{"title":"x","body":"","labels":[],"milestone":"v0.1","epic":"Tracking rails"}]},"rationale":"r","needs_human":false}"#,
+        )
+        .unwrap();
+        let PlanAction::CreateIssues(list) = read_plan(&p).unwrap().unwrap().action else {
+            panic!("expected CreateIssues");
+        };
+        assert_eq!(list[0].milestone.as_deref(), Some("v0.1"));
+        assert_eq!(list[0].epic.as_deref(), Some("Tracking rails"));
     }
 
     #[test]

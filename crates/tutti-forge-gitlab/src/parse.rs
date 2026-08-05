@@ -233,6 +233,7 @@ mod tests {
             require_label: "status::ready".into(),
             skip_labels: vec!["status::needs-human".into()],
             milestone: None,
+            milestone_floor: false,
         }
     }
 

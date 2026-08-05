@@ -104,6 +104,41 @@ promoted from "always surface" to "auto on verified drain."
 - **Live (opt-in, per forge):** behind the `live` feature, end-to-end against a throwaway
   repo on each forge. Never in the required check.
 
+## How the floor and placement actually landed
+
+Points 2 and 3 of "Engine wiring" were deferred out of Plan 3A and delivered later
+(issue #6). What shipped, and why it differs from the sketch above:
+
+**The floor is a search order, not a scope.** `SelectFilter` gains
+`milestone_floor: bool` (`#[serde(default)]`, off), and when it is on
+`Engine::select_ready_issue` asks the same selector once per open milestone, earliest
+first, taking the first hit. The last probe is deliberately *unscoped*, so once no open
+milestone has ready work the loop still picks up issues that belong to no milestone at
+all. Turning the floor on can reorder a drain; it can never starve one. An explicit
+`select.milestone` wins outright, since a pinned scope already answers the same question.
+
+**"Drained" means "no ready issue left", not `Progress::is_drained`.** The two disagree
+when a milestone's last open issue is parked behind `status:needs-human`: the rollup says
+work remains, but the loop cannot touch it. Using the rollup there would pin the floor to
+a milestone forever. Selection asks the only question it can act on.
+
+**Floor order is total and forge-independent.** `tracking::milestone_floor_order` sorts
+open milestones by due date (ISO, so a string compare is chronological), undated last,
+`id` as the tiebreak. Without the tiebreak the floor would follow whatever order the forge
+listed them in and could wobble between iterations.
+
+**Placement hints are titles, resolved leniently.** `NewIssue` gains
+`milestone: Option<String>` and `epic: Option<String>`. Titles rather than ids because the
+planner only ever sees titles, in the snapshot. `execute_plan` resolves them once per
+batch (exact match, then case-insensitive, since the planner is retyping a title it read),
+and an unresolvable hint files the issue at the top level rather than dropping proposed
+work. It also skips `list_epics` entirely unless some issue names an epic: that read is an
+N+1 on GitHub, and the snapshot does not list epics yet, so the common plan pays nothing.
+
+**Cost of the floor:** one `list_milestones` plus up to one selector call per open
+milestone, per iteration. The whole path is skipped when the floor is off or a scope is
+pinned.
+
 ## Out of scope
 
 - The Tauri UI (slice 4) that will consume `roadmap()` and the tracking reads.

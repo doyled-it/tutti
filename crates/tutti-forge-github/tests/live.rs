@@ -92,6 +92,8 @@ async fn milestone_and_issue_tracking_round_trip() {
         title: "live tracking child".to_string(),
         body: "temp".to_string(),
         labels: vec!["status:ready".to_string()],
+        milestone: None,
+        epic: None,
     };
     let issue = forge
         .create_issue(&new_issue, Some(milestone.id), None)
