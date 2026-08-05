@@ -575,7 +575,12 @@ pub(crate) fn subsession_summary(role: Role, out: &Result<AgentOutcome>) -> (Str
                 (format!("changes needed ({n} {noun})"), false)
             }
             Some(_) => ("approved".to_string(), true),
-            None => ("no review".to_string(), false),
+            // Mirror what `run_stages` actually does with a missing report: it substitutes an
+            // empty Approve and ships. Reporting this as an error put a red dot on a stage the
+            // engine had approved, so the pane contradicted the run it is a window onto.
+            // Whether shipping on a missing report is the RIGHT engine behaviour is a separate
+            // question; the pane's job is to say what happened, not to editorialise.
+            None => ("approved (no report written)".to_string(), true),
         },
         Role::Planner => match &outcome.plan {
             Some(d) => (format!("plan: {}", plan_action_label(&d.action)), true),
@@ -1844,6 +1849,63 @@ mod tests {
             subsession_summary(Role::Implementer, &Ok(blocked)),
             ("blocked: needs a device".to_string(), false)
         );
+    }
+
+    #[tokio::test]
+    async fn a_reviewer_that_wrote_no_report_is_shown_the_way_the_engine_treats_it() {
+        // `run_stages` substitutes an empty Approve for a missing report and ships. The pane
+        // used to call the same outcome an error, so an operator saw a red dot on a stage the
+        // engine had approved and would file a bug against the engine. Asserted end to end
+        // rather than on `subsession_summary` alone, so the two cannot drift apart again.
+        let no_report = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "x".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        assert_eq!(
+            subsession_summary(Role::Reviewer, &Ok(no_report.clone())),
+            ("approved (no report written)".to_string(), true)
+        );
+
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, no_report);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hooks = EngineHooks {
+            sink: None,
+            cancel: None,
+            subsession: Some(tx),
+        };
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert_eq!(
+            engine.run_one_hooked(&hooks).await.unwrap(),
+            IterOutcome::Shipped,
+            "the engine ships on a missing report"
+        );
+        let mut reviewer_ok = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let SubsessionEvent::Completed {
+                role: Role::Reviewer,
+                ok,
+                ..
+            } = ev
+            {
+                reviewer_ok = ok;
+            }
+        }
+        assert!(reviewer_ok, "so the pane must not call that stage failed");
     }
 
     #[test]

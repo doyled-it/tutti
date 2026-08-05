@@ -274,7 +274,7 @@ impl AgentBackend for ClaudeBackend {
             // to the app's Subsessions pane, where a raw-JSON system/rate_limit line would
             // render as assistant prose. `full` still accumulates every line, so
             // `scan_stream` below keeps its complete view of the transcript.
-            if let Some(ev) = stream::parse_display_event(&line) {
+            for ev in stream::parse_display_events(&line) {
                 let _ = events.send(ev).await;
             }
         }

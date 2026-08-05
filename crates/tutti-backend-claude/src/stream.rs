@@ -9,7 +9,7 @@ use tutti_core::message::AgentEvent;
 /// Parse one stream-json line into an event fit to show a human, or None when the line
 /// carries no displayable content.
 ///
-/// `parse_stream_line` deliberately degrades system/rate_limit/unknown lines to
+/// `parse_stream_events` deliberately degrades system/rate_limit/unknown lines to
 /// `Line(<raw JSON>)` so a CLI change can never break the adapter, but that raw JSON must
 /// never reach a transcript: it would render as assistant prose. This gates on
 /// `is_assistant_text_line` so only genuine assistant text streams as a `Line`;
@@ -18,12 +18,12 @@ use tutti_core::message::AgentEvent;
 /// Both live streaming paths (`ClaudeSession::turn` for the orchestrator chat and
 /// `ClaudeBackend::run` for the engine's per-role subsessions) go through this one
 /// function, so their filtering cannot drift.
-pub fn parse_display_event(line: &str) -> Option<AgentEvent> {
-    let ev = parse_stream_line(line)?;
-    match ev {
-        AgentEvent::Line(_) if !is_assistant_text_line(line) => None,
-        ev => Some(ev),
-    }
+pub fn parse_display_events(line: &str) -> Vec<AgentEvent> {
+    let assistant = is_assistant_text_line(line);
+    parse_stream_events(line)
+        .into_iter()
+        .filter(|ev| !matches!(ev, AgentEvent::Line(_)) || assistant)
+        .collect()
 }
 
 /// True when a stream-json line is an assistant/text message (not system/result/unknown),
@@ -39,14 +39,18 @@ pub fn is_assistant_text_line(line: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse one stream-json line. Returns None for blank lines only.
-pub fn parse_stream_line(line: &str) -> Option<AgentEvent> {
+/// Parse one stream-json line into zero or more events, in order.
+///
+/// A line yields more than one event when a single assistant message carries several
+/// content blocks (text then tool_use is the common real shape); it yields none only for a
+/// blank line, or an assistant message whose content array holds nothing usable.
+pub fn parse_stream_events(line: &str) -> Vec<AgentEvent> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return None;
+        return Vec::new();
     }
     let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-        return Some(AgentEvent::Line(trimmed.to_string()));
+        return vec![AgentEvent::Line(trimmed.to_string())];
     };
     match v.get("type").and_then(|t| t.as_str()) {
         Some("assistant") | Some("text") => {
@@ -55,19 +59,20 @@ pub fn parse_stream_line(line: &str) -> Option<AgentEvent> {
             // Handle that first, then the flat-string and top-level-`text` shapes.
             // Shapes confirmed defensively; verify against a captured real transcript when
             // the live tier runs.
-            if let Some(ev) = v
+            let from_blocks = v
                 .get("message")
                 .and_then(|m| m.get("content"))
-                .and_then(event_from_content)
-            {
-                return Some(ev);
+                .map(events_from_content)
+                .unwrap_or_default();
+            if !from_blocks.is_empty() {
+                return from_blocks;
             }
             let text = v
                 .get("text")
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(AgentEvent::Line(text))
+            vec![AgentEvent::Line(text)]
         }
         Some("tool_use") => {
             let name = v
@@ -75,24 +80,36 @@ pub fn parse_stream_line(line: &str) -> Option<AgentEvent> {
                 .and_then(|n| n.as_str())
                 .unwrap_or("tool")
                 .to_string();
-            Some(AgentEvent::ToolUse(name))
+            vec![AgentEvent::ToolUse(name)]
         }
-        Some("result") => Some(AgentEvent::Done),
-        _ => Some(AgentEvent::Line(trimmed.to_string())),
+        Some("result") => vec![AgentEvent::Done],
+        _ => vec![AgentEvent::Line(trimmed.to_string())],
     }
 }
 
-/// Turn a `message.content` value into a single event. Accepts the flat-string shape and
-/// the real array-of-blocks shape: text blocks are concatenated into a `Line`; a
-/// `tool_use` block (when there is no text) becomes a `ToolUse` by name. Returns None when
-/// nothing usable is present so the caller can fall through to its other shapes.
-fn event_from_content(content: &serde_json::Value) -> Option<AgentEvent> {
+/// Turn a `message.content` value into events, in block order. Accepts the flat-string
+/// shape and the real array-of-blocks shape.
+///
+/// **One message can carry several blocks, and every one of them must come out.** Real
+/// `claude --output-format stream-json` routinely emits
+/// `content: [{"type":"text",...},{"type":"tool_use",...}]` — a sentence of preamble
+/// followed by the tool call it introduces. The original version returned a single event
+/// with text winning, so every tool call announced that way vanished from the Subsessions
+/// pane, and multiple tool calls in one message lost all but the first. The committed
+/// fixture happened to keep text and tool_use in separate messages, so nothing caught it.
+///
+/// Consecutive text blocks are still merged into one `Line`, which is the behaviour
+/// `collect_assistant_text` relies on for the persisted transcript; a `tool_use` flushes
+/// whatever text is pending first, so ordering within the message is preserved.
+fn events_from_content(content: &serde_json::Value) -> Vec<AgentEvent> {
     if let Some(s) = content.as_str() {
-        return Some(AgentEvent::Line(s.to_string()));
+        return vec![AgentEvent::Line(s.to_string())];
     }
-    let arr = content.as_array()?;
+    let Some(arr) = content.as_array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
     let mut text = String::new();
-    let mut tool: Option<String> = None;
     for block in arr {
         match block.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
@@ -100,23 +117,25 @@ fn event_from_content(content: &serde_json::Value) -> Option<AgentEvent> {
                     text.push_str(t);
                 }
             }
-            Some("tool_use") if tool.is_none() => {
-                tool = Some(
+            Some("tool_use") => {
+                if !text.is_empty() {
+                    out.push(AgentEvent::Line(std::mem::take(&mut text)));
+                }
+                out.push(AgentEvent::ToolUse(
                     block
                         .get("name")
                         .and_then(|n| n.as_str())
                         .unwrap_or("tool")
                         .to_string(),
-                );
+                ));
             }
             _ => {}
         }
     }
     if !text.is_empty() {
-        Some(AgentEvent::Line(text))
-    } else {
-        tool.map(AgentEvent::ToolUse)
+        out.push(AgentEvent::Line(text));
     }
+    out
 }
 
 /// The authoritative `result` event that closes a `stream-json` run. This, not substring
@@ -247,24 +266,36 @@ pub fn hit_usage_limit(full_output: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// The single event a line yields, for the many cases where exactly one is expected.
+    /// None when the line yields nothing; panics if a test points it at a multi-block line,
+    /// which is what `events_from_content` tests use directly.
+    fn one_event(line: &str) -> Option<AgentEvent> {
+        let evs = parse_stream_events(line);
+        assert!(evs.len() <= 1, "expected at most one event, got {evs:?}");
+        evs.into_iter().next()
+    }
+
+    fn one_display(line: &str) -> Option<AgentEvent> {
+        let evs = parse_display_events(line);
+        assert!(evs.len() <= 1, "expected at most one event, got {evs:?}");
+        evs.into_iter().next()
+    }
+
     #[test]
     fn tool_use_maps_to_tooluse_event() {
-        let e = parse_stream_line(r#"{"type":"tool_use","name":"Edit"}"#).unwrap();
+        let e = one_event(r#"{"type":"tool_use","name":"Edit"}"#).unwrap();
         assert_eq!(e, AgentEvent::ToolUse("Edit".into()));
     }
 
     #[test]
     fn result_maps_to_done() {
-        assert_eq!(
-            parse_stream_line(r#"{"type":"result"}"#).unwrap(),
-            AgentEvent::Done
-        );
+        assert_eq!(one_event(r#"{"type":"result"}"#).unwrap(), AgentEvent::Done);
     }
 
     #[test]
     fn unknown_json_degrades_to_line() {
         assert!(matches!(
-            parse_stream_line(r#"{"weird":1}"#).unwrap(),
+            one_event(r#"{"weird":1}"#).unwrap(),
             AgentEvent::Line(_)
         ));
     }
@@ -272,19 +303,19 @@ mod tests {
     #[test]
     fn non_json_degrades_to_line() {
         assert_eq!(
-            parse_stream_line("plain text").unwrap(),
+            one_event("plain text").unwrap(),
             AgentEvent::Line("plain text".into())
         );
     }
 
     #[test]
     fn blank_line_is_none() {
-        assert!(parse_stream_line("   ").is_none());
+        assert!(one_event("   ").is_none());
     }
 
     #[test]
     fn content_array_text_blocks_concatenate_to_line() {
-        let e = parse_stream_line(
+        let e = one_event(
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]}}"#,
         )
         .unwrap();
@@ -293,7 +324,7 @@ mod tests {
 
     #[test]
     fn content_array_tool_use_block_maps_to_tooluse() {
-        let e = parse_stream_line(
+        let e = one_event(
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#,
         )
         .unwrap();
@@ -302,7 +333,7 @@ mod tests {
 
     #[test]
     fn flat_string_content_still_maps_to_line() {
-        let e = parse_stream_line(r#"{"type":"assistant","message":{"content":"flat"}}"#).unwrap();
+        let e = one_event(r#"{"type":"assistant","message":{"content":"flat"}}"#).unwrap();
         assert_eq!(e, AgentEvent::Line("flat".into()));
     }
 
@@ -358,7 +389,7 @@ mod tests {
     fn real_assistant_text_line_maps_to_line() {
         // Line 1 (0-indexed): assistant message with a text block.
         assert_eq!(
-            parse_stream_line(real_line(1)).unwrap(),
+            one_event(real_line(1)).unwrap(),
             AgentEvent::Line("hello".into())
         );
     }
@@ -367,42 +398,98 @@ mod tests {
     fn real_tool_use_line_maps_to_tooluse() {
         // Line 2: assistant message with a tool_use block naming "Edit".
         assert_eq!(
-            parse_stream_line(real_line(2)).unwrap(),
+            one_event(real_line(2)).unwrap(),
             AgentEvent::ToolUse("Edit".into())
         );
     }
 
     #[test]
     fn real_result_line_maps_to_done() {
-        // Line 4: the terminal result event.
-        assert_eq!(parse_stream_line(real_line(4)).unwrap(), AgentEvent::Done);
+        // Line 5: the terminal result event.
+        assert_eq!(one_event(real_line(5)).unwrap(), AgentEvent::Done);
+    }
+
+    #[test]
+    fn a_message_carrying_both_text_and_a_tool_use_yields_both_in_order() {
+        // Line 4 of the captured transcript: the shape real `claude` emits constantly, a
+        // sentence of preamble followed by the tool call it introduces. The parser used to
+        // return ONE event per line with text winning, so every tool call announced this way
+        // vanished from the Subsessions pane. The fixture previously kept the two block types
+        // in separate messages, which is exactly why nothing caught it.
+        assert_eq!(
+            parse_stream_events(real_line(4)),
+            vec![
+                AgentEvent::Line("Let me check the config.".into()),
+                AgentEvent::ToolUse("Read".into()),
+            ]
+        );
+        // And both survive the display filter, since the line IS assistant text.
+        assert_eq!(parse_display_events(real_line(4)).len(), 2);
+    }
+
+    #[test]
+    fn several_tool_uses_in_one_message_all_come_through() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Read"},
+            {"type":"tool_use","name":"Edit"},
+            {"type":"tool_use","name":"Bash"}
+        ]}}"#;
+        assert_eq!(
+            parse_stream_events(line),
+            vec![
+                AgentEvent::ToolUse("Read".into()),
+                AgentEvent::ToolUse("Edit".into()),
+                AgentEvent::ToolUse("Bash".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_around_a_tool_use_keeps_its_order() {
+        // Trailing commentary after a tool call must land after it, not be merged into the
+        // preamble. Consecutive text blocks still merge, which is what
+        // `collect_assistant_text` relies on for the persisted transcript.
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"text","text":"before "},
+            {"type":"text","text":"the call"},
+            {"type":"tool_use","name":"Read"},
+            {"type":"text","text":"after"}
+        ]}}"#;
+        assert_eq!(
+            parse_stream_events(line),
+            vec![
+                AgentEvent::Line("before the call".into()),
+                AgentEvent::ToolUse("Read".into()),
+                AgentEvent::Line("after".into()),
+            ]
+        );
     }
 
     #[test]
     fn display_event_drops_the_raw_protocol_lines_of_a_real_transcript() {
         // The captured transcript's system-init (0) and rate_limit_event (3) lines degrade to
-        // `Line(<raw JSON>)` under `parse_stream_line`. They must never reach a transcript:
-        // `parse_display_event` drops them, while text/tool_use/result still flow.
-        assert_eq!(parse_display_event(real_line(0)), None);
-        assert_eq!(parse_display_event(real_line(3)), None);
+        // `Line(<raw JSON>)` under `parse_stream_events`. They must never reach a transcript:
+        // `parse_display_events` drops them, while text/tool_use/result still flow.
+        assert_eq!(one_display(real_line(0)), None);
+        assert_eq!(one_display(real_line(3)), None);
         assert_eq!(
-            parse_display_event(real_line(1)),
+            one_display(real_line(1)),
             Some(AgentEvent::Line("hello".into()))
         );
         assert_eq!(
-            parse_display_event(real_line(2)),
+            one_display(real_line(2)),
             Some(AgentEvent::ToolUse("Edit".into()))
         );
-        assert_eq!(parse_display_event(real_line(4)), Some(AgentEvent::Done));
+        assert_eq!(one_display(real_line(5)), Some(AgentEvent::Done));
     }
 
     #[test]
     fn display_event_drops_unparseable_and_unknown_lines() {
         // A non-JSON line and an unknown `type` both degrade to a raw `Line`; neither is
         // assistant text, so neither is displayable.
-        assert_eq!(parse_display_event("not json at all"), None);
-        assert_eq!(parse_display_event(r#"{"type":"user","message":{}}"#), None);
-        assert_eq!(parse_display_event("   "), None);
+        assert_eq!(one_display("not json at all"), None);
+        assert_eq!(one_display(r#"{"type":"user","message":{}}"#), None);
+        assert_eq!(one_display("   "), None);
     }
 
     #[test]
@@ -420,11 +507,11 @@ mod tests {
         // system init (line 0) and rate_limit_event (line 3) are not modelled as events; they
         // degrade to Line so a CLI change can never break the adapter.
         assert!(matches!(
-            parse_stream_line(real_line(0)).unwrap(),
+            one_event(real_line(0)).unwrap(),
             AgentEvent::Line(_)
         ));
         assert!(matches!(
-            parse_stream_line(real_line(3)).unwrap(),
+            one_event(real_line(3)).unwrap(),
             AgentEvent::Line(_)
         ));
     }
