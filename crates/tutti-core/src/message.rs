@@ -138,6 +138,18 @@ pub struct NewIssue {
     pub title: String,
     pub body: String,
     pub labels: Vec<String>,
+    /// Where the planner wants this issue filed, named by title. Titles rather than forge
+    /// ids because the planner only ever sees titles (in the tracking snapshot); it has no
+    /// way to know a `MilestoneId`. A title the engine cannot resolve is dropped back to
+    /// top-level placement, never treated as a reason to skip creating the issue.
+    /// `#[serde(default)]` so a planner that omits the field still parses.
+    #[serde(default)]
+    pub milestone: Option<String>,
+    /// As `milestone`, for the epic. The tracking snapshot does not list epics yet (the
+    /// forge's `list_epics` is an N+1), so in practice the planner rarely sets this; the
+    /// path is here so it works the moment the snapshot does carry them.
+    #[serde(default)]
+    pub epic: Option<String>,
 }
 
 /// What the planner wants to do next. The engine whitelists which are auto-executed.

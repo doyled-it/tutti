@@ -391,6 +391,49 @@ implementer = ["custom:my-implement-skill"]
             .contains(&"superpowers:requesting-code-review".to_string()));
     }
 
+    /// A minimal valid config with `[select]` spelled by the caller, so a test can vary
+    /// only that table.
+    fn cfg_with_select(select_body: &str) -> Config {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            format!(
+                r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "version/v0.1"
+model = "claude-opus-4-8"
+
+[select]
+require_label = "status:ready"
+skip_labels = ["status:needs-human"]
+{select_body}
+
+[gate]
+commands = ["cargo test"]
+working_dir = ""
+"#
+            ),
+        )
+        .unwrap();
+        Config::load(&p).unwrap()
+    }
+
+    #[test]
+    fn milestone_floor_defaults_off_for_configs_written_before_it_existed() {
+        assert!(!cfg_with_select("").select.milestone_floor);
+    }
+
+    #[test]
+    fn milestone_floor_parses_when_set() {
+        assert!(
+            cfg_with_select("milestone_floor = true")
+                .select
+                .milestone_floor
+        );
+    }
+
     #[test]
     fn skills_for_falls_back_to_default_when_role_absent() {
         let cfg = Config {
@@ -405,6 +448,7 @@ implementer = ["custom:my-implement-skill"]
                 require_label: "status:ready".into(),
                 skip_labels: vec![],
                 milestone: None,
+                milestone_floor: false,
             },
             gate: Gate {
                 commands: vec!["true".into()],

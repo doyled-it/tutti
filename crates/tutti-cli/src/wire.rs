@@ -80,6 +80,7 @@ mod tests {
                 require_label: "status:ready".into(),
                 skip_labels: vec![],
                 milestone: None,
+                milestone_floor: false,
             },
             gate: Gate {
                 commands: vec!["true".into()],

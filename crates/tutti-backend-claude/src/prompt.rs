@@ -47,7 +47,12 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
             // {\"CreateIssues\":[{\"title\":\"...\",\"body\":\"...\",\"labels\":[\"...\"]}]} or
             // {\"CloseMilestone\":\"<title>\"}. Only NextIssue and CreateIssues are auto-executed;
             // CloseMilestone and any needs_human decision are surfaced to a human.
-            "{\"action\":\"NextIssue\"|\"Stop\"|{\"CreateIssues\":[{\"title\":\"...\",\"body\":\"...\",\"labels\":[\"...\"]}]}|{\"CloseMilestone\":\"...\"},\"rationale\":\"...\",\"needs_human\":<bool>}"
+            //
+            // A proposed issue may carry `milestone` and `epic` placement hints, named by the
+            // titles shown in the tracking snapshot. Both are optional and default to null,
+            // which files the issue at the top level. A title that matches nothing is ignored
+            // rather than fatal, so a guess costs placement, never the issue.
+            "{\"action\":\"NextIssue\"|\"Stop\"|{\"CreateIssues\":[{\"title\":\"...\",\"body\":\"...\",\"labels\":[\"...\"],\"milestone\":\"<snapshot milestone title>|null\",\"epic\":\"<epic title>|null\"}]}|{\"CloseMilestone\":\"...\"},\"rationale\":\"...\",\"needs_human\":<bool>}"
         }
         _ => {
             "{\"issue\":<int>,\"branch\":\"...\",\"target\":{\"target\":\"...\",\"create_from\":\"...|null\"},\"pr_title\":\"...\",\"pr_body\":\"...\",\"labels\":[\"...\"],\"decision_note\":\"...|null\"}"

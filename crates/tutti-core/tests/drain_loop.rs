@@ -21,6 +21,7 @@ fn cfg() -> Config {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],
             milestone: None,
+            milestone_floor: false,
         },
         gate: Gate {
             commands: vec!["true".into()],

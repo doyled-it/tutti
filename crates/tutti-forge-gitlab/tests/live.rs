@@ -42,6 +42,8 @@ async fn tracking_and_status_round_trip() {
                 title: "live-3bglab issue".into(),
                 body: "temporary".into(),
                 labels: vec!["status::ready".into()],
+                milestone: None,
+                epic: None,
             },
             Some(ms.id),
             None,

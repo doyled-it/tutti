@@ -34,6 +34,12 @@ pub struct SelectFilter {
     /// `#[serde(default)]` keeps configs written before this field existed parseable.
     #[serde(default)]
     pub milestone: Option<String>,
+    /// Prefer the earliest open milestone, falling through to the next once that one has
+    /// no ready work left, and finally to this filter unscoped. A *soft* floor: it orders
+    /// where the selector looks first, it never hides work. Ignored when `milestone` is
+    /// set, since an explicit scope is already a hard answer to the same question.
+    #[serde(default)]
+    pub milestone_floor: bool,
 }
 
 /// Where an issue's work merges, and (if the branch is new) what to branch it from.
