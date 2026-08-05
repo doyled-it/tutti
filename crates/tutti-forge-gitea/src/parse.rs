@@ -63,18 +63,31 @@ pub fn page_len(json: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Parse a `GET issues` array and return the first issue matching the filter
-/// (has `require_label`, none of `skip_labels`, and the optional milestone scope).
+/// Every issue matching the filter, in forge order. The primitive: the adapter fetches
+/// one page either way, so returning all matches lets a caller rank them (the milestone
+/// floor) without paying one fetch per candidate ordering.
+pub fn ready_issues(json: &str, filter: &SelectFilter) -> Vec<Issue> {
+    let issues: Vec<GtIssue> = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    issues
+        .into_iter()
+        .map(to_issue)
+        .filter(|i| {
+            i.has_label(&filter.require_label)
+                && !filter.skip_labels.iter().any(|s| i.has_label(s))
+                && filter
+                    .milestone
+                    .as_ref()
+                    .is_none_or(|m| i.milestone.as_ref() == Some(m))
+        })
+        .collect()
+}
+
+/// The first issue matching the filter. Derived from `ready_issues` so the two cannot drift.
 pub fn first_ready_issue(json: &str, filter: &SelectFilter) -> Option<Issue> {
-    let issues: Vec<GtIssue> = serde_json::from_str(json).ok()?;
-    issues.into_iter().map(to_issue).find(|i| {
-        i.has_label(&filter.require_label)
-            && !filter.skip_labels.iter().any(|s| i.has_label(s))
-            && filter
-                .milestone
-                .as_ref()
-                .is_none_or(|m| i.milestone.as_ref() == Some(m))
-    })
+    ready_issues(json, filter).into_iter().next()
 }
 
 /// Parse a `GET issues` array into `Issue`s, dropping pull requests.
@@ -114,7 +127,7 @@ fn milestone_from(m: GtMilestone) -> Milestone {
             "closed" => TrackState::Closed,
             _ => TrackState::Open,
         },
-        due: m.due_on,
+        due: normalize_due(m.due_on),
         progress: Progress {
             total: m.open_issues + m.closed_issues,
             done: m.closed_issues,
@@ -208,6 +221,18 @@ pub fn combined_ci_state(json: &str) -> tutti_core::domain::CiState {
         "failure" | "error" => CiState::Fail,
         _ => CiState::Pending, // pending, warning, unknown
     }
+}
+
+/// Normalise a forge due date to a plain ISO `YYYY-MM-DD`.
+///
+/// GitLab returns `due_date` already in that form, but GitHub and Gitea return `due_on` as
+/// RFC 3339 (`2026-08-01T07:00:00Z`, and Gitea with a real offset like `+02:00`).
+/// `milestone_floor_order` compares these as strings, which survives homogeneous UTC by luck
+/// and breaks the moment offsets differ: `2026-08-01T00:00:00+02:00` is chronologically
+/// BEFORE `2026-07-31T23:00:00Z` but sorts after it. Truncating at the `T` here keeps the
+/// comparison honest, and makes `Milestone.due` actually match what its doc comment claims.
+fn normalize_due(raw: Option<String>) -> Option<String> {
+    raw.map(|d| d.split('T').next().unwrap_or(&d).to_string())
 }
 
 #[cfg(test)]
@@ -354,5 +379,16 @@ mod tests {
         assert_eq!(page_len(json), 2);
         assert_eq!(parse_issue_list(json).len(), 1);
         assert_eq!(page_len("not json"), 0);
+    }
+
+    #[test]
+    fn milestone_due_is_normalized_to_a_plain_iso_date() {
+        // Gitea returns `due_on` with a real UTC offset, which is where string comparison
+        // actually breaks: 2026-08-01T00:00:00+02:00 is BEFORE 2026-07-31T23:00:00Z but
+        // sorts after it. Truncating at the T removes the trap.
+        let json =
+            r#"[{"id":1,"title":"v0.1","state":"open","due_on":"2026-08-01T00:00:00+02:00"}]"#;
+        let got = parse_milestones(json);
+        assert_eq!(got[0].due.as_deref(), Some("2026-08-01"));
     }
 }

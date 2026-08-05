@@ -62,7 +62,17 @@ pub trait AgentBackend: Send + Sync {
 /// Everything issue/PR/CI. The engine speaks domain types.
 #[async_trait]
 pub trait Forge: Send + Sync {
-    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>>;
+    /// Every selectable issue, in forge order.
+    ///
+    /// This is the primitive, not `next_ready_issue`, because every adapter implements
+    /// selection as one list fetch filtered in process: asking for "the first ready issue"
+    /// N times to try N orderings costs N identical fetches and discards N-1. Returning the
+    /// whole set lets a caller rank it (the milestone floor) for the price of one call.
+    async fn list_ready_issues(&self, filter: &SelectFilter) -> Result<Vec<Issue>>;
+    /// The first selectable issue. Derived, so it cannot disagree with the list above.
+    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
+        Ok(self.list_ready_issues(filter).await?.into_iter().next())
+    }
     /// All issues in the repo (open and recently closed, bounded), for the board's
     /// unscoped view. Excludes pull requests.
     async fn list_issues(&self) -> Result<Vec<Issue>>;

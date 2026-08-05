@@ -3,7 +3,7 @@
 //! apply-fixes, gate, merge (via the executor), record, plan.
 
 use crate::config::Config;
-use crate::domain::{Issue, IssueState, SelectFilter};
+use crate::domain::{Issue, IssueState};
 use crate::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
@@ -184,24 +184,23 @@ impl<'a> Engine<'a> {
     /// no open milestone has ready work, issues that carry no milestone at all still get
     /// picked up, so turning the floor on can reorder the drain but can never starve it.
     ///
-    /// Cost: one `list_milestones` plus up to one selector call per open milestone, per
-    /// iteration. Both are cheap forge reads, and the whole path is skipped when the floor
-    /// is off (the default) or when `select.milestone` already pins a single scope.
+    /// Cost: one `list_ready_issues`, plus one `list_milestones` when the floor is on. The
+    /// ranking itself is pure.
+    ///
+    /// The first version of this asked the selector once per open milestone. Every adapter
+    /// implements selection as one list fetch filtered in process, so that was M identical
+    /// fetches per iteration with M-1 discarded — on GitHub, M `gh` subprocess spawns and M
+    /// API round trips to answer a question one fetch already contains. The floor is pure
+    /// ordering over a set the forge hands over in a single call, so it is applied here as
+    /// exactly that.
     async fn select_ready_issue(&self) -> Result<Option<Issue>> {
+        let ready = self.forge.list_ready_issues(&self.cfg.select).await?;
         if !self.cfg.select.milestone_floor || self.cfg.select.milestone.is_some() {
-            return self.forge.next_ready_issue(&self.cfg.select).await;
+            return Ok(ready.into_iter().next());
         }
         let milestones = self.forge.list_milestones().await?;
-        for m in crate::tracking::milestone_floor_order(&milestones) {
-            let scoped = SelectFilter {
-                milestone: Some(m.title.clone()),
-                ..self.cfg.select.clone()
-            };
-            if let Some(issue) = self.forge.next_ready_issue(&scoped).await? {
-                return Ok(Some(issue));
-            }
-        }
-        self.forge.next_ready_issue(&self.cfg.select).await
+        let order = crate::tracking::milestone_floor_order(&milestones);
+        Ok(pick_by_milestone_floor(ready, &order))
     }
 
     /// The claimed body of one iteration. Creates an isolated worktree per issue,
@@ -494,6 +493,31 @@ impl<'a> Engine<'a> {
         }
         Ok(())
     }
+}
+
+/// Apply the milestone floor to an already-fetched set of selectable issues.
+///
+/// Walks `order` (open milestones, earliest first) and takes the first issue belonging to
+/// each in turn. Falling off the end returns the first issue overall, which is what makes
+/// the floor *soft*: once no open milestone has ready work, issues that carry no milestone
+/// — or one that has since been closed — are still picked up, so turning the floor on can
+/// reorder a drain but never starve it.
+///
+/// Pure, and takes the whole candidate set rather than a forge, because the floor is
+/// ordering rather than a query. That is the entire reason this is one fetch and not M.
+fn pick_by_milestone_floor(
+    ready: Vec<Issue>,
+    order: &[&crate::tracking::Milestone],
+) -> Option<Issue> {
+    for m in order {
+        if let Some(i) = ready
+            .iter()
+            .position(|i| i.milestone.as_deref() == Some(&m.title))
+        {
+            return ready.into_iter().nth(i);
+        }
+    }
+    ready.into_iter().next()
 }
 
 /// Resolve a planner-supplied title to the tracking item it names.
@@ -1286,6 +1310,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_floor_costs_one_issue_fetch_however_many_milestones_there_are() {
+        // The point of the floor being pure ordering. Every adapter implements selection as
+        // one list fetch filtered in process, so ranking by asking per milestone would be M
+        // identical fetches with M-1 discarded. Without this counter, a refactor that
+        // reintroduces the per-milestone loop passes every behavioural test above.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(vec![ready_in(1, "v0.5")], CiState::Pass);
+        for (title, due) in [
+            ("v0.1", "2026-08-01"),
+            ("v0.2", "2026-09-01"),
+            ("v0.3", "2026-10-01"),
+            ("v0.4", "2026-11-01"),
+            ("v0.5", "2026-12-01"),
+        ] {
+            forge.create_milestone(title, Some(due), "").await.unwrap();
+        }
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(forge.call_count("list_ready_issues"), 1);
+        assert_eq!(forge.call_count("list_milestones"), 1);
+    }
+
+    #[tokio::test]
+    async fn selection_with_the_floor_off_reads_no_milestones_at_all() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(forge.call_count("list_ready_issues"), 1);
+        assert_eq!(forge.call_count("list_milestones"), 0);
+    }
+
+    #[tokio::test]
+    async fn the_soft_floor_still_reaches_a_closed_milestones_leftover_work() {
+        // Pins the behaviour the ordering test above does NOT cover. `milestone_floor_order`
+        // drops closed milestones, but the final fallback is unscoped, so an issue left
+        // behind in a closed milestone is still selectable. That is deliberate (never
+        // starve), and it means "closed milestones are dropped" is a claim about the
+        // ORDERING, not about what can be selected.
+        let cfg = floor_cfg();
+        let forge = FakeForge::new(vec![ready_in(1, "v0.1")], CiState::Pass);
+        let closed = forge
+            .create_milestone("v0.1", Some("2026-08-01"), "")
+            .await
+            .unwrap();
+        forge.close_milestone(closed.id).await.unwrap();
+        let backend = FakeBackend::new();
+        let engine = selector_engine(&cfg, &forge, &backend);
+
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(got.id, IssueId(1));
+    }
+
+    #[tokio::test]
     async fn milestone_floor_falls_through_a_milestone_with_no_workable_issue() {
         // v0.1 still has an open child, but it is parked behind needs-human. The floor must
         // treat "no ready work" as drained and advance, or the loop stalls forever.
@@ -1310,7 +1392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn milestone_floor_skips_closed_milestones() {
+    async fn milestone_floor_order_prefers_an_open_milestone_over_a_closed_one() {
         // Closing v0.1 advances the floor even though its due date is still the earliest.
         let cfg = floor_cfg();
         let forge = FakeForge::new(

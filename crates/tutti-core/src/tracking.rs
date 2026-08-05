@@ -49,13 +49,21 @@ pub struct Epic {
 
 /// The order the milestone floor searches in: open milestones, earliest first.
 ///
-/// "Earliest" is by due date. Dates are ISO (`YYYY-MM-DD`) and kept opaque, so a plain
-/// string compare is already chronological. Undated milestones sort last: a milestone
-/// nobody has committed to a date for is not a floor anyone is standing on. `id` breaks
-/// ties so the order never depends on whatever order the forge happened to list them in.
+/// "Earliest" is by due date, compared as a string. That is chronological only because the
+/// adapters normalise `Milestone.due` to a plain `YYYY-MM-DD` on the way in: GitHub and Gitea
+/// return RFC 3339 (`2026-08-01T07:00:00Z`, and Gitea with a real offset), and comparing
+/// mixed offsets as text gets the order backwards. The invariant is established where the
+/// data enters rather than assumed here.
 ///
-/// Closed milestones are dropped entirely, which is what makes the floor advance: close
-/// `v0.1` and `v0.2` becomes the head of this list on the next iteration.
+/// Undated milestones sort last: a milestone nobody has committed to a date for is not a
+/// floor anyone is standing on. `id` breaks ties so the order never depends on whatever order
+/// the forge happened to list them in — and so this agrees with every adapter's `roadmap()`,
+/// which delegates here rather than re-implementing the sort.
+///
+/// Closed milestones are dropped, which is what makes the floor advance: close `v0.1` and
+/// `v0.2` becomes the head of this list. Note this is a claim about the ORDER, not about
+/// what is selectable: `select_ready_issue` falls back to the unscoped set, so an issue left
+/// behind in a closed milestone can still be picked up rather than being stranded.
 pub fn milestone_floor_order(milestones: &[Milestone]) -> Vec<&Milestone> {
     let mut open: Vec<&Milestone> = milestones
         .iter()

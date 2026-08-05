@@ -34,6 +34,10 @@ struct State {
     next_issue: u64,
     /// Issues whose `edit_labels` is scripted to fail (see `fail_label_edits_for`).
     label_edit_failures: HashSet<IssueId>,
+    /// How many times each Forge read has been called, so a caller's COST claims can be
+    /// asserted rather than assumed. Without this, a refactor that reintroduces a fetch per
+    /// candidate ordering passes every behavioural test.
+    calls: HashMap<&'static str, usize>,
 }
 
 /// A scriptable in-memory forge. Configure CI outcomes per-branch via `set_ci_for_next_pr`.
@@ -133,6 +137,17 @@ impl FakeForge {
         }
     }
 
+    /// How many times `method` has been called on this forge.
+    pub fn call_count(&self, method: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .calls
+            .get(method)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Make `edit_labels` fail for `issue`, so a caller's partial-failure accounting can be
     /// tested. Only `edit_labels` honours this; the status writes are left alone so existing
     /// engine tests are unaffected.
@@ -143,12 +158,13 @@ impl FakeForge {
 
 #[async_trait]
 impl Forge for FakeForge {
-    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
-        let st = self.state.lock().unwrap();
+    async fn list_ready_issues(&self, filter: &SelectFilter) -> Result<Vec<Issue>> {
+        let mut st = self.state.lock().unwrap();
+        *st.calls.entry("list_ready_issues").or_default() += 1;
         Ok(st
             .issues
             .iter()
-            .find(|i| {
+            .filter(|i| {
                 i.has_label(&filter.require_label)
                     && !filter.skip_labels.iter().any(|s| i.has_label(s))
                     && filter
@@ -156,7 +172,8 @@ impl Forge for FakeForge {
                         .as_ref()
                         .is_none_or(|m| i.milestone.as_ref() == Some(m))
             })
-            .cloned())
+            .cloned()
+            .collect())
     }
 
     async fn list_issues(&self) -> Result<Vec<Issue>> {
@@ -273,7 +290,9 @@ impl Forge for FakeForge {
     }
 
     async fn list_milestones(&self) -> Result<Vec<Milestone>> {
-        Ok(self.state.lock().unwrap().milestones.clone())
+        let mut st = self.state.lock().unwrap();
+        *st.calls.entry("list_milestones").or_default() += 1;
+        Ok(st.milestones.clone())
     }
 
     async fn milestone_children(&self, id: MilestoneId) -> Result<Vec<Issue>> {
@@ -287,7 +306,9 @@ impl Forge for FakeForge {
     }
 
     async fn list_epics(&self) -> Result<Vec<Epic>> {
-        Ok(self.state.lock().unwrap().epics.clone())
+        let mut st = self.state.lock().unwrap();
+        *st.calls.entry("list_epics").or_default() += 1;
+        Ok(st.epics.clone())
     }
 
     async fn roadmap(&self) -> Result<Roadmap> {

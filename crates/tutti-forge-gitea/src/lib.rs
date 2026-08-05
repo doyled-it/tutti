@@ -10,7 +10,7 @@ use tutti_core::domain::{
     CiState, Issue, IssueId, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
 };
 use tutti_core::status::{Status, StatusLabels};
-use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
+use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap};
 use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
 /// Issues requested per page when listing the whole backlog.
@@ -160,7 +160,7 @@ impl GiteaForge {
 
 #[async_trait]
 impl Forge for GiteaForge {
-    async fn next_ready_issue(&self, filter: &SelectFilter) -> Result<Option<Issue>> {
+    async fn list_ready_issues(&self, filter: &SelectFilter) -> Result<Vec<Issue>> {
         let json = self
             .api(
                 "GET",
@@ -168,7 +168,7 @@ impl Forge for GiteaForge {
                 None,
             )
             .await?;
-        Ok(parse::first_ready_issue(&json, filter))
+        Ok(parse::ready_issues(&json, filter))
     }
 
     /// Every issue, paginated. The board buckets this whole list, so a single page silently
@@ -283,20 +283,19 @@ impl Forge for GiteaForge {
         Ok(parse::parse_issue_list(&json))
     }
 
+    /// Open milestones, earliest due first. Delegates to `tracking::milestone_floor_order`
+    /// so the roadmap rail and the engine's milestone floor cannot disagree about which
+    /// milestone comes first — three hand-rolled copies of this sort previously differed
+    /// from the floor's on the tie-break, so a user could watch the engine pick from the
+    /// milestone shown second in the rail.
     async fn roadmap(&self) -> Result<Roadmap> {
-        let mut milestones: Vec<Milestone> = self
-            .list_milestones()
-            .await?
-            .into_iter()
-            .filter(|m| m.state == TrackState::Open)
-            .collect();
-        milestones.sort_by(|a, b| match (&a.due, &b.due) {
-            (Some(x), Some(y)) => x.cmp(y),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        });
-        Ok(Roadmap { milestones })
+        let all = self.list_milestones().await?;
+        Ok(Roadmap {
+            milestones: tutti_core::tracking::milestone_floor_order(&all)
+                .into_iter()
+                .cloned()
+                .collect(),
+        })
     }
 
     async fn create_milestone(
