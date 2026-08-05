@@ -123,9 +123,27 @@ work remains, but the loop cannot touch it. Using the rollup there would pin the
 a milestone forever. Selection asks the only question it can act on.
 
 **Floor order is total and forge-independent.** `tracking::milestone_floor_order` sorts
-open milestones by due date (ISO, so a string compare is chronological), undated last,
-`id` as the tiebreak. Without the tiebreak the floor would follow whatever order the forge
-listed them in and could wobble between iterations.
+open milestones by due date, undated last, `id` as the tiebreak. Without the tiebreak the
+floor would follow whatever order the forge listed them in and could wobble between
+iterations.
+
+Two things this originally got wrong, both found in review:
+
+- The comparison is a string compare, and the doc claimed that was chronological because
+  dates are ISO. Only GitLab returns `YYYY-MM-DD`; GitHub and Gitea pass `due_on` through
+  as RFC 3339, and Gitea with a real offset — where a text compare is simply wrong
+  (`2026-08-01T00:00:00+02:00` precedes `2026-07-31T23:00:00Z` but sorts after it). The
+  adapters now normalise `due` at the boundary, so `Milestone.due` matches what its type
+  claims and the comparator's assumption is established rather than assumed.
+- The same open-filter-then-sort-by-due already existed in all three adapters' `roadmap()`,
+  feeding the UI's roadmap rail. This added a fourth copy that differed on the tiebreak, so
+  the rail and the engine could disagree about which of two same-due milestones came first.
+  All three now delegate to `milestone_floor_order`.
+
+**"Closed milestones are dropped" is a claim about the order, not about selectability.**
+The final probe is unscoped, so an issue left behind in a closed milestone is still
+reachable. That follows from "never starve", but the original test named for this asserted
+only the ordering half; there is now a test for each.
 
 **Placement hints are titles, resolved leniently.** `NewIssue` gains
 `milestone: Option<String>` and `epic: Option<String>`. Titles rather than ids because the
@@ -135,9 +153,17 @@ and an unresolvable hint files the issue at the top level rather than dropping p
 work. It also skips `list_epics` entirely unless some issue names an epic: that read is an
 N+1 on GitHub, and the snapshot does not list epics yet, so the common plan pays nothing.
 
-**Cost of the floor:** one `list_milestones` plus up to one selector call per open
-milestone, per iteration. The whole path is skipped when the floor is off or a scope is
-pinned.
+**Cost of the floor:** one `list_ready_issues` plus one `list_milestones` per iteration.
+The ranking is pure.
+
+This was originally written as "one selector call per open milestone… both cheap forge
+reads", which was wrong in a way that mattered. Every adapter implements selection as a
+single list fetch filtered in process, so asking per milestone was M identical fetches with
+M-1 discarded — on GitHub, M `gh` subprocess spawns and M API round trips to answer a
+question one fetch already contained. The floor is ordering, not a query, so
+`list_ready_issues` is now the `Forge` primitive (with `next_ready_issue` derived from it)
+and `pick_by_milestone_floor` ranks the result purely. A `FakeForge` call counter pins the
+count, because a cost claim that nothing asserts is a cost claim that drifts back.
 
 ## Out of scope
 

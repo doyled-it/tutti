@@ -34,18 +34,31 @@ struct GhMilestone {
     title: String,
 }
 
-/// Parse `gh issue list --json number,title,body,labels,milestone` output and return
-/// the first issue that has `require_label` and none of `skip_labels`.
+/// Every issue matching the filter, in forge order. The primitive: the adapter fetches
+/// one page either way, so returning all matches lets a caller rank them (the milestone
+/// floor) without paying one fetch per candidate ordering.
+pub fn ready_issues(json: &str, filter: &SelectFilter) -> Vec<Issue> {
+    let issues: Vec<GhIssue> = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    issues
+        .into_iter()
+        .map(to_issue)
+        .filter(|i| {
+            i.has_label(&filter.require_label)
+                && !filter.skip_labels.iter().any(|s| i.has_label(s))
+                && filter
+                    .milestone
+                    .as_ref()
+                    .is_none_or(|m| i.milestone.as_ref() == Some(m))
+        })
+        .collect()
+}
+
+/// The first issue matching the filter. Derived from `ready_issues` so the two cannot drift.
 pub fn first_ready_issue(json: &str, filter: &SelectFilter) -> Option<Issue> {
-    let issues: Vec<GhIssue> = serde_json::from_str(json).ok()?;
-    issues.into_iter().map(to_issue).find(|i| {
-        i.has_label(&filter.require_label)
-            && !filter.skip_labels.iter().any(|s| i.has_label(s))
-            && filter
-                .milestone
-                .as_ref()
-                .is_none_or(|m| i.milestone.as_ref() == Some(m))
-    })
+    ready_issues(json, filter).into_iter().next()
 }
 
 fn to_issue(g: GhIssue) -> Issue {
@@ -94,7 +107,7 @@ fn milestone_from(m: GhMilestoneObj) -> Milestone {
             "closed" => TrackState::Closed,
             _ => TrackState::Open,
         },
-        due: m.due_on,
+        due: normalize_due(m.due_on),
         progress: Progress {
             total: m.open_issues + m.closed_issues,
             done: m.closed_issues,
@@ -227,6 +240,18 @@ pub fn overall_ci_state(json: &str) -> CiState {
     }
 }
 
+/// Normalise a forge due date to a plain ISO `YYYY-MM-DD`.
+///
+/// GitLab returns `due_date` already in that form, but GitHub and Gitea return `due_on` as
+/// RFC 3339 (`2026-08-01T07:00:00Z`, and Gitea with a real offset like `+02:00`).
+/// `milestone_floor_order` compares these as strings, which survives homogeneous UTC by luck
+/// and breaks the moment offsets differ: `2026-08-01T00:00:00+02:00` is chronologically
+/// BEFORE `2026-07-31T23:00:00Z` but sorts after it. Truncating at the `T` here keeps the
+/// comparison honest, and makes `Milestone.due` actually match what its doc comment claims.
+fn normalize_due(raw: Option<String>) -> Option<String> {
+    raw.map(|d| d.split('T').next().unwrap_or(&d).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,7 +356,10 @@ mod tests {
         // The open milestone: total = open_issues + closed_issues, done = closed_issues.
         let open = ms.iter().find(|m| m.id == MilestoneId(1)).unwrap();
         assert_eq!(open.state, TrackState::Open);
-        assert_eq!(open.due.as_deref(), Some("2026-07-31T00:00:00Z"));
+        // The captured fixture carries GitHub's real `due_on`, "2026-07-31T00:00:00Z".
+        // Normalised on the way in, so `milestone_floor_order`'s string compare is actually
+        // chronological rather than accidentally so.
+        assert_eq!(open.due.as_deref(), Some("2026-07-31"));
         assert_eq!(open.progress, Progress { total: 3, done: 1 });
     }
 
@@ -401,5 +429,16 @@ mod tests {
         assert_eq!(got[0].state, IssueState::Closed);
         assert_eq!(got[1].state, IssueState::Open);
         assert_eq!(got[2].state, IssueState::Open, "absent means open");
+    }
+
+    #[test]
+    fn milestone_due_is_normalized_to_a_plain_iso_date() {
+        // GitHub returns `due_on` as RFC 3339. `milestone_floor_order` compares these as
+        // strings, so leaving the time on makes the ordering accidental rather than correct.
+        let json = r#"[{"number":1,"title":"v0.1","state":"open","due_on":"2026-08-01T07:00:00Z"},
+                       {"number":2,"title":"v0.2","state":"open","due_on":null}]"#;
+        let got = parse_milestones(json);
+        assert_eq!(got[0].due.as_deref(), Some("2026-08-01"));
+        assert_eq!(got[1].due, None);
     }
 }

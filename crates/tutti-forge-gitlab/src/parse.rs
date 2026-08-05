@@ -56,17 +56,31 @@ pub fn page_len(json: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Parse a `GET issues` array and return the first issue matching the filter.
+/// Every issue matching the filter, in forge order. The primitive: the adapter fetches
+/// one page either way, so returning all matches lets a caller rank them (the milestone
+/// floor) without paying one fetch per candidate ordering.
+pub fn ready_issues(json: &str, filter: &SelectFilter) -> Vec<Issue> {
+    let issues: Vec<GlIssue> = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    issues
+        .into_iter()
+        .map(to_issue)
+        .filter(|i| {
+            i.has_label(&filter.require_label)
+                && !filter.skip_labels.iter().any(|s| i.has_label(s))
+                && filter
+                    .milestone
+                    .as_ref()
+                    .is_none_or(|m| i.milestone.as_ref() == Some(m))
+        })
+        .collect()
+}
+
+/// The first issue matching the filter. Derived from `ready_issues` so the two cannot drift.
 pub fn first_ready_issue(json: &str, filter: &SelectFilter) -> Option<Issue> {
-    let issues: Vec<GlIssue> = serde_json::from_str(json).ok()?;
-    issues.into_iter().map(to_issue).find(|i| {
-        i.has_label(&filter.require_label)
-            && !filter.skip_labels.iter().any(|s| i.has_label(s))
-            && filter
-                .milestone
-                .as_ref()
-                .is_none_or(|m| i.milestone.as_ref() == Some(m))
-    })
+    ready_issues(json, filter).into_iter().next()
 }
 
 /// Parse a `GET issues` array into `Issue`s. GitLab keeps issues and merge requests on
