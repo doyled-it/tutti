@@ -167,8 +167,10 @@ fn collect_assistant_text(full_output: &str) -> String {
     let mut assistant_text = String::new();
     for line in full_output.lines() {
         if stream::is_assistant_text_line(line) {
-            if let Some(AgentEvent::Line(text)) = stream::parse_stream_line(line) {
-                assistant_text.push_str(&text);
+            for ev in stream::parse_stream_events(line) {
+                if let AgentEvent::Line(text) = ev {
+                    assistant_text.push_str(&text);
+                }
             }
         }
     }
@@ -268,7 +270,7 @@ impl ClaudeSession {
             // `parse_display_event` drops the raw-JSON system/rate_limit/unknown lines, so the
             // live deltas stay identical to the persisted reply text (which
             // `collect_assistant_text` gates on the same predicate); `ToolUse`/`Done` flow.
-            if let Some(ev) = stream::parse_display_event(&line) {
+            for ev in stream::parse_display_events(&line) {
                 let _ = events.send(ev).await;
             }
         }

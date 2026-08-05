@@ -260,6 +260,28 @@ Replace the `<div class="nav-item soon">Subsessions (soon)</div>` with a real na
 wired to `onSection?.("subsessions")`; extend the `section` prop union and the `onSection`
 signature. (The nav no longer has any `soon` placeholder.)
 
+## Corrections found in review
+
+**One line can carry several events.** `parse_stream_line` returned a single `AgentEvent`
+per line, with text winning over a tool call in the same message. Real `claude` emits
+`content: [{"type":"text"},{"type":"tool_use"}]` constantly — a sentence of preamble
+followed by the tool call it introduces — so every tool aside announced that way was
+dropped, and several tool calls in one message lost all but the first. The pane advertises
+tool asides as a feature, so this made it under-report what the agents were doing.
+
+The parser is now `parse_stream_events` / `parse_display_events`, returning events in block
+order; consecutive text blocks still merge, since `collect_assistant_text` depends on that
+for the persisted transcript. The captured fixture gained a combined-block line, which is
+the real reason the bug survived: it previously kept text and tool_use in separate messages,
+so the gap read as correct.
+
+**The pane must not editorialise about the engine.** `subsession_summary` reported a
+reviewer turn with no report as `("no review", false)` — a red error dot — while
+`run_stages` substitutes an empty Approve for the same outcome and ships. An operator saw a
+failed stage on work the engine had approved. The pane's job is to say what happened, so it
+now mirrors the engine. Whether shipping on a missing report is the right engine behaviour
+is a separate question, deliberately not changed here.
+
 ## Testing
 
 - **Rust, hermetic** (sibling to `drain_emits_lifecycle_events`): drive a two-issue drain with
