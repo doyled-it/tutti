@@ -2,7 +2,7 @@
 //! Black-box: the public API drains multiple issues and stops cleanly.
 
 use tutti_core::config::{default_roles, Config};
-use tutti_core::domain::{BranchPlan, CiState, Issue, IssueId, SelectFilter};
+use tutti_core::domain::{BranchPlan, CiState, Issue, IssueId, IssueState, SelectFilter};
 use tutti_core::engine::{Engine, IterOutcome};
 use tutti_core::gate::Gate;
 use tutti_core::message::*;
@@ -42,6 +42,7 @@ fn ready(id: u64) -> Issue {
         body: String::new(),
         labels: vec!["status:ready".into()],
         milestone: None,
+        state: IssueState::Open,
     }
 }
 

@@ -327,7 +327,7 @@ fn mcp_flag_args(servers: &[tutti_core::mcp::McpServer]) -> Vec<String> {
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
-    use tutti_core::domain::{Issue, IssueId};
+    use tutti_core::domain::{Issue, IssueId, IssueState};
     use tutti_core::message::RolePlaybook;
 
     fn task(role: Role) -> AgentTask {
@@ -342,6 +342,7 @@ mod outcome_tests {
                 body: "b".into(),
                 labels: vec![],
                 milestone: None,
+                state: IssueState::Open,
             },
             worktree_branch: "feat/issue-1".into(),
             model: "m".into(),

@@ -3,7 +3,7 @@
 //! so they are unit-testable against captured fixtures.
 
 use serde::Deserialize;
-use tutti_core::domain::{Issue, IssueId, SelectFilter};
+use tutti_core::domain::{Issue, IssueId, IssueState, SelectFilter};
 use tutti_core::tracking::{Milestone, MilestoneId, Progress, TrackState};
 
 #[derive(Deserialize)]
@@ -24,6 +24,9 @@ struct GtIssue {
     labels: Vec<GtLabel>,
     #[serde(default)]
     milestone: Option<GtMilestoneRef>,
+    // "open" | "closed".
+    #[serde(default)]
+    state: Option<String>,
     // Gitea's issues list returns pull requests too; a PR carries a non-null
     // `pull_request` block. Present only to detect and drop PRs.
     #[serde(default)]
@@ -37,7 +40,27 @@ fn to_issue(g: GtIssue) -> Issue {
         body: g.body,
         labels: g.labels.into_iter().map(|l| l.name).collect(),
         milestone: g.milestone.map(|m| m.title),
+        state: issue_state(g.state.as_deref()),
     }
+}
+
+/// Map a forge state string to `IssueState`. Anything unrecognised (or absent) is treated
+/// as open: mislabelling a closed issue as open is the safer error here, since `classify`
+/// sends closed issues to Done where triage refuses to touch them.
+fn issue_state(raw: Option<&str>) -> IssueState {
+    match raw.map(str::to_ascii_lowercase).as_deref() {
+        Some("closed") => IssueState::Closed,
+        _ => IssueState::Open,
+    }
+}
+
+/// The number of elements in a JSON array page, before any filtering. Pagination must test
+/// this rather than the parsed count: `parse_issue_list` drops pull requests, so a full page
+/// can parse short, and treating that as the last page would silently truncate the backlog.
+pub fn page_len(json: &str) -> usize {
+    serde_json::from_str::<Vec<serde_json::Value>>(json)
+        .map(|v| v.len())
+        .unwrap_or(0)
 }
 
 /// Parse a `GET issues` array and return the first issue matching the filter
@@ -305,5 +328,31 @@ mod tests {
             combined_ci_state(r#"{"state":"pending","total_count":0}"#),
             tutti_core::domain::CiState::Pending
         );
+    }
+
+    #[test]
+    fn issue_state_is_parsed_and_defaults_to_open() {
+        let json = r#"[
+          {"number":1,"title":"a","state":"closed"},
+          {"number":2,"title":"b","state":"open"},
+          {"number":3,"title":"c"}
+        ]"#;
+        let got = parse_issue_list(json);
+        assert_eq!(got[0].state, IssueState::Closed);
+        assert_eq!(got[1].state, IssueState::Open);
+        assert_eq!(got[2].state, IssueState::Open, "absent means open");
+    }
+
+    #[test]
+    fn page_len_counts_raw_elements_including_pull_requests() {
+        // Pagination tests this, not the parsed length: a full page of mostly PRs parses
+        // short, and treating that as the last page would truncate the backlog.
+        let json = r#"[
+          {"number":1,"title":"a"},
+          {"number":2,"title":"pr","pull_request":{"merged":false}}
+        ]"#;
+        assert_eq!(page_len(json), 2);
+        assert_eq!(parse_issue_list(json).len(), 1);
+        assert_eq!(page_len("not json"), 0);
     }
 }

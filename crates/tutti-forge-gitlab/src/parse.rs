@@ -3,7 +3,7 @@
 //! so they are unit-testable against captured fixtures.
 
 use serde::Deserialize;
-use tutti_core::domain::{CiState, Issue, IssueId, SelectFilter};
+use tutti_core::domain::{CiState, Issue, IssueId, IssueState, SelectFilter};
 use tutti_core::tracking::{Milestone, MilestoneId, Progress, TrackState};
 
 #[derive(Deserialize)]
@@ -21,6 +21,9 @@ struct GlIssue {
     labels: Vec<String>,
     #[serde(default)]
     milestone: Option<GlMilestoneRef>,
+    // GitLab spells the open state "opened", not "open".
+    #[serde(default)]
+    state: Option<String>,
 }
 
 fn to_issue(g: GlIssue) -> Issue {
@@ -30,7 +33,27 @@ fn to_issue(g: GlIssue) -> Issue {
         body: g.description.unwrap_or_default(),
         labels: g.labels,
         milestone: g.milestone.map(|m| m.title),
+        state: issue_state(g.state.as_deref()),
     }
+}
+
+/// Map a forge state string to `IssueState`. Anything unrecognised (or absent) is treated
+/// as open: mislabelling a closed issue as open is the safer error here, since `classify`
+/// sends closed issues to Done where triage refuses to touch them.
+fn issue_state(raw: Option<&str>) -> IssueState {
+    match raw.map(str::to_ascii_lowercase).as_deref() {
+        Some("closed") => IssueState::Closed,
+        _ => IssueState::Open,
+    }
+}
+
+/// The number of elements in a JSON array page, before any filtering. Pagination must test
+/// this rather than the parsed count: `parse_issue_list` drops pull requests, so a full page
+/// can parse short, and treating that as the last page would silently truncate the backlog.
+pub fn page_len(json: &str) -> usize {
+    serde_json::from_str::<Vec<serde_json::Value>>(json)
+        .map(|v| v.len())
+        .unwrap_or(0)
 }
 
 /// Parse a `GET issues` array and return the first issue matching the filter.
@@ -347,5 +370,28 @@ mod tests {
         assert!(children[0].has_label("status::done"));
         // Epic-issue linking uses the global id, resolved from a single-issue GET.
         assert_eq!(parse_issue_global_id(r#"{"iid":13,"id":55}"#), Some(55));
+    }
+
+    #[test]
+    fn issue_state_is_parsed_and_defaults_to_open() {
+        // GitLab spells the open state "opened".
+        let json = r#"[
+          {"iid":1,"title":"a","state":"closed"},
+          {"iid":2,"title":"b","state":"opened"},
+          {"iid":3,"title":"c"}
+        ]"#;
+        let got = parse_issue_list(json);
+        assert_eq!(got[0].state, IssueState::Closed);
+        assert_eq!(got[1].state, IssueState::Open, "\"opened\" is open");
+        assert_eq!(got[2].state, IssueState::Open, "absent means open");
+    }
+
+    #[test]
+    fn page_len_counts_raw_elements() {
+        assert_eq!(
+            page_len(r#"[{"iid":1,"title":"a"},{"iid":2,"title":"b"}]"#),
+            2
+        );
+        assert_eq!(page_len("not json"), 0);
     }
 }

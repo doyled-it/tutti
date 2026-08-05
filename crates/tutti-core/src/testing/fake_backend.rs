@@ -76,7 +76,7 @@ impl AgentBackend for FakeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BranchPlan, Issue, IssueId};
+    use crate::domain::{BranchPlan, Issue, IssueId, IssueState};
     use crate::message::*;
 
     #[tokio::test]
@@ -114,6 +114,7 @@ mod tests {
                 body: "b".into(),
                 labels: vec![],
                 milestone: None,
+                state: IssueState::Open,
             },
             worktree_branch: "feat/x-1".into(),
             model: "fake".into(),

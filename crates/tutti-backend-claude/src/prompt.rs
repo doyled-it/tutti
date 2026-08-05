@@ -93,7 +93,7 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::domain::{Issue, IssueId};
+    use tutti_core::domain::{Issue, IssueId, IssueState};
     use tutti_core::message::RolePlaybook;
 
     fn task(role: Role, skills: Vec<String>) -> AgentTask {
@@ -105,6 +105,7 @@ mod tests {
                 body: "details".into(),
                 labels: vec![],
                 milestone: None,
+                state: IssueState::Open,
             },
             worktree_branch: "feat/issue-42".into(),
             model: "m".into(),

@@ -13,6 +13,12 @@ use tutti_core::status::{Status, StatusLabels};
 use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
 use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
+/// Issues requested per page when listing the whole backlog.
+const ISSUE_PAGE_SIZE: usize = 100;
+/// Hard ceiling on pages, so a forge that ignores `page` cannot spin forever.
+/// 50 x 100 covers any backlog this tool is meant to drive.
+const MAX_ISSUE_PAGES: usize = 50;
+
 /// Drives a Gitea (e.g. Codeberg) repo via `tea api` and `git`.
 pub struct GiteaForge {
     /// "owner/name".
@@ -165,15 +171,31 @@ impl Forge for GiteaForge {
         Ok(parse::first_ready_issue(&json, filter))
     }
 
+    /// Every issue, paginated. The board buckets this whole list, so a single page silently
+    /// hides the older backlog on exactly the repos worth converting: `state=all` means the
+    /// window is spent on closed issues first.
     async fn list_issues(&self) -> Result<Vec<Issue>> {
-        let json = self
-            .api(
-                "GET",
-                &self.endpoint("issues?state=all&type=issues&limit=100"),
-                None,
-            )
-            .await?;
-        Ok(parse::parse_issue_list(&json))
+        let mut all = Vec::new();
+        for page in 1..=MAX_ISSUE_PAGES {
+            let json = self
+                .api(
+                    "GET",
+                    &self.endpoint(&format!(
+                        "issues?state=all&type=issues&limit={ISSUE_PAGE_SIZE}&page={page}"
+                    )),
+                    None,
+                )
+                .await?;
+            // Decide "last page" from the RAW element count, not the parsed one:
+            // `parse_issue_list` drops pull requests, so a full page routinely parses short
+            // and testing the parsed length would stop early and silently lose issues.
+            let raw = parse::page_len(&json);
+            all.extend(parse::parse_issue_list(&json));
+            if raw < ISSUE_PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(all)
     }
 
     async fn list_labels(&self) -> Result<Vec<(String, String)>> {

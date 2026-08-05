@@ -98,7 +98,7 @@ impl<'a> Executor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BranchPlan, Issue, IssueId};
+    use crate::domain::{BranchPlan, Issue, IssueId, IssueState};
     use crate::testing::FakeForge;
 
     fn handoff_to(target: &str) -> Handoff {
@@ -123,6 +123,7 @@ mod tests {
             body: String::new(),
             labels: vec!["status:in-progress".into()],
             milestone: None,
+            state: IssueState::Open,
         }
     }
 
