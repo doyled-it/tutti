@@ -7,8 +7,9 @@ use crate::state::{AppState, Project, RunState};
 use std::path::PathBuf;
 use tauri::Manager;
 use tutti_app_core::{
-    apply_triage as apply_triage_core, assemble_board, issue_detail, Board, IssueDetail,
-    ProjectEntry, ProjectStore, TriageOutcome, TriageTarget,
+    apply_triage as apply_triage_core, assemble_board, issue_detail,
+    preview_triage as preview_triage_core, Board, IssueDetail, ProjectEntry, ProjectStore,
+    TriageOutcome, TriagePreview, TriageTarget,
 };
 use tutti_core::browse::{ForgeBrowser, Namespace, NewRepo, RemoteRepo};
 use tutti_core::config::{Config, ForgeKind};
@@ -178,6 +179,21 @@ pub async fn get_board(
     let guard = state.project.lock().await;
     let p = guard.as_ref().ok_or("no project loaded")?;
     assemble_board(p.forge.as_ref(), &p.config, milestone.map(MilestoneId))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve proposed issue ids to titles and current status so the orchestrator's triage
+/// card can show what applying it would actually do. Read-only.
+#[tauri::command]
+pub async fn preview_triage(
+    issues: Vec<u64>,
+    to: TriageTarget,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<TriagePreview>, String> {
+    let guard = state.project.lock().await;
+    let p = guard.as_ref().ok_or("no project loaded")?;
+    preview_triage_core(p.forge.as_ref(), &p.config, &issues, to)
         .await
         .map_err(|e| e.to_string())
 }

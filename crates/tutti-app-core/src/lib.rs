@@ -534,6 +534,69 @@ pub fn triage_labels(cfg: &Config, to: TriageTarget) -> Result<(Vec<String>, Vec
     }
 }
 
+/// One proposed issue, resolved against the forge so a human can judge the proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriagePreview {
+    pub id: u64,
+    /// The real title, or `None` when the issue could not be found.
+    pub title: Option<String>,
+    /// Current board status, or `None` when the issue could not be found.
+    pub status: Option<Status>,
+    /// False when applying `to` would be refused (already shipped, or held by a runner),
+    /// so the card can say so rather than letting the user approve a silent no-op.
+    pub eligible: bool,
+}
+
+/// Resolve proposed issue ids into something a human can actually approve.
+///
+/// The orchestrator proposes bare issue numbers, and it forms them by reading the backlog
+/// itself — including issue bodies written by anyone who can file an issue on the repo. A
+/// card showing five integers asks the user to approve text they have not seen, one step
+/// upstream of an agent that runs with permissions skipped. Resolving titles and current
+/// status is what turns that into an informed decision.
+///
+/// Deliberately read fresh from the forge rather than from the proposal payload: the
+/// proposal may be minutes old, and the whole point is to show what applying it would do
+/// *now*. An id the forge does not return is reported with `title: None` rather than
+/// dropped, so a proposal naming a nonexistent issue is visible instead of silent.
+pub async fn preview_triage(
+    forge: &dyn Forge,
+    cfg: &Config,
+    issues: &[u64],
+    to: TriageTarget,
+) -> Result<Vec<TriagePreview>> {
+    let all = forge.list_issues().await?;
+    Ok(issues
+        .iter()
+        .map(|&id| match all.iter().find(|i| i.id.0 == id) {
+            Some(issue) => {
+                let status = issue_status(issue, cfg);
+                TriagePreview {
+                    id,
+                    title: Some(issue.title.clone()),
+                    status: Some(status),
+                    eligible: is_triageable(status) && status != target_status(to),
+                }
+            }
+            None => TriagePreview {
+                id,
+                title: None,
+                status: None,
+                eligible: false,
+            },
+        })
+        .collect())
+}
+
+/// The status an issue ends up in once `to` is applied. Used to mark a proposal entry as a
+/// no-op when the issue is already there.
+fn target_status(to: TriageTarget) -> Status {
+    match to {
+        TriageTarget::Ready => Status::Ready,
+        TriageTarget::NeedsHuman => Status::NeedsHuman,
+    }
+}
+
 /// Apply a triage decision to `issues`, one forge write each.
 ///
 /// Eligibility is re-read from the forge (see `is_triageable`) rather than trusted from the
@@ -805,6 +868,67 @@ mod tests {
             state: IssueState::Closed,
             ..labelled(id, labels)
         }
+    }
+
+    #[tokio::test]
+    async fn preview_resolves_titles_and_current_status() {
+        // The card renders this. Bare ids are what let a prompt-injected proposal through.
+        let forge = FakeForge::new(
+            vec![
+                labelled(4, &["enhancement"]),
+                labelled(9, &["status:ready"]),
+            ],
+            CiState::Pass,
+        );
+        let got = preview_triage(&forge, &cfg(), &[4, 9], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(got[0].title.as_deref(), Some("i4"));
+        assert_eq!(got[0].status, Some(Status::Untriaged));
+        assert!(got[0].eligible);
+        // Already ready: applying Ready to it is a no-op, and the card should say so.
+        assert_eq!(got[1].status, Some(Status::Ready));
+        assert!(!got[1].eligible);
+    }
+
+    #[tokio::test]
+    async fn preview_marks_an_unknown_issue_rather_than_dropping_it() {
+        // A proposal naming an issue that does not exist must be visible in the card, not
+        // silently shortened to a smaller list.
+        let forge = FakeForge::new(vec![labelled(1, &["enhancement"])], CiState::Pass);
+        let got = preview_triage(&forge, &cfg(), &[1, 404], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].id, 404);
+        assert_eq!(got[1].title, None);
+        assert!(!got[1].eligible);
+    }
+
+    #[tokio::test]
+    async fn preview_surfaces_a_proposed_un_park() {
+        // The security case: a proposal can move an issue a human deliberately parked back
+        // into Ready. It is allowed, but the card must show that is what is happening.
+        let forge = FakeForge::new(vec![labelled(1, &["status:needs-human"])], CiState::Pass);
+        let got = preview_triage(&forge, &cfg(), &[1], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(got[0].status, Some(Status::NeedsHuman));
+        assert!(got[0].eligible, "un-parking is permitted, just not silent");
+    }
+
+    #[tokio::test]
+    async fn preview_marks_closed_and_in_flight_issues_ineligible() {
+        let forge = FakeForge::new(
+            vec![closed(1, &[]), labelled(2, &["status:in-progress"])],
+            CiState::Pass,
+        );
+        let got = preview_triage(&forge, &cfg(), &[1, 2], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert!(got.iter().all(|p| !p.eligible));
+        assert_eq!(got[0].status, Some(Status::Done));
+        assert_eq!(got[1].status, Some(Status::InProgress));
     }
 
     #[tokio::test]

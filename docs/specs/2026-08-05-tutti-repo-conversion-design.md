@@ -285,6 +285,44 @@ Two things follow from it:
   `parse_issue_list` drops pull requests, so a full page routinely parses short and testing
   the parsed length would end pagination early and silently truncate the backlog.
 
+## Correction: the approval has to be informed (found in security review)
+
+The first version of the triage card rendered bare issue numbers and a count: "Mark 5
+ready" over `#4 #9 #12 #17 #23`. That is not an approval a user can reason about, and it
+sits at the one place in this tool where the safety model actually rests.
+
+The chain: `proposal_instruction` tells the orchestrator to read the open issues from the
+forge CLI, so on a public repo an issue body written by an anonymous stranger enters the
+agent's context. Text in that body can steer the agent into listing its own issue under
+`ready`. The user approves five integers. The next drain hands the issue to an implementer
+running with permissions skipped, in the real checkout. `require_label` is the only control
+between "a stranger wrote this" and "an agent acts on it", and this card is the mechanism
+that flips it.
+
+So the card now resolves every proposed id against the forge (`preview_triage`) and shows
+the real title and current board status, and **Apply stays disabled until that resolve
+succeeds**: a proposal that cannot be checked is precisely the one not to approve. Ids the
+forge does not return are shown as "(no such issue)" rather than quietly dropped, and a
+proposed Ready for an issue currently `NeedsHuman` is marked "un-parks", because reversing
+a human's deliberate decision should never be silent. The resolve is deliberately a fresh
+read rather than data carried in the proposal, since the proposal may be minutes old.
+
+Ineligible entries stay visible and greyed rather than being filtered out, and Apply acts
+only on the eligible ones, so the count on the button matches what will actually change.
+
+## Correction: the proposal artifact was in world-writable /tmp
+
+`std::env::temp_dir()` is `/tmp` on Linux, and a process id is readable from `/proc`. Any
+local user could pre-create `tutti-gate-<pid>.json`; the sticky bit would then block our
+unlink, whose error was discarded with `let _ =`; and `read_proposal` would return the
+attacker's JSON. A gate proposal becomes `[gate].commands`, which the engine runs through
+`sh -c`.
+
+Two changes. The artifact moved to `<app data dir>/proposals/`, which is per-user and not
+world-writable (clamped to 0700 on unix for a permissive parent). And clearing a stale
+artifact is now fatal on any error other than `NotFound`: if the file exists and cannot be
+removed, something else owns it, and whatever is read back is not the agent's proposal.
+
 ## Out of scope
 
 - Bulk triage by milestone or by search query. Selection is explicit for now.

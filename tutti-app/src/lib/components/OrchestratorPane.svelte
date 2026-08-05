@@ -4,7 +4,7 @@
      Pure transcript logic lives in $lib/orchestrator.ts. -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, type TriageTarget } from "$lib/ipc";
+  import { api } from "$lib/ipc";
   import {
     appendDelta,
     appendTool,
@@ -13,10 +13,9 @@
     dropTrailingEmptyAssistant,
     type ChatMessage,
     type GateProposal,
-    type TriageProposal,
   } from "$lib/orchestrator";
-  import { triageSummary } from "$lib/board";
   import { gateStatus, orchestratorBusy } from "$lib/stores";
+  import TriageProposalCard from "./TriageProposalCard.svelte";
 
   // Fired after a triage apply so the host can refresh the board it is showing.
   let { onTriaged = null }: { onTriaged?: (() => void) | null } = $props();
@@ -25,7 +24,6 @@
   let draft = $state("");
   let thinking = $state(false);
   let error = $state<string | null>(null);
-  let triageNote = $state<string | null>(null);
 
   let showThinking = $derived.by(() => {
     if (!thinking) return false;
@@ -93,14 +91,11 @@
     }
   }
 
-  // Narrowing helpers: Svelte's `{#if}` narrows `m.proposal` for the markup it guards, but
-  // not inside an event handler closure, which runs later. These re-assert the variant that
-  // the surrounding branch already established.
+  // Narrowing helper: Svelte's `{#if}` narrows `m.proposal` for the markup it guards, but
+  // not inside an event handler closure, which runs later. This re-asserts the variant the
+  // surrounding branch already established.
   function gateOf(m: ChatMessage): GateProposal {
     return m.proposal as GateProposal;
-  }
-  function triageOf(m: ChatMessage): TriageProposal {
-    return m.proposal as TriageProposal;
   }
 
   async function applyGateProposal(index: number, commands: string[]) {
@@ -108,19 +103,6 @@
       const status = await api.applyGate(commands);
       gateStatus.set(status);
       messages = removeProposalAt(messages, index);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  // The triage card is NOT removed on apply: the other list may still be actionable, and
-  // the note reports what actually landed (including anything skipped or failed).
-  async function applyTriage(issues: number[], to: TriageTarget) {
-    triageNote = null;
-    try {
-      const outcome = await api.applyTriage(issues, to);
-      triageNote = triageSummary(outcome, to);
-      onTriaged?.();
     } catch (e) {
       error = String(e);
     }
@@ -167,47 +149,11 @@
             </div>
           </div>
         {:else if m.kind === "proposal" && m.proposal?.kind === "triage"}
-          <div class="proposal">
-            <div class="proposal-title">Triage the backlog?</div>
-            {#if m.proposal.ready.length > 0}
-              <div class="triage-line">
-                <span class="triage-label">Ready</span>
-                <span class="triage-ids">{m.proposal.ready.map((n) => `#${n}`).join(" ")}</span>
-              </div>
-            {/if}
-            {#if m.proposal.needs_human.length > 0}
-              <div class="triage-line">
-                <span class="triage-label">Needs human</span>
-                <span class="triage-ids"
-                  >{m.proposal.needs_human.map((n) => `#${n}`).join(" ")}</span
-                >
-              </div>
-            {/if}
-            {#if m.proposal.rationale}
-              <div class="proposal-why">{m.proposal.rationale}</div>
-            {/if}
-            <!-- The two lists apply separately: a user who agrees the ready set is right but
-                 not the park set can take one and leave the other. -->
-            <div class="proposal-actions">
-              {#if m.proposal.ready.length > 0}
-                <button class="apply" onclick={() => applyTriage(triageOf(m).ready, "ready")}>
-                  Mark {m.proposal.ready.length} ready
-                </button>
-              {/if}
-              {#if m.proposal.needs_human.length > 0}
-                <button
-                  class="apply"
-                  onclick={() => applyTriage(triageOf(m).needs_human, "needs_human")}
-                >
-                  Park {m.proposal.needs_human.length}
-                </button>
-              {/if}
-              <button class="dismiss" onclick={() => dismissProposal(i)}>Dismiss</button>
-            </div>
-            {#if triageNote}
-              <div class="proposal-why">{triageNote}</div>
-            {/if}
-          </div>
+          <TriageProposalCard
+            proposal={m.proposal}
+            onApplied={onTriaged}
+            onDismiss={() => dismissProposal(i)}
+          />
         {:else}
           <div class="bubble">{m.text}</div>
         {/if}
@@ -328,22 +274,6 @@
   .proposal-cmds code {
     font-family: monospace;
     font-size: 12px;
-  }
-  .triage-line {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    font-size: 12px;
-    margin-bottom: 4px;
-  }
-  .triage-label {
-    flex: none;
-    font-weight: 600;
-    color: var(--text-dim);
-  }
-  .triage-ids {
-    font-family: monospace;
-    word-break: break-word;
   }
   .proposal-why {
     color: var(--text-dim);

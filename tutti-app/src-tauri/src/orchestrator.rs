@@ -133,7 +133,7 @@ pub async fn send_orchestrator_message(
         }
     });
 
-    let gate_path = proposal_path();
+    let gate_path = proposal_path(&app)?;
     let session = ClaudeSession::default();
     let result = session
         .turn(
@@ -188,10 +188,32 @@ fn write_mcp_config(servers: &[tutti_core::mcp::McpServer]) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// The absolute path (outside any repo) the agent is told to write a gate proposal to.
-/// Per-process; turns are single-flight so reuse across turns is safe (each turn clears it).
-fn proposal_path() -> PathBuf {
-    std::env::temp_dir().join(format!("tutti-gate-{}.json", std::process::id()))
+/// The absolute path (outside any repo) the agent is told to write a proposal to.
+///
+/// Deliberately NOT `std::env::temp_dir()`. On Linux that is `/tmp`: world-writable, and a
+/// process id is readable from `/proc`, so any local user could pre-create the file we are
+/// about to read. The sticky bit would then stop us unlinking it, and an attacker-authored
+/// gate proposal ends up one click from `[gate].commands`, which the engine runs through
+/// `sh -c`. The app data dir is per-user and not world-writable, which removes the race
+/// entirely; on unix we also clamp the directory to 0700 in case the parent is permissive.
+///
+/// Per-process filename; turns are single-flight so reuse across turns is safe (each turn
+/// clears it).
+fn proposal_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("proposals");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Best-effort: a failure here is not fatal, since the app data dir is already
+        // per-user; this only narrows an unusually permissive parent.
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir.join(format!("proposal-{}.json", std::process::id())))
 }
 
 /// Read the active project's current gate status.

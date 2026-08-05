@@ -206,8 +206,23 @@ impl ClaudeSession {
     ) -> Result<TurnOutcome> {
         // Clear a stale proposal from a prior turn so this turn's outcome reflects only what
         // the agent writes now (the same discipline `ClaudeBackend::run` uses on its out_path).
+        //
+        // A failure here is fatal rather than ignored. If the file exists and we cannot
+        // remove it, something other than this process owns it, and whatever we read back
+        // afterwards would not be the agent's proposal. Since a gate proposal becomes shell
+        // commands the engine later runs, reading a file we could not clear is exactly the
+        // case worth refusing.
         if let Some(pp) = proposal_path {
-            let _ = std::fs::remove_file(pp);
+            match std::fs::remove_file(pp) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(EngineError::Backend(format!(
+                        "could not clear the proposal artifact at {}: {e}",
+                        pp.display()
+                    )))
+                }
+            }
         }
         // Append the proposal instruction to what claude sees (the app persists the raw
         // message; this augmentation is prompt-only).
@@ -472,6 +487,35 @@ mod tests {
         assert_eq!(got.commands, vec!["cargo test".to_string()]);
         assert_eq!(got.working_dir, "");
         assert_eq!(got.rationale, "it is a rust workspace");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn turn_refuses_when_the_stale_proposal_cannot_be_cleared() {
+        // If we cannot clear the artifact, something else owns it, and what we read back
+        // would not be the agent's proposal. A gate proposal becomes shell commands the
+        // engine runs, so reading a file we could not clear is the case worth refusing.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let artifact = locked.join("proposal.json");
+        std::fs::write(&artifact, "{}").unwrap();
+        // Read+execute only: the file exists but cannot be unlinked from this directory.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let session = ClaudeSession {
+            program: "/bin/echo".into(),
+        };
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+        let err = session
+            .turn("hi", "sonnet", None, None, dir.path(), Some(&artifact), tx)
+            .await
+            .expect_err("a stale artifact we cannot clear must fail the turn");
+        assert!(err.to_string().contains("could not clear"));
+
+        // Restore so the tempdir can be cleaned up.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
