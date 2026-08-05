@@ -13,6 +13,12 @@ use tutti_core::status::{Status, StatusLabels};
 use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
 use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
+/// Issues requested per page when listing the whole backlog.
+const ISSUE_PAGE_SIZE: usize = 100;
+/// Hard ceiling on pages, so a forge that ignores `page` cannot spin forever.
+/// 50 x 100 covers any backlog this tool is meant to drive.
+const MAX_ISSUE_PAGES: usize = 50;
+
 /// Drives a GitLab project via `glab api` and `git`.
 pub struct GitLabForge {
     /// A numeric project id (e.g. "84564301") or a URL-encoded path
@@ -102,11 +108,30 @@ impl Forge for GitLabForge {
         Ok(parse::first_ready_issue(&json, filter))
     }
 
+    /// Every issue, paginated. See the Gitea adapter for why a single page is not enough:
+    /// `state=all` spends the window on closed issues, hiding the older open backlog on
+    /// exactly the repos worth converting.
     async fn list_issues(&self) -> Result<Vec<Issue>> {
-        let json = self
-            .api("GET", &self.endpoint("issues?state=all&per_page=100"), &[])
-            .await?;
-        Ok(parse::parse_issue_list(&json))
+        let mut all = Vec::new();
+        for page in 1..=MAX_ISSUE_PAGES {
+            let json = self
+                .api(
+                    "GET",
+                    &self.endpoint(&format!(
+                        "issues?state=all&per_page={ISSUE_PAGE_SIZE}&page={page}"
+                    )),
+                    &[],
+                )
+                .await?;
+            // Raw element count, not the parsed one, so a page that parses short does not
+            // end pagination early.
+            let raw = parse::page_len(&json);
+            all.extend(parse::parse_issue_list(&json));
+            if raw < ISSUE_PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(all)
     }
 
     async fn list_labels(&self) -> Result<Vec<(String, String)>> {

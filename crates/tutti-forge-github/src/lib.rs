@@ -13,6 +13,13 @@ use tutti_core::status::{Status, StatusLabels};
 use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap, TrackState};
 use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
 
+/// Ceiling for `gh issue list --limit` when listing the whole backlog for the board.
+/// `gh` paginates internally up to this, so unlike the REST adapters no page loop is
+/// needed. It has to be generous: `--state all` spends the window on closed issues
+/// first, so a low cap hides the older OPEN backlog on exactly the repos worth
+/// converting.
+const ISSUE_LIST_LIMIT: &str = "1000";
+
 /// Drives a GitHub repo via `gh` and `git`.
 pub struct GitHubForge {
     /// "owner/name".
@@ -111,7 +118,7 @@ impl Forge for GitHubForge {
                 "--limit",
                 "100",
                 "--json",
-                "number,title,body,labels,milestone",
+                "number,title,body,labels,milestone,state",
             ])
             .await?;
         Ok(parse::first_ready_issue(&json, filter))
@@ -127,9 +134,9 @@ impl Forge for GitHubForge {
                 "--state",
                 "all",
                 "--limit",
-                "100",
+                ISSUE_LIST_LIMIT,
                 "--json",
-                "number,title,body,labels,milestone",
+                "number,title,body,labels,milestone,state",
             ])
             .await?;
         Ok(parse::parse_issue_list(&json))

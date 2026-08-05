@@ -254,6 +254,37 @@ optional columns, selection helpers, and the proposal union reducer.
 applies the labels a real backlog needs. Called out here so it is not mistaken for
 covered.
 
+## Correction: the corpus, not just the labels (found in review)
+
+The design above reasons carefully about *which labels* triage writes and never asks *which
+issues* it is handed. That blind spot produced a bug of exactly the shape this feature
+exists to kill.
+
+`assemble_board` and `apply_triage` both read `list_issues`, and every adapter fetches it
+with `state=all` (the Done column would otherwise be empty, because `record` writes
+`status:done` but never closes an issue). `domain::Issue` carried no state, so a closed
+issue with no status label — which is what a `Closes #N` auto-merge leaves behind —
+classified as **Untriaged**. It inflated the gap banner, sat under "select all", and one
+click wrote `status:ready` to it. The engine selects with `state=open` and would pick up
+none of them. That is the "board says ready, engine does nothing" lie from issue #16,
+recreated as durable forge state rather than a display glitch. On this repo it was 8 issues.
+
+The fix is `IssueState` on `Issue`, parsed per adapter, and a first arm in `classify`:
+closed is Done, whatever it is labelled. That also repairs the write path for free, since
+`is_triageable(Done)` is already false — the eligibility re-read becomes a real guard
+instead of a second opinion computed from the same missing information.
+
+Two things follow from it:
+
+- **Closed outranks every status label**, including in-progress. An issue closed while a
+  runner held it is finished, and offering it as live work would be the same lie again.
+- **`list_issues` paginates.** With `state=all`, a single 100-issue page is spent on closed
+  issues first, so the older *open* backlog was both invisible on the board and unreachable
+  by triage. Gitea and GitLab now loop pages; GitHub raises `--limit`, since `gh` paginates
+  internally. The page loop tests the **raw** element count, not the parsed one:
+  `parse_issue_list` drops pull requests, so a full page routinely parses short and testing
+  the parsed length would end pagination early and silently truncate the backlog.
+
 ## Out of scope
 
 - Bulk triage by milestone or by search query. Selection is explicit for now.

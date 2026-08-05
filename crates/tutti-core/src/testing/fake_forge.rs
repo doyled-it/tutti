@@ -2,7 +2,7 @@
 //! An in-memory Forge: issues, labels, branches, PRs, CI, all in a Mutex.
 
 use crate::domain::{
-    CiState, Issue, IssueId, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
+    CiState, Issue, IssueId, IssueState, MergeMode, PrHandle, PrRequest, SelectFilter, ShipRecord,
 };
 use crate::message::NewIssue;
 use crate::status::{Status, StatusLabels};
@@ -376,6 +376,7 @@ impl Forge for FakeForge {
             title: new.title.clone(),
             body: new.body.clone(),
             labels,
+            state: IssueState::Open,
             milestone: milestone.and_then(|m| {
                 st.milestones
                     .iter()
@@ -407,6 +408,7 @@ mod tests {
             body: String::new(),
             labels: vec!["status:ready".into()],
             milestone: None,
+            state: IssueState::Open,
         }
     }
 

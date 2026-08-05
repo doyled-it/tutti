@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use tutti_core::config::Config;
-use tutti_core::domain::Issue;
+use tutti_core::domain::{Issue, IssueState};
 use tutti_core::status::StatusLabels;
 use tutti_core::tracking::{Milestone, MilestoneId, TrackState};
 use tutti_core::traits::{EngineError, Forge, Result};
@@ -84,14 +84,25 @@ fn normalize_color(color: &str) -> String {
 
 /// Bucket an issue the way the engine would see it.
 ///
-/// Order matters, and the one interesting position is **needs-human above ready**.
+/// **A closed issue is Done, whatever it is labelled, and that check comes first.** The
+/// board reads `list_issues`, which every adapter fetches with `state=all` so the Done
+/// column has anything in it (`record` writes `status:done` but never closes an issue, so
+/// closure comes from humans and from `Closes #N` auto-close). Without this arm a closed,
+/// unlabelled issue falls through to Untriaged: it inflates the triage gap, is swept up by
+/// "select all", and gets `status:ready` written to it, while the engine — which selects
+/// with `state=open` — picks up exactly zero of them. That is issue #16's original bug
+/// recreated as durable forge state rather than a display glitch.
+///
+/// Routing closed issues to Done also fixes the write path for free, because
+/// `is_triageable(Done)` is already false.
+///
+/// After that, the one interesting position is **needs-human above ready**.
 /// `next_ready_issue` requires the ready label AND the absence of every skip label, so an
 /// issue carrying both is not selectable; ranking ready first would put it in the Ready
-/// column and reintroduce the "looks ready, does nothing" bug. Done and in-progress stay
-/// above it: a shipped issue is shipped, and one a runner holds is in progress, whatever
-/// else it is labelled.
+/// column and reintroduce the same "looks ready, does nothing" lie. In-progress stays above
+/// it: an issue a runner holds is in progress, whatever else it is labelled.
 fn classify(issue: &Issue, labels: &StatusLabels, skip: &[String]) -> Status {
-    if issue.has_label(&labels.done) {
+    if issue.state == IssueState::Closed || issue.has_label(&labels.done) {
         Status::Done
     } else if issue.has_label(&labels.in_progress) {
         Status::InProgress
@@ -756,6 +767,7 @@ mod tests {
             body: String::new(),
             labels: vec!["enhancement".into()],
             milestone: None,
+            state: IssueState::Open,
         };
         let ready = Issue {
             id: IssueId(2),
@@ -763,6 +775,7 @@ mod tests {
             body: String::new(),
             labels: vec!["status:ready".into()],
             milestone: None,
+            state: IssueState::Open,
         };
         let forge = FakeForge::new(vec![untriaged, ready], CiState::Pass);
 
@@ -772,7 +785,7 @@ mod tests {
         assert_eq!(board.untriaged[0].status, Status::Untriaged);
     }
 
-    /// An issue carrying exactly `labels`, seeded directly so the label set is verbatim
+    /// An open issue carrying exactly `labels`, seeded directly so the label set is verbatim
     /// (`create_issue` auto-appends status:ready).
     fn labelled(id: u64, labels: &[&str]) -> Issue {
         Issue {
@@ -781,7 +794,89 @@ mod tests {
             body: String::new(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
             milestone: None,
+            state: IssueState::Open,
         }
+    }
+
+    /// The same, but closed on the forge. The case that matters: a closed issue carrying no
+    /// status label at all, which is what `Closes #N` auto-close leaves behind.
+    fn closed(id: u64, labels: &[&str]) -> Issue {
+        Issue {
+            state: IssueState::Closed,
+            ..labelled(id, labels)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_unlabelled_issue_is_done_not_untriaged() {
+        // The regression this whole change exists for. `record` writes status:done but never
+        // closes an issue, so every closed issue here was closed by a human or by a
+        // `Closes #N` auto-merge, and carries no status label. Calling it Untriaged put it in
+        // the triage gap, under "select all", and one click from `status:ready`.
+        let forge = FakeForge::new(vec![closed(1, &["enhancement"])], CiState::Pass);
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert!(
+            board.untriaged.is_empty(),
+            "a closed issue is not triage work"
+        );
+        assert_eq!(board.done.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn closed_beats_every_status_label() {
+        // Closed wins outright: an issue closed while a runner held it is finished, not
+        // in progress, and the board must not offer it as live work.
+        let forge = FakeForge::new(
+            vec![
+                closed(1, &["status:ready"]),
+                closed(2, &["status:in-progress"]),
+                closed(3, &["status:needs-human"]),
+            ],
+            CiState::Pass,
+        );
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.done.len(), 3);
+        assert!(board.ready.is_empty());
+        assert!(board.in_progress.is_empty());
+        assert!(board.needs_human.is_empty());
+    }
+
+    #[tokio::test]
+    async fn triage_refuses_closed_issues() {
+        // The write-path half. Even if a stale board or an orchestrator proposal names a
+        // closed issue, the re-read must refuse it rather than writing status:ready to work
+        // that is already finished.
+        let forge = FakeForge::new(
+            vec![closed(1, &["enhancement"]), labelled(2, &["enhancement"])],
+            CiState::Pass,
+        );
+        let out = apply_triage(&forge, &cfg(), &[1, 2], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(out.applied, vec![2]);
+        assert_eq!(out.skipped, vec![1]);
+        assert_eq!(
+            forge.labels_of(IssueId(1)),
+            vec!["enhancement".to_string()],
+            "the closed issue was left exactly as it was"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_issues_do_not_inflate_the_triage_gap() {
+        // The banner drove the user's decision to click "select all", so it must count the
+        // same set the button acts on.
+        let forge = FakeForge::new(
+            vec![
+                closed(1, &["enhancement"]),
+                closed(2, &[]),
+                labelled(3, &["enhancement"]),
+            ],
+            CiState::Pass,
+        );
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.untriaged.len(), 1);
+        assert_eq!(board.untriaged[0].id, 3);
     }
 
     #[tokio::test]

@@ -32,7 +32,7 @@ impl RoutingStrategy for Trunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::IssueId;
+    use crate::domain::{IssueId, IssueState};
 
     #[test]
     fn routes_all_issues_to_integration_branch() {
@@ -43,6 +43,7 @@ mod tests {
             body: String::new(),
             labels: vec![],
             milestone: None,
+            state: IssueState::Open,
         };
         let plan = s.target_branch(&issue).unwrap();
         assert_eq!(plan.target, "version/v0.1");

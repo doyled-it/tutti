@@ -52,7 +52,7 @@ impl RoutingStrategy for PhaseStacking {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::IssueId;
+    use crate::domain::{IssueId, IssueState};
 
     fn issue_in(milestone: Option<&str>) -> Issue {
         Issue {
@@ -61,6 +61,7 @@ mod tests {
             body: String::new(),
             labels: vec![],
             milestone: milestone.map(str::to_string),
+            state: IssueState::Open,
         }
     }
 

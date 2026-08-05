@@ -3,7 +3,7 @@
 //! apply-fixes, gate, merge (via the executor), record, plan.
 
 use crate::config::Config;
-use crate::domain::{Issue, SelectFilter};
+use crate::domain::{Issue, IssueState, SelectFilter};
 use crate::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
@@ -430,6 +430,7 @@ impl<'a> Engine<'a> {
             body: snapshot,
             labels: vec![],
             milestone: None,
+            state: IssueState::Open,
         };
         let workdir = self.cfg.gate.working_dir.as_path();
         let workdir = if workdir.as_os_str().is_empty() {
@@ -614,6 +615,7 @@ mod tests {
             body: String::new(),
             labels: vec!["status:ready".into()],
             milestone: None,
+            state: IssueState::Open,
         }
     }
 
@@ -1137,6 +1139,7 @@ mod tests {
             body: String::new(),
             labels: vec!["status:ready".into()],
             milestone: Some("v0.1".into()),
+            state: IssueState::Open,
         };
         let unscoped_issue = Issue {
             id: IssueId(2),
@@ -1144,6 +1147,7 @@ mod tests {
             body: String::new(),
             labels: vec!["status:ready".into()],
             milestone: None,
+            state: IssueState::Open,
         };
         let forge = FakeForge::new(
             vec![unscoped_issue.clone(), scoped_issue.clone()],
@@ -1222,6 +1226,7 @@ mod tests {
     fn ready_in(id: u64, milestone: &str) -> Issue {
         Issue {
             milestone: Some(milestone.into()),
+            state: IssueState::Open,
             ..ready(id)
         }
     }

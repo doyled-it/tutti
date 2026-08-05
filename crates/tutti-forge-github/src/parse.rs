@@ -3,7 +3,7 @@
 //! unit-testable against captured fixtures.
 
 use serde::Deserialize;
-use tutti_core::domain::{CiState, Issue, IssueId, SelectFilter};
+use tutti_core::domain::{CiState, Issue, IssueId, IssueState, SelectFilter};
 use tutti_core::tracking::{Milestone, MilestoneId, Progress, TrackState};
 
 #[derive(Deserialize)]
@@ -20,6 +20,10 @@ struct GhIssue {
     labels: Vec<GhLabel>,
     #[serde(default, rename = "milestone")]
     milestone: Option<GhMilestone>,
+    // "OPEN" | "CLOSED". Absent from payloads captured before the field was requested,
+    // which default to open.
+    #[serde(default)]
+    state: Option<String>,
     // GitHub's `issues` REST list returns pull requests too; a PR object carries a
     // `pull_request` block. Present only to detect and drop PRs in `parse_issue_list`.
     #[serde(default)]
@@ -51,6 +55,17 @@ fn to_issue(g: GhIssue) -> Issue {
         body: g.body,
         labels: g.labels.into_iter().map(|l| l.name).collect(),
         milestone: g.milestone.map(|m| m.title),
+        state: issue_state(g.state.as_deref()),
+    }
+}
+
+/// Map a forge state string to `IssueState`. Anything unrecognised (or absent) is treated
+/// as open: mislabelling a closed issue as open is the safer error here, since `classify`
+/// sends closed issues to Done where triage refuses to touch them.
+fn issue_state(raw: Option<&str>) -> IssueState {
+    match raw.map(str::to_ascii_lowercase).as_deref() {
+        Some("closed") => IssueState::Closed,
+        _ => IssueState::Open,
     }
 }
 
@@ -371,5 +386,20 @@ mod tests {
         assert_eq!(issue.body, "parent");
         assert_eq!(issue.labels, vec!["status:ready".to_string()]);
         assert_eq!(issue.milestone.as_deref(), Some("fixture-ms"));
+    }
+
+    #[test]
+    fn issue_state_is_parsed_and_defaults_to_open() {
+        // gh reports "OPEN"/"CLOSED" in caps. A payload captured before the field was
+        // requested has no `state` at all and must decode as open, not silently closed.
+        let json = r#"[
+          {"number":1,"title":"a","body":"","labels":[],"milestone":null,"state":"CLOSED"},
+          {"number":2,"title":"b","body":"","labels":[],"milestone":null,"state":"OPEN"},
+          {"number":3,"title":"c","body":"","labels":[],"milestone":null}
+        ]"#;
+        let got = parse_issue_list(json);
+        assert_eq!(got[0].state, IssueState::Closed);
+        assert_eq!(got[1].state, IssueState::Open);
+        assert_eq!(got[2].state, IssueState::Open, "absent means open");
     }
 }
