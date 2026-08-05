@@ -41,6 +41,16 @@ export interface TriageFailure {
   error: string;
 }
 
+/** One proposed issue resolved against the forge, so a card can be judged. */
+export interface TriagePreview {
+  id: number;
+  /** Real title, or null when the issue could not be found. */
+  title: string | null;
+  status: Status | null;
+  /** False when applying would be refused or is a no-op. */
+  eligible: boolean;
+}
+
 /** Per-issue accounting of a triage apply: a long backlog can fail partway. */
 export interface TriageOutcome {
   applied: number[];
@@ -171,6 +181,8 @@ export const api = {
   getIssue: (id: number) => invoke<IssueDetail>("get_issue", { id }),
   applyTriage: (issues: number[], to: TriageTarget) =>
     invoke<TriageOutcome>("apply_triage", { issues, to }),
+  previewTriage: (issues: number[], to: TriageTarget) =>
+    invoke<TriagePreview[]>("preview_triage", { issues, to }),
   startRun: () => invoke<void>("start_run"),
   pauseRun: () => invoke<void>("pause_run"),
   onProgress: (cb: (ev: EngineEvent) => void) =>

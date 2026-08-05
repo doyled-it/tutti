@@ -18,6 +18,7 @@ pub fn run() {
             commands::get_board,
             commands::get_issue,
             commands::apply_triage,
+            commands::preview_triage,
             commands::start_run,
             commands::pause_run,
             commands::probe_project,
