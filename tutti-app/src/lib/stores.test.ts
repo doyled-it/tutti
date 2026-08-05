@@ -10,6 +10,7 @@ const base: Board = {
   in_progress: [],
   done: [],
   untriaged: [],
+  needs_human: [],
 };
 const idle: RunUi = { state: "idle", shipped: 0 };
 
@@ -71,5 +72,18 @@ describe("applyEvent", () => {
     const { board } = applyEvent(stale, idle, { kind: "issue_claimed", id: 20, title: "b" });
     expect(board!.untriaged).toEqual([]);
     expect(board!.in_progress.map((c) => c.id)).toEqual([20]);
+  });
+
+  it("claiming a card sitting in needs_human moves it without leaving a phantom", () => {
+    // Same staleness, one bucket over: the issue was un-parked in the forge and claimed
+    // before the next full refresh. Every bucket must be stripped, not just the old ones.
+    const stale: Board = {
+      ...base,
+      ready: [],
+      needs_human: [{ id: 21, title: "c", status: "needs_human", milestone: "P1" }],
+    };
+    const { board } = applyEvent(stale, idle, { kind: "issue_claimed", id: 21, title: "c" });
+    expect(board!.needs_human).toEqual([]);
+    expect(board!.in_progress.map((c) => c.id)).toEqual([21]);
   });
 });

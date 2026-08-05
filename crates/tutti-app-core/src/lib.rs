@@ -24,6 +24,9 @@ pub enum Status {
     Ready,
     InProgress,
     Done,
+    /// Deliberately parked: the issue carries one of `select.skip_labels`, so the engine
+    /// will never select it. Distinct from `Untriaged`, which means nobody has decided yet.
+    NeedsHuman,
     Untriaged,
 }
 
@@ -46,6 +49,7 @@ pub struct Board {
     pub in_progress: Vec<IssueCard>,
     pub done: Vec<IssueCard>,
     pub untriaged: Vec<IssueCard>,
+    pub needs_human: Vec<IssueCard>,
 }
 
 /// A label as shown on the drawer: name plus its real forge color, for a GitLab-style
@@ -78,11 +82,21 @@ fn normalize_color(color: &str) -> String {
     color.trim_start_matches('#').to_lowercase()
 }
 
-fn classify(issue: &Issue, labels: &StatusLabels) -> Status {
+/// Bucket an issue the way the engine would see it.
+///
+/// Order matters, and the one interesting position is **needs-human above ready**.
+/// `next_ready_issue` requires the ready label AND the absence of every skip label, so an
+/// issue carrying both is not selectable; ranking ready first would put it in the Ready
+/// column and reintroduce the "looks ready, does nothing" bug. Done and in-progress stay
+/// above it: a shipped issue is shipped, and one a runner holds is in progress, whatever
+/// else it is labelled.
+fn classify(issue: &Issue, labels: &StatusLabels, skip: &[String]) -> Status {
     if issue.has_label(&labels.done) {
         Status::Done
     } else if issue.has_label(&labels.in_progress) {
         Status::InProgress
+    } else if skip.iter().any(|s| issue.has_label(s)) {
+        Status::NeedsHuman
     } else if issue.has_label(&labels.ready) {
         Status::Ready
     } else {
@@ -90,11 +104,18 @@ fn classify(issue: &Issue, labels: &StatusLabels) -> Status {
     }
 }
 
-fn card(issue: &Issue, labels: &StatusLabels) -> IssueCard {
+/// The board status of a single issue under `cfg`. The public entry point to `classify`, so
+/// callers that need to check eligibility (the triage command re-reading the forge before it
+/// writes) bucket an issue exactly the way the board does, from one implementation.
+pub fn issue_status(issue: &Issue, cfg: &Config) -> Status {
+    classify(issue, &cfg.status_labels(), &cfg.select.skip_labels)
+}
+
+fn card(issue: &Issue, labels: &StatusLabels, skip: &[String]) -> IssueCard {
     IssueCard {
         id: issue.id.0,
         title: issue.title.clone(),
-        status: classify(issue, labels),
+        status: classify(issue, labels, skip),
         milestone: issue.milestone.clone(),
     }
 }
@@ -400,14 +421,15 @@ pub async fn assemble_board(
         None => forge.list_issues().await?,
     };
 
-    let (mut ready, mut in_progress, mut done, mut untriaged) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut ready, mut in_progress, mut done, mut untriaged, mut needs_human) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for issue in issues {
-        let c = card(&issue, &labels);
+        let c = card(&issue, &labels, &cfg.select.skip_labels);
         match c.status {
             Status::Ready => ready.push(c),
             Status::InProgress => in_progress.push(c),
             Status::Done => done.push(c),
+            Status::NeedsHuman => needs_human.push(c),
             Status::Untriaged => untriaged.push(c),
         }
     }
@@ -419,7 +441,128 @@ pub async fn assemble_board(
         in_progress,
         done,
         untriaged,
+        needs_human,
     })
+}
+
+/// Which triage decision to apply to a selection of issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageTarget {
+    Ready,
+    NeedsHuman,
+}
+
+/// Whether a triage decision may be applied to an issue in this state.
+///
+/// The guardrail protects **in-flight and finished** work, not "anything already labelled".
+/// Flipping a `Done` issue back to ready would hand shipped work to an agent, and the
+/// in-progress label IS the claim lock, so stripping it could cause a double-claim.
+///
+/// Everything upstream of that is fair game, and deliberately so: parking a `Ready` issue
+/// the user has thought better of, or un-parking a `NeedsHuman` one, are exactly the
+/// corrections a triage pass exists to make. Restricting this to `Untriaged` would let the
+/// orchestrator propose a park for a ready issue and then silently skip it.
+pub fn is_triageable(status: Status) -> bool {
+    match status {
+        Status::Untriaged | Status::Ready | Status::NeedsHuman => true,
+        Status::InProgress | Status::Done => false,
+    }
+}
+
+/// One issue the forge refused, kept with its error so the UI can name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriageFailure {
+    pub issue: u64,
+    pub error: String,
+}
+
+/// The per-issue accounting of a triage apply. Applying to a long backlog over a network
+/// will sometimes fail partway; returning a bare success would claim 59 successes for 58,
+/// and aborting on the first error would leave the backlog half-labelled with no record of
+/// where it stopped.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriageOutcome {
+    pub applied: Vec<u64>,
+    /// Requested but not eligible when re-read: already labelled, or no longer present.
+    pub skipped: Vec<u64>,
+    pub failed: Vec<TriageFailure>,
+}
+
+/// The labels to add and remove for a triage decision, resolved from config.
+///
+/// Each direction must leave the issue in a state the engine reads unambiguously, which is
+/// why both remove more than they add:
+///
+/// **Ready** starts from `StatusLabels::transition`, the exact transition `release()`
+/// performs, so triage and the engine agree on what "ready" means. It then also clears
+/// *every* skip label. Without that, marking a parked issue ready would leave the skip label
+/// on, `next_ready_issue` would still refuse it, and the board would still show it as
+/// NeedsHuman: the button would appear to do nothing.
+///
+/// **Park** adds the first skip label and clears the ready label. The engine would skip the
+/// issue either way (a skip label beats the ready label in both `next_ready_issue` and
+/// `classify`), but leaving both on means a human reading the labels sees a contradiction.
+pub fn triage_labels(cfg: &Config, to: TriageTarget) -> Result<(Vec<String>, Vec<String>)> {
+    let labels = cfg.status_labels();
+    match to {
+        TriageTarget::Ready => {
+            let t = labels.transition(tutti_core::status::Status::Ready);
+            let mut remove = t.remove;
+            remove.extend(cfg.select.skip_labels.iter().cloned());
+            Ok((vec![t.add], remove))
+        }
+        TriageTarget::NeedsHuman => {
+            let park = cfg.select.skip_labels.first().ok_or_else(|| {
+                EngineError::Guardrail(
+                    "this project has no select.skip_labels, so there is no park label".into(),
+                )
+            })?;
+            Ok((vec![park.clone()], vec![labels.ready.clone()]))
+        }
+    }
+}
+
+/// Apply a triage decision to `issues`, one forge write each.
+///
+/// Eligibility is re-read from the forge (see `is_triageable`) rather than trusted from the
+/// caller: the board the user clicked may be seconds stale, and the orchestrator proposes
+/// from its own read of the backlog. Without the re-read, a race could flip a `status:done`
+/// issue back to ready and hand finished work to an agent. An ineligible issue, or one that
+/// no longer exists, is skipped rather than failed.
+///
+/// A forge error on one issue is recorded and the loop continues, so one flaky write does
+/// not abandon the rest of the backlog.
+pub async fn apply_triage(
+    forge: &dyn Forge,
+    cfg: &Config,
+    issues: &[u64],
+    to: TriageTarget,
+) -> Result<TriageOutcome> {
+    let (add, remove) = triage_labels(cfg, to)?;
+    let all = forge.list_issues().await?;
+    let mut out = TriageOutcome::default();
+    for &id in issues {
+        let eligible = all
+            .iter()
+            .find(|i| i.id.0 == id)
+            .is_some_and(|i| is_triageable(issue_status(i, cfg)));
+        if !eligible {
+            out.skipped.push(id);
+            continue;
+        }
+        match forge
+            .edit_labels(tutti_core::domain::IssueId(id), &add, &remove)
+            .await
+        {
+            Ok(()) => out.applied.push(id),
+            Err(e) => out.failed.push(TriageFailure {
+                issue: id,
+                error: e.to_string(),
+            }),
+        }
+    }
+    Ok(out)
 }
 
 /// Find `id` among all issues and build its drawer detail.
@@ -457,7 +600,7 @@ pub async fn issue_detail(forge: &dyn Forge, cfg: &Config, id: u64) -> Result<Is
         body: issue.body.clone(),
         labels: chips,
         milestone: issue.milestone.clone(),
-        status: classify(&issue, &labels),
+        status: classify(&issue, &labels, &cfg.select.skip_labels),
         branch: format!("feat/issue-{id}"),
     })
 }
@@ -627,6 +770,309 @@ mod tests {
         assert_eq!(board.ready.len(), 1, "only the status:ready issue is Ready");
         assert_eq!(board.untriaged.len(), 1, "the unlabeled issue is Untriaged");
         assert_eq!(board.untriaged[0].status, Status::Untriaged);
+    }
+
+    /// An issue carrying exactly `labels`, seeded directly so the label set is verbatim
+    /// (`create_issue` auto-appends status:ready).
+    fn labelled(id: u64, labels: &[&str]) -> Issue {
+        Issue {
+            id: IssueId(id),
+            title: format!("i{id}"),
+            body: String::new(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            milestone: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn needs_human_is_its_own_status_not_untriaged() {
+        // A parked issue must be distinguishable from one nobody has looked at, or the
+        // park action appears to do nothing and the user re-triages it forever.
+        let forge = FakeForge::new(vec![labelled(1, &["status:needs-human"])], CiState::Pass);
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.needs_human.len(), 1);
+        assert_eq!(board.needs_human[0].status, Status::NeedsHuman);
+        assert!(board.untriaged.is_empty());
+        assert!(board.ready.is_empty());
+    }
+
+    #[tokio::test]
+    async fn needs_human_outranks_ready() {
+        // `next_ready_issue` requires the ready label AND no skip label, so this issue is
+        // not selectable. Calling it Ready would be the exact bug step 1 fixed.
+        let forge = FakeForge::new(
+            vec![labelled(1, &["status:ready", "status:needs-human"])],
+            CiState::Pass,
+        );
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert!(board.ready.is_empty(), "a skipped issue is never Ready");
+        assert_eq!(board.needs_human.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn done_and_in_progress_outrank_needs_human() {
+        // A shipped issue is shipped and a held issue is in progress, whatever else they
+        // are labelled: the skip label only competes with Ready.
+        let forge = FakeForge::new(
+            vec![
+                labelled(1, &["status:done", "status:needs-human"]),
+                labelled(2, &["status:in-progress", "status:needs-human"]),
+            ],
+            CiState::Pass,
+        );
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.done.len(), 1);
+        assert_eq!(board.in_progress.len(), 1);
+        assert!(board.needs_human.is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_skip_label_classifies_as_needs_human() {
+        // A project may configure several skip labels; matching only the first would
+        // silently mis-bucket the others.
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec!["blocked".into(), "status:needs-human".into()];
+        let forge = FakeForge::new(
+            vec![
+                labelled(1, &["blocked"]),
+                labelled(2, &["status:needs-human"]),
+            ],
+            CiState::Pass,
+        );
+        let board = assemble_board(&forge, &cfg, None).await.unwrap();
+        assert_eq!(board.needs_human.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn with_no_skip_labels_configured_nothing_is_needs_human() {
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec![];
+        let forge = FakeForge::new(vec![labelled(1, &["status:needs-human"])], CiState::Pass);
+        let board = assemble_board(&forge, &cfg, None).await.unwrap();
+        assert!(board.needs_human.is_empty());
+        assert_eq!(
+            board.untriaged.len(),
+            1,
+            "with no skip config it is untriaged"
+        );
+    }
+
+    #[test]
+    fn triage_labels_for_ready_clear_the_other_statuses_and_every_skip_label() {
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec!["blocked".into(), "status:needs-human".into()];
+        let (add, remove) = triage_labels(&cfg, TriageTarget::Ready).unwrap();
+        assert_eq!(add, vec!["status:ready".to_string()]);
+        // The clears `release()` performs, plus every skip label: leaving one on would make
+        // the button appear to do nothing, since the engine would still refuse the issue.
+        assert_eq!(
+            remove,
+            vec![
+                "status:in-progress",
+                "status:done",
+                "blocked",
+                "status:needs-human"
+            ]
+        );
+    }
+
+    #[test]
+    fn triage_labels_for_park_add_the_skip_label_and_clear_ready() {
+        let (add, remove) = triage_labels(&cfg(), TriageTarget::NeedsHuman).unwrap();
+        assert_eq!(add, vec!["status:needs-human".to_string()]);
+        assert_eq!(
+            remove,
+            vec!["status:ready".to_string()],
+            "both labels at once reads as a contradiction to a human"
+        );
+    }
+
+    #[test]
+    fn only_in_flight_and_finished_work_is_protected_from_triage() {
+        assert!(is_triageable(Status::Untriaged));
+        assert!(
+            is_triageable(Status::Ready),
+            "parking a ready issue is valid"
+        );
+        assert!(
+            is_triageable(Status::NeedsHuman),
+            "un-parking is the reverse of parking"
+        );
+        assert!(
+            !is_triageable(Status::InProgress),
+            "the label is the claim lock"
+        );
+        assert!(
+            !is_triageable(Status::Done),
+            "shipped work is never re-opened"
+        );
+    }
+
+    #[test]
+    fn park_is_refused_when_no_skip_label_is_configured() {
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec![];
+        assert!(triage_labels(&cfg, TriageTarget::NeedsHuman).is_err());
+        // Ready is unaffected: it does not depend on the skip labels.
+        assert!(triage_labels(&cfg, TriageTarget::Ready).is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_triage_marks_untriaged_issues_ready() {
+        let forge = FakeForge::new(
+            vec![labelled(1, &["enhancement"]), labelled(2, &["bug"])],
+            CiState::Pass,
+        );
+        let out = apply_triage(&forge, &cfg(), &[1, 2], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(out.applied, vec![1, 2]);
+        assert!(out.skipped.is_empty());
+        assert!(out.failed.is_empty());
+        // The board now agrees: both are genuinely Ready.
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.ready.len(), 2);
+        assert!(board.untriaged.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_triage_parks_issues_as_needs_human() {
+        let forge = FakeForge::new(vec![labelled(1, &["enhancement"])], CiState::Pass);
+        let out = apply_triage(&forge, &cfg(), &[1], TriageTarget::NeedsHuman)
+            .await
+            .unwrap();
+        assert_eq!(out.applied, vec![1]);
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        assert_eq!(board.needs_human.len(), 1);
+        assert!(
+            board.untriaged.is_empty(),
+            "a parked issue must leave the untriaged bucket, or the user re-triages it forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_triage_never_touches_in_flight_or_finished_work() {
+        // The board the user clicked can be seconds stale, and the orchestrator proposes from
+        // its own read. Without the re-read, a done issue could be flipped back to ready and
+        // handed to an agent, or a claimed issue could lose the label that IS its lock.
+        let forge = FakeForge::new(
+            vec![
+                labelled(1, &["status:done"]),
+                labelled(2, &["status:in-progress"]),
+                labelled(3, &["enhancement"]),
+            ],
+            CiState::Pass,
+        );
+        let out = apply_triage(&forge, &cfg(), &[1, 2, 3], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(out.applied, vec![3]);
+        assert_eq!(out.skipped, vec![1, 2]);
+        assert_eq!(forge.labels_of(IssueId(1)), vec!["status:done".to_string()]);
+        assert_eq!(
+            forge.labels_of(IssueId(2)),
+            vec!["status:in-progress".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ready_issue_can_be_parked_and_parked_one_marked_ready_again() {
+        // The correction a triage pass exists to make, in both directions. Restricting
+        // eligibility to Untriaged would silently skip both of these.
+        let forge = FakeForge::new(vec![labelled(1, &["status:ready"])], CiState::Pass);
+        let cfg = cfg();
+
+        apply_triage(&forge, &cfg, &[1], TriageTarget::NeedsHuman)
+            .await
+            .unwrap();
+        let board = assemble_board(&forge, &cfg, None).await.unwrap();
+        assert_eq!(board.needs_human.len(), 1);
+        assert!(board.ready.is_empty());
+
+        apply_triage(&forge, &cfg, &[1], TriageTarget::Ready)
+            .await
+            .unwrap();
+        let board = assemble_board(&forge, &cfg, None).await.unwrap();
+        assert_eq!(
+            board.ready.len(),
+            1,
+            "un-parking must clear the skip label, or the button does nothing"
+        );
+        assert!(board.needs_human.is_empty());
+    }
+
+    #[tokio::test]
+    async fn marking_ready_clears_every_configured_skip_label() {
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec!["blocked".into(), "status:needs-human".into()];
+        let forge = FakeForge::new(
+            vec![labelled(1, &["blocked", "status:needs-human"])],
+            CiState::Pass,
+        );
+        apply_triage(&forge, &cfg, &[1], TriageTarget::Ready)
+            .await
+            .unwrap();
+        let board = assemble_board(&forge, &cfg, None).await.unwrap();
+        assert_eq!(board.ready.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_triage_skips_an_issue_that_no_longer_exists() {
+        let forge = FakeForge::new(vec![labelled(1, &["enhancement"])], CiState::Pass);
+        let out = apply_triage(&forge, &cfg(), &[1, 99], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(out.applied, vec![1]);
+        assert_eq!(out.skipped, vec![99]);
+        assert!(
+            out.failed.is_empty(),
+            "a vanished issue is skipped, not failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_triage_records_a_failure_and_keeps_going() {
+        // One flaky write must not abandon the rest of the backlog, and must not be
+        // reported as a success.
+        let forge = FakeForge::new(
+            vec![
+                labelled(1, &["enhancement"]),
+                labelled(2, &["enhancement"]),
+                labelled(3, &["enhancement"]),
+            ],
+            CiState::Pass,
+        );
+        forge.fail_label_edits_for(IssueId(2));
+        let out = apply_triage(&forge, &cfg(), &[1, 2, 3], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(out.applied, vec![1, 3]);
+        assert_eq!(out.failed.len(), 1);
+        assert_eq!(out.failed[0].issue, 2);
+        assert!(!out.failed[0].error.is_empty());
+        assert!(out.skipped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_triage_with_an_empty_selection_is_a_no_op() {
+        let forge = FakeForge::new(vec![labelled(1, &["enhancement"])], CiState::Pass);
+        let out = apply_triage(&forge, &cfg(), &[], TriageTarget::Ready)
+            .await
+            .unwrap();
+        assert_eq!(out, TriageOutcome::default());
+        assert_eq!(forge.labels_of(IssueId(1)), vec!["enhancement".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_triage_fails_fast_when_park_has_no_label() {
+        // The config error is not per-issue, so it is an Err rather than 59 failures.
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec![];
+        let forge = FakeForge::new(vec![labelled(1, &["enhancement"])], CiState::Pass);
+        assert!(apply_triage(&forge, &cfg, &[1], TriageTarget::NeedsHuman)
+            .await
+            .is_err());
+        assert_eq!(forge.labels_of(IssueId(1)), vec!["enhancement".to_string()]);
     }
 
     #[tokio::test]

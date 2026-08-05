@@ -209,6 +209,16 @@
     }
   }
 
+  // Re-read the board after a triage apply, keeping the current milestone scope, so the
+  // relabelled issues move out of Untriaged without the user having to do anything.
+  async function refreshBoard() {
+    try {
+      board.set(await api.getBoard($board?.selected_milestone ?? undefined));
+    } catch (e) {
+      loadError = String(e);
+    }
+  }
+
   async function selectIssue(id: number) {
     selectedIssueId.set(id);
     issueLoading = true;
@@ -343,14 +353,14 @@
       {:else if $section === "orchestrator"}
         {#if $board}
           {#key $activeDir}
-            <OrchestratorPane />
+            <OrchestratorPane onTriaged={refreshBoard} />
           {/key}
         {:else}
           <div class="no-project">Open a project to talk to its orchestrator.</div>
         {/if}
       {:else if $board}
         {#if $view === "board"}
-          <BoardView board={$board} onSelectIssue={selectIssue} />
+          <BoardView board={$board} onSelectIssue={selectIssue} onTriaged={refreshBoard} />
         {:else}
           <LanesView board={$board} onSelectIssue={selectIssue} />
         {/if}

@@ -61,11 +61,12 @@ export function applyEvent(
 ): { board: Board | null; run: RunUi } {
   if (!b) return { board: b, run: r };
   const move = (id: number, to: "ready" | "in_progress" | "done") => {
-    // Search and strip every bucket, including untriaged: if the board is stale relative
-    // to the forge (an issue was relabeled status:ready and claimed before the next full
-    // refresh), a claim event can target a card still sitting in untriaged. Missing it
-    // would leave a phantom copy in untriaged as well as the moved-to column.
-    const all = [...b.ready, ...b.in_progress, ...b.done, ...b.untriaged];
+    // Search and strip EVERY bucket, including the two upstream ones: if the board is
+    // stale relative to the forge (an issue was relabeled status:ready and claimed before
+    // the next full refresh), a claim event can target a card still sitting in untriaged
+    // or needs-human. Missing a bucket leaves a phantom copy there as well as in the
+    // moved-to column. Any new bucket must be added here too.
+    const all = [...b.ready, ...b.in_progress, ...b.done, ...b.untriaged, ...b.needs_human];
     const found = all.find((c) => c.id === id);
     const strip = (xs: IssueCard[]) => xs.filter((c) => c.id !== id);
     const nb: Board = {
@@ -74,6 +75,7 @@ export function applyEvent(
       in_progress: strip(b.in_progress),
       done: strip(b.done),
       untriaged: strip(b.untriaged),
+      needs_human: strip(b.needs_human),
     };
     if (found) {
       const card = { ...found, status: to } as IssueCard;

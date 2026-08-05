@@ -76,6 +76,10 @@
     border-color: var(--border);
     color: var(--text-dim);
   }
+  .chip.h {
+    border-color: #e3b341;
+    color: var(--text-dim);
+  }
   .chip.r {
     border-color: #64748b;
   }

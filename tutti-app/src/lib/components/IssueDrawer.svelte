@@ -2,7 +2,7 @@
 <!-- Issue detail panel. It sits beside the board (pushing it, not covering it) and takes
      the roadmap rail's place while an issue is selected. Closing clears the selection. -->
 <script lang="ts">
-  import type { IssueDetail } from "$lib/ipc";
+  import type { IssueDetail, Status } from "$lib/ipc";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { browser } from "$app/environment";
@@ -18,11 +18,14 @@
     onClose: () => void;
   } = $props();
 
-  const statusLabel: Record<string, string> = {
+  // Typed as Record<Status, string> rather than Record<string, string> so adding a board
+  // status is a compile error here instead of a silently blank pill in the drawer.
+  const statusLabel: Record<Status, string> = {
     ready: "ready",
     in_progress: "in progress",
     done: "done",
     untriaged: "untriaged",
+    needs_human: "needs human",
   };
 
   // Render a label's real forge color as a pill. Scoped labels (GitLab `scope::value`,

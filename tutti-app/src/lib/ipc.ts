@@ -4,8 +4,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { Proposal } from "./orchestrator";
 
-export type Status = "ready" | "in_progress" | "done" | "untriaged";
+export type Status = "ready" | "in_progress" | "done" | "untriaged" | "needs_human";
 
 export interface IssueCard {
   id: number;
@@ -29,6 +30,23 @@ export interface Board {
   in_progress: IssueCard[];
   done: IssueCard[];
   untriaged: IssueCard[];
+  needs_human: IssueCard[];
+}
+
+/// Which triage decision to apply to a selection of untriaged issues.
+export type TriageTarget = "ready" | "needs_human";
+
+export interface TriageFailure {
+  issue: number;
+  error: string;
+}
+
+/** Per-issue accounting of a triage apply: a long backlog can fail partway. */
+export interface TriageOutcome {
+  applied: number[];
+  /** Requested but not eligible when re-read: already labelled, or gone. */
+  skipped: number[];
+  failed: TriageFailure[];
 }
 
 export interface LabelChip {
@@ -92,11 +110,10 @@ export interface OrchestratorTranscript {
   messages: TranscriptMessage[];
 }
 
-export interface GateProposal {
-  commands: string[];
-  working_dir: string;
-  rationale: string;
-}
+// The proposal shapes live in $lib/orchestrator alongside the reducer that consumes them,
+// re-exported here so the IPC surface stays the single import for callers.
+export type { GateProposal, TriageProposal, Proposal } from "./orchestrator";
+
 export interface GateStatus {
   commands: string[];
   is_noop: boolean;
@@ -152,6 +169,8 @@ export const api = {
   removeProject: (dir: string) => invoke<void>("remove_project", { dir }),
   getBoard: (milestone?: number) => invoke<Board>("get_board", { milestone: milestone ?? null }),
   getIssue: (id: number) => invoke<IssueDetail>("get_issue", { id }),
+  applyTriage: (issues: number[], to: TriageTarget) =>
+    invoke<TriageOutcome>("apply_triage", { issues, to }),
   startRun: () => invoke<void>("start_run"),
   pauseRun: () => invoke<void>("pause_run"),
   onProgress: (cb: (ev: EngineEvent) => void) =>
@@ -174,8 +193,8 @@ export const api = {
   onOrchestratorDone: (cb: () => void) => listen("orchestrator://done", () => cb()),
   onOrchestratorError: (cb: (msg: string) => void) =>
     listen<string>("orchestrator://error", (e) => cb(e.payload)),
-  onOrchestratorProposal: (cb: (p: GateProposal) => void) =>
-    listen<GateProposal>("orchestrator://proposal", (e) => cb(e.payload)),
+  onOrchestratorProposal: (cb: (p: Proposal) => void) =>
+    listen<Proposal>("orchestrator://proposal", (e) => cb(e.payload)),
   applyGate: (commands: string[]) => invoke<GateStatus>("apply_gate", { commands }),
   getGateStatus: () => invoke<GateStatus>("get_gate_status"),
   listNamespaces: (forgeKind: string, login: string | null) =>
