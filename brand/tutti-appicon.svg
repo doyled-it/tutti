@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Tutti app icon">
+  <!-- App / dock icon: the mark on a warm near-black rounded tile. Source for cargo tauri icon + favicon. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16110B"/>
+      <stop offset="1" stop-color="#0B0805"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#tile)"/>
+  <g transform="translate(179,190) scale(5.6)">
+    <path d="M42,26 C31,54 31,80 55,88 C77,95 83,58 80,36" fill="none" stroke="#EFE6D2" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M80,22 L72,42 L88,42 Z" fill="#EFE6D2"/>
+    <circle cx="54" cy="88" r="5.5" fill="#FFB454"/>
+    <circle cx="80" cy="52" r="5.5" fill="#FFB454"/>
+  </g>
+</svg>

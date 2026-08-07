@@ -6,36 +6,56 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tutti</title>
     <style>
+      /* Fraunces: the display / wordmark face, self-hosted, shared with Sotto. */
+      @font-face {
+        font-family: "Fraunces";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url("/fonts/Fraunces.ttf") format("truetype");
+      }
+      @font-face {
+        font-family: "Fraunces";
+        font-style: italic;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url("/fonts/Fraunces-Italic.ttf") format("truetype");
+      }
+      /* Tutti "Warm Ensemble" palette — sibling to Sotto, not a twin: shared
+         amber / cream / coral, warmer neutrals, amber kept as the single lead.
+         See brand/README.md. */
       :root {
-        --bg: #f6f6f7;
-        --bg-panel: #ffffff;
-        --border: rgba(15, 15, 15, 0.12);
-        --text: #17181c;
-        --text-dim: rgba(23, 24, 28, 0.6);
-        --text-faint: rgba(23, 24, 28, 0.38);
-        --accent: #3b82f6;
-        --accent-bg: rgba(59, 130, 246, 0.1);
-        --accent-border: rgba(59, 130, 246, 0.5);
-        --coral: #d1533f;
-        --done: #22c55e;
-        --hover: rgba(15, 15, 15, 0.05);
-        --active: rgba(59, 130, 246, 0.15);
+        --bg: #f4efe4;
+        --bg-panel: #fffdf8;
+        --border: rgba(40, 30, 15, 0.12);
+        --text: #241e14;
+        --text-dim: rgba(36, 30, 20, 0.62);
+        --text-faint: rgba(36, 30, 20, 0.4);
+        --accent: #b0711a;
+        --accent-bg: rgba(176, 113, 26, 0.1);
+        --accent-border: rgba(176, 113, 26, 0.5);
+        --on-accent: #ffffff;
+        --coral: #c24a2e;
+        --done: #2b9d84;
+        --hover: rgba(40, 30, 15, 0.05);
+        --active: rgba(176, 113, 26, 0.15);
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --bg: #1c1d21;
-          --bg-panel: #232428;
-          --border: rgba(255, 255, 255, 0.12);
-          --text: #f2f2f3;
-          --text-dim: rgba(242, 242, 243, 0.62);
-          --text-faint: rgba(242, 242, 243, 0.4);
-          --accent: #5b9bf7;
-          --accent-bg: rgba(91, 155, 247, 0.14);
-          --accent-border: rgba(91, 155, 247, 0.55);
+          --bg: #0e0a07;
+          --bg-panel: #17110b;
+          --border: rgba(239, 230, 210, 0.12);
+          --text: #efe6d2;
+          --text-dim: rgba(239, 230, 210, 0.62);
+          --text-faint: rgba(239, 230, 210, 0.4);
+          --accent: #ffb454;
+          --accent-bg: rgba(255, 180, 84, 0.14);
+          --accent-border: rgba(255, 180, 84, 0.55);
+          --on-accent: #221606;
           --coral: #ff8c6b;
-          --done: #34d399;
-          --hover: rgba(255, 255, 255, 0.06);
-          --active: rgba(91, 155, 247, 0.18);
+          --done: #5fd3c4;
+          --hover: rgba(239, 230, 210, 0.06);
+          --active: rgba(255, 180, 84, 0.18);
         }
       }
       * {

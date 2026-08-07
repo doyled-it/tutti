@@ -563,7 +563,7 @@
   button.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     font-weight: 600;
   }
   button:disabled {

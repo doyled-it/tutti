@@ -3,6 +3,8 @@
 <script lang="ts">
   import type { ProjectEntry } from "$lib/ipc";
   import type { RunUi } from "$lib/stores";
+  import TuttiMark from "./TuttiMark.svelte";
+  import TuttiWordmark from "./TuttiWordmark.svelte";
 
   let {
     project,
@@ -32,7 +34,14 @@
 </script>
 
 <div class="top-bar">
-  <strong class="title">{project ? project.repo : "Tutti"}</strong>
+  <span class="brand">
+    <TuttiMark size={20} />
+    {#if project}
+      <strong class="title">{project.repo}</strong>
+    {:else}
+      <TuttiWordmark size={21} />
+    {/if}
+  </span>
 
   {#if gateNoop}
     <button
@@ -89,6 +98,12 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
   }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+  }
   .title {
     font-size: 13px;
     overflow: hidden;
@@ -124,7 +139,7 @@
   }
   .seg button.on {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .run-bar {
     margin-left: auto;
@@ -164,6 +179,6 @@
   .btn.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
 </style>
