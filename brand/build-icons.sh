@@ -18,6 +18,12 @@ rsvg-convert -w 1024 -h 1024 "$src" -o "$png"
 # Full platform icon set -> tutti-app/src-tauri/icons/
 ( cd "$root/tutti-app" && cargo tauri icon "$png" )
 
+# cargo tauri icon also emits mobile icon sets and a 64x64 that this desktop-only
+# app does not use (and tauri.conf.json does not reference). Drop them so a re-run
+# leaves no untracked files behind.
+icons="$root/tutti-app/src-tauri/icons"
+rm -rf "$icons/android" "$icons/ios" "$icons/64x64.png"
+
 # Browser-tab favicon for the SvelteKit shell
 rsvg-convert -w 512 -h 512 "$src" -o "$root/tutti-app/static/favicon.png"
 

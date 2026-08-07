@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Tutti app icon">
   <!-- App / dock icon: the mark on a near-black rounded tile. Source for cargo tauri icon + favicon.
-       Tile fills more of the canvas (to match neighbouring dock icons) and the mark is scaled up. -->
+       Tile fills more of the canvas (to match neighbouring dock icons) and the mark is scaled up.
+       Mark geometry mirrors brand/tutti-mark.svg and src/lib/brand.ts (MARK_*); keep in sync. -->
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#17171d"/>

@@ -316,7 +316,7 @@
     flex: none;
   }
   .dot.gh {
-    background: color-mix(in srgb, var(--text) 55%, transparent);
+    background: var(--text-dim);
   }
   .dot.gl {
     background: var(--coral);
