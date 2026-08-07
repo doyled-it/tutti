@@ -7,6 +7,7 @@
   import { api } from "$lib/ipc";
   import type { Probe, ProjectEntry } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
+  import TuttiWordmark from "./TuttiWordmark.svelte";
 
   let {
     projects,
@@ -131,6 +132,9 @@
 
 <div class="sidebar-wrap">
   <aside class="sidebar" style={`width:${width}px`}>
+    <div class="brand-header">
+      <TuttiWordmark size={20} />
+    </div>
     <div class="section-label">Projects</div>
     <div class="projects">
       {#if projects.length === 0}
@@ -225,6 +229,12 @@
     gap: 4px;
     height: 100%;
   }
+  .brand-header {
+    display: flex;
+    align-items: center;
+    padding: 2px 6px 12px;
+    color: var(--text);
+  }
   .section-label {
     font-size: 10px;
     text-transform: uppercase;
@@ -296,21 +306,23 @@
     background: var(--hover);
     color: var(--text);
   }
+  /* Forge indicator. Harmonized to the Tutti palette rather than each forge's
+     brand colour: GitHub stays neutral cream, GitLab coral, Gitea teal. */
   .dot {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #94a3b8;
+    background: var(--text-faint);
     flex: none;
   }
   .dot.gh {
-    background: #8957e5;
+    background: var(--text-dim);
   }
   .dot.gl {
-    background: #e24329;
+    background: var(--coral);
   }
   .dot.ge {
-    background: #f97316;
+    background: var(--done);
   }
   .empty {
     font-size: 11px;

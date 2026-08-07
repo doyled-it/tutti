@@ -282,7 +282,7 @@
   }
   .proposal-actions .apply {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     border: none;
     border-radius: 6px;
     padding: 4px 12px;

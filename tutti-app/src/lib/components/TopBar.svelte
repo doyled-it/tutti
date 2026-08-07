@@ -124,7 +124,7 @@
   }
   .seg button.on {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .run-bar {
     margin-left: auto;
@@ -164,6 +164,6 @@
   .btn.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
 </style>
