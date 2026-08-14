@@ -2,6 +2,12 @@
 //! Hermetic logic behind the desktop app: the board model and its assembly from a Forge.
 //! No Tauri dependency, so it runs in the fast workspace gate.
 
+mod scaffold;
+pub use scaffold::{
+    available_stacks, package_name, run_post_write, scaffold, stack_profile, PostWriteRunner,
+    PostWriteStep, ScaffoldContext, ScaffoldFile, ScaffoldReport, StackProfile,
+};
+
 use serde::{Deserialize, Serialize};
 use tutti_core::config::Config;
 use tutti_core::domain::{Issue, IssueState};

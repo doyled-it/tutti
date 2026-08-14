@@ -105,6 +105,7 @@ export interface InitForm {
   require_label: string;
   skip_labels: string[];
   gate_commands: string[];
+  stack?: string | null;
 }
 
 export type MessageKind = "text" | "tool" | "proposal";

@@ -10,6 +10,7 @@ import {
   NO_OP_GATE,
   REQUIRE_LABEL,
   SKIP_LABELS,
+  STACKS,
   type WizardState,
 } from "./wizard";
 import type { Probe } from "./ipc";
@@ -56,11 +57,22 @@ describe("initialState", () => {
     expect(s.integrationBranch).toBe("staging");
     expect(s.model).toBe("claude-sonnet-5");
   });
+
+  it("defaults the stack to none", () => {
+    expect(base().stack).toBe("none");
+  });
 });
 
 describe("stepsFor", () => {
   it("skips the forge and repo questions when the remote answered them", () => {
-    expect(stepsFor(base(), DETECTED)).toEqual(["folder", "trunk", "routing", "model", "review"]);
+    expect(stepsFor(base(), DETECTED)).toEqual([
+      "folder",
+      "stack",
+      "trunk",
+      "routing",
+      "model",
+      "review",
+    ]);
   });
 
   it("asks them when the remote did not", () => {
@@ -69,6 +81,7 @@ describe("stepsFor", () => {
       "folder",
       "forge",
       "repo",
+      "stack",
       "trunk",
       "routing",
       "model",
@@ -152,6 +165,29 @@ describe("validateAll", () => {
   });
 });
 
+describe("stack step", () => {
+  it("STACKS includes python and an explicit opt-out", () => {
+    expect(STACKS.map((s) => s.id)).toContain("python");
+    expect(STACKS.map((s) => s.id)).toContain("none");
+  });
+
+  it("sits right after repo when repo is asked", () => {
+    const s = initialState("/tmp/p", UNDETECTED);
+    const steps = stepsFor(s, UNDETECTED);
+    expect(steps[steps.indexOf("repo") + 1]).toBe("stack");
+  });
+
+  it("still appears, right before trunk, when repo was detected and hidden", () => {
+    const steps = stepsFor(base(), DETECTED);
+    expect(steps[steps.indexOf("trunk") - 1]).toBe("stack");
+  });
+
+  it("is always valid, since it always has a default", () => {
+    expect(validateStep(base(), "stack")).toBeNull();
+    expect(validateStep({ ...base(), stack: "python" }, "stack")).toBeNull();
+  });
+});
+
 describe("toInitForm", () => {
   it("trims and drops blanks", () => {
     const f = toInitForm({
@@ -180,6 +216,11 @@ describe("toInitForm", () => {
   it("never sends an empty gate", () => {
     expect(toInitForm({ ...base(), gateCommands: [] }).gate_commands).toEqual([NO_OP_GATE]);
     expect(toInitForm({ ...base(), gateCommands: [" "] }).gate_commands).toEqual([NO_OP_GATE]);
+  });
+
+  it("sends the chosen stack, or null for none", () => {
+    expect(toInitForm({ ...base(), stack: "python" }).stack).toBe("python");
+    expect(toInitForm({ ...base(), stack: "none" }).stack).toBeNull();
   });
 
   it("carries the remaining fields through unchanged", () => {
