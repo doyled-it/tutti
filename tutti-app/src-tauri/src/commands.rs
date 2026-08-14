@@ -387,11 +387,69 @@ pub async fn init_project(
     };
     // 3. Seed the status labels that do not exist yet (best effort per label).
     seed_status_labels(&state).await;
+    // 3b. Scaffold the opinionated stack (if chosen) and seed the integration branch.
+    seed_stack(&form).await;
     // 4. Persist.
     let mut store = load_store(&app)?;
     store.upsert(entry.clone());
     save_store(&app, &store)?;
     Ok(entry)
+}
+
+/// Scaffold the chosen stack into the repo, commit + push it, and seed the integration
+/// branch. Best effort: a failure is logged, never fatal to init (mirrors label seeding).
+async fn seed_stack(form: &InitForm) {
+    let Some(stack_id) = form.stack.as_deref() else {
+        return;
+    };
+    let Some(profile) = tutti_app_core::stack_profile(stack_id) else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(&form.dir);
+    let repo_name = form
+        .repo
+        .rsplit('/')
+        .next()
+        .unwrap_or(&form.repo)
+        .to_string();
+    let ctx = tutti_app_core::ScaffoldContext {
+        package_name: tutti_app_core::package_name(&repo_name),
+        repo_name,
+    };
+    let run_post = |step: &tutti_app_core::PostWriteStep| tutti_app_core::run_post_write(&dir, step);
+    match tutti_app_core::scaffold(&dir, &profile, &ctx, &run_post) {
+        Ok(_report) => {}
+        Err(e) => {
+            eprintln!("scaffold failed: {e}");
+            return;
+        }
+    }
+    // Commit + push the scaffold on the default branch, then create the integration
+    // branch from it. Each git call is best-effort.
+    let _ = git_in(&dir, &["add", "-A"]).await;
+    let _ = git_in(&dir, &["commit", "-m", "chore: tutti scaffold"]).await;
+    let _ = git_in(&dir, &["push", "origin", "HEAD"]).await;
+    let _ = git_in(
+        &dir,
+        &["push", "origin", &format!("HEAD:{}", form.integration_branch)],
+    )
+    .await;
+}
+
+/// Run `git -C <dir> <args>`, returning stdout on success.
+async fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
 }
 
 /// Diff the labels the engine relies on against what the forge already has, and create
