@@ -3,7 +3,10 @@
 //! No Tauri dependency, so it runs in the fast workspace gate.
 
 mod scaffold;
-pub use scaffold::{package_name, ScaffoldContext, ScaffoldFile, ScaffoldReport, StackProfile};
+pub use scaffold::{
+    available_stacks, package_name, stack_profile, ScaffoldContext, ScaffoldFile, ScaffoldReport,
+    StackProfile,
+};
 
 use serde::{Deserialize, Serialize};
 use tutti_core::config::Config;
