@@ -416,7 +416,8 @@ async fn seed_stack(form: &InitForm) {
         package_name: tutti_app_core::package_name(&repo_name),
         repo_name,
     };
-    let run_post = |step: &tutti_app_core::PostWriteStep| tutti_app_core::run_post_write(&dir, step);
+    let run_post =
+        |step: &tutti_app_core::PostWriteStep| tutti_app_core::run_post_write(&dir, step);
     match tutti_app_core::scaffold(&dir, &profile, &ctx, &run_post) {
         Ok(_report) => {}
         Err(e) => {
@@ -431,7 +432,11 @@ async fn seed_stack(form: &InitForm) {
     let _ = git_in(&dir, &["push", "origin", "HEAD"]).await;
     let _ = git_in(
         &dir,
-        &["push", "origin", &format!("HEAD:{}", form.integration_branch)],
+        &[
+            "push",
+            "origin",
+            &format!("HEAD:{}", form.integration_branch),
+        ],
     )
     .await;
 }
