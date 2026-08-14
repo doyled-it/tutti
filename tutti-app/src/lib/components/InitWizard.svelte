@@ -16,6 +16,7 @@
     type WizardState,
   } from "$lib/wizard";
   import QuestionCard from "./QuestionCard.svelte";
+  import StackStep from "./StackStep.svelte";
 
   let {
     dir,
@@ -271,6 +272,14 @@
         {error}
       >
         <input bind:value={s.repo} placeholder={REPO_EXAMPLE[s.forgeKind] ?? "owner/repo"} />
+      </QuestionCard>
+    {:else if current === "stack"}
+      <QuestionCard
+        question="Which stack should Tutti scaffold?"
+        description="Tutti can lay down an opinionated, agent-ready setup for a fresh repo: real lint/type/test config, a canonical gate script, CI, and AGENTS.md. Pick None to wire your own."
+        {error}
+      >
+        <StackStep bind:value={s.stack} />
       </QuestionCard>
     {:else if current === "trunk"}
       <QuestionCard

@@ -32,16 +32,25 @@ export interface WizardState {
   gateCommands: string[];
   /** True once the user picks "Custom..." on the model step, so the text input stays open. */
   modelCustom: boolean;
+  /** The chosen opinionated stack id (e.g. "python"), or "none" to skip scaffolding. */
+  stack: string;
 }
 
 /**
  * The questions the wizard can ask, in order. Which of these actually appear depends on
  * what the folder's git remote already told us: see `stepsFor`.
  */
-export type StepId = "folder" | "forge" | "repo" | "trunk" | "routing" | "model" | "review";
+export type StepId =
+  "folder" | "forge" | "repo" | "stack" | "trunk" | "routing" | "model" | "review";
 
 /** The model ids offered on the model step before falling through to a custom id. */
 export const KNOWN_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"];
+
+/** The opinionated stacks the wizard offers, plus an explicit opt-out. */
+export const STACKS = [
+  { id: "python", label: "Python (uv, ruff, mypy, pytest)" },
+  { id: "none", label: "None (I'll wire it myself)" },
+] as const;
 
 /** The gate every new project starts with: a command that always succeeds. */
 export const NO_OP_GATE = "true";
@@ -76,6 +85,7 @@ export function initialState(dir: string, probe: Probe, login = ""): WizardState
     skipLabels: [...SKIP_LABELS],
     gateCommands: [NO_OP_GATE],
     modelCustom: false,
+    stack: "none",
   };
 }
 
@@ -91,7 +101,7 @@ export function stepsFor(s: WizardState, probe: Probe): StepId[] {
   const steps: StepId[] = ["folder"];
   if (probe.forge_kind === null || s.forgeKind === "gitea") steps.push("forge");
   if (probe.repo === null) steps.push("repo");
-  steps.push("trunk", "routing", "model", "review");
+  steps.push("stack", "trunk", "routing", "model", "review");
   return steps;
 }
 
@@ -128,6 +138,9 @@ export function validateStep(s: WizardState, step: StepId): string | null {
       }
       return null;
     }
+    case "stack":
+      // Always has a default ("none"), so there is nothing to reject.
+      return null;
     case "model":
       return blank(s.model) ? "Enter a model id." : null;
     default:
@@ -141,7 +154,7 @@ export function validateStep(s: WizardState, step: StepId): string | null {
  * something malformed.
  */
 export function validateAll(s: WizardState): string | null {
-  const ids: StepId[] = ["folder", "forge", "repo", "trunk", "routing", "model"];
+  const ids: StepId[] = ["folder", "forge", "repo", "stack", "trunk", "routing", "model"];
   for (const id of ids) {
     const e = validateStep(s, id);
     if (e) return e;
@@ -170,5 +183,6 @@ export function toInitForm(s: WizardState): InitForm {
     require_label: s.requireLabel.trim(),
     skip_labels: s.skipLabels.map((l) => l.trim()).filter((l) => l.length > 0),
     gate_commands: gate.length > 0 ? gate : [NO_OP_GATE],
+    stack: s.stack === "none" ? null : s.stack,
   };
 }
