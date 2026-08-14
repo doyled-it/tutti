@@ -320,11 +320,20 @@ pub struct InitForm {
     pub require_label: String,
     pub skip_labels: Vec<String>,
     pub gate_commands: Vec<String>,
+    /// The chosen opinionated stack id (e.g. "python"), or None for no scaffold.
+    #[serde(default)]
+    pub stack: Option<String>,
 }
 
 /// Map the form onto the renderer's params. Shared by `init_project` and
 /// `preview_tutti_toml` so the preview can never drift from what gets written.
 fn params_from(form: &InitForm) -> tutti_app_core::InitParams {
+    let gate_commands = form
+        .stack
+        .as_deref()
+        .and_then(tutti_app_core::stack_profile)
+        .map(|p| p.gate_commands)
+        .unwrap_or_else(|| form.gate_commands.clone());
     tutti_app_core::InitParams {
         trunk: form.trunk.clone(),
         routing: form.routing.clone(),
@@ -333,7 +342,7 @@ fn params_from(form: &InitForm) -> tutti_app_core::InitParams {
         max_issues_per_run: form.max_issues_per_run,
         require_label: form.require_label.clone(),
         skip_labels: form.skip_labels.clone(),
-        gate_commands: form.gate_commands.clone(),
+        gate_commands,
         forge_kind: form.forge_kind.clone(),
         login: form.login.clone(),
     }
@@ -670,6 +679,7 @@ mod tests {
             require_label: "status:ready".into(),
             skip_labels: vec!["status:needs-human".into()],
             gate_commands: vec!["cargo test".into()],
+            stack: None,
         };
         let p = params_from(&form);
         assert_eq!(p.trunk, "main");
