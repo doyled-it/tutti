@@ -751,4 +751,50 @@ mod tests {
         assert_eq!(p.forge_kind, "gitea");
         assert_eq!(p.login.as_deref(), Some("codeberg"));
     }
+
+    #[test]
+    fn params_from_uses_the_stack_profiles_gate_when_a_stack_is_chosen() {
+        let form = InitForm {
+            dir: "/tmp/x".into(),
+            repo: "o/r".into(),
+            forge_kind: "gitea".into(),
+            login: Some("codeberg".into()),
+            trunk: "main".into(),
+            routing: "trunk".into(),
+            integration_branch: "staging".into(),
+            model: "claude-sonnet-5".into(),
+            max_issues_per_run: 3,
+            require_label: "status:ready".into(),
+            skip_labels: vec!["status:needs-human".into()],
+            gate_commands: vec!["true".into()],
+            stack: Some("python".into()),
+        };
+        let p = params_from(&form);
+        assert_eq!(
+            p.gate_commands,
+            vec!["bash scripts/check.sh".to_string()],
+            "the chosen stack's gate must win over the form's gate_commands"
+        );
+    }
+
+    #[test]
+    fn params_from_passes_the_forms_gate_through_when_no_stack_is_chosen() {
+        let form = InitForm {
+            dir: "/tmp/x".into(),
+            repo: "o/r".into(),
+            forge_kind: "gitea".into(),
+            login: Some("codeberg".into()),
+            trunk: "main".into(),
+            routing: "trunk".into(),
+            integration_branch: "staging".into(),
+            model: "claude-sonnet-5".into(),
+            max_issues_per_run: 3,
+            require_label: "status:ready".into(),
+            skip_labels: vec!["status:needs-human".into()],
+            gate_commands: vec!["cargo test".into()],
+            stack: None,
+        };
+        let p = params_from(&form);
+        assert_eq!(p.gate_commands, vec!["cargo test".to_string()]);
+    }
 }
