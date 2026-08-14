@@ -3,6 +3,7 @@
 //! to emit, the canonical gate command, and an optional post-write step. The `scaffold`
 //! emitter writes a profile into a repo directory, never clobbering an existing file.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Context threaded into a profile's file set so names flow into the emitted content.
@@ -192,8 +193,6 @@ Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
     ]
 }
 
-use std::io::Write;
-
 /// A seam over the profile's post-write shell-out, so tests can inject success/failure
 /// without a real binary. The default runner is `run_post_write`.
 pub type PostWriteRunner<'a> = dyn Fn(&PostWriteStep) -> std::result::Result<(), String> + 'a;
@@ -228,11 +227,16 @@ pub fn scaffold(
         }
         report.written.push(file.path.clone());
     }
-    if let Some(step) = &profile.post_write {
-        if let Err(e) = run_post(step) {
-            report
-                .warnings
-                .push(format!("could not {} ({e})", step.describe));
+    // A fully-skipped rerun (everything already scaffolded) has nothing new for the
+    // post-write step to act on, so it deliberately does not shell out again (e.g. no
+    // redundant `uv lock`).
+    if !report.written.is_empty() {
+        if let Some(step) = &profile.post_write {
+            if let Err(e) = run_post(step) {
+                report
+                    .warnings
+                    .push(format!("could not {} ({e})", step.describe));
+            }
         }
     }
     Ok(report)
@@ -360,5 +364,93 @@ mod tests {
         })
         .unwrap();
         assert!(report.warnings.iter().any(|w| w.contains("uv.lock")));
+    }
+
+    #[test]
+    fn scaffold_never_touches_permissions_of_a_skipped_executable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("scripts")).unwrap();
+        std::fs::write(dir.path().join("scripts/check.sh"), "ORIGINAL\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                dir.path().join("scripts/check.sh"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+        let report = scaffold(dir.path(), &python_profile(), &ctx(), &|_| Ok(())).unwrap();
+        assert!(report
+            .skipped
+            .contains(&std::path::PathBuf::from("scripts/check.sh")));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("scripts/check.sh")).unwrap(),
+            "ORIGINAL\n",
+            "existing content must be untouched"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("scripts/check.sh"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o644,
+                "an existing file's permissions must not be changed to 0755"
+            );
+        }
+    }
+
+    #[test]
+    fn scaffold_skips_post_write_when_a_rerun_writes_nothing_new() {
+        let dir = tempfile::tempdir().unwrap();
+        scaffold(dir.path(), &python_profile(), &ctx(), &|_| Ok(())).unwrap();
+        let called = std::cell::Cell::new(false);
+        let report = scaffold(dir.path(), &python_profile(), &ctx(), &|_| {
+            called.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(report.written.is_empty(), "the rerun writes nothing new");
+        assert!(
+            !called.get(),
+            "post_write must not run when nothing was written"
+        );
+    }
+
+    #[test]
+    fn run_post_write_succeeds_for_a_zero_exit_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let step = PostWriteStep {
+            program: "true".to_string(),
+            args: vec![],
+            describe: "run true".to_string(),
+        };
+        assert!(run_post_write(dir.path(), &step).is_ok());
+    }
+
+    #[test]
+    fn run_post_write_errs_for_a_nonzero_exit_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let step = PostWriteStep {
+            program: "false".to_string(),
+            args: vec![],
+            describe: "run false".to_string(),
+        };
+        assert!(run_post_write(dir.path(), &step).is_err());
+    }
+
+    #[test]
+    fn run_post_write_errs_for_a_missing_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let step = PostWriteStep {
+            program: "definitely-not-a-real-binary-xyzzy".to_string(),
+            args: vec![],
+            describe: "run a missing binary".to_string(),
+        };
+        assert!(run_post_write(dir.path(), &step).is_err());
     }
 }
