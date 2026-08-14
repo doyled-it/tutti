@@ -192,6 +192,67 @@ Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
     ]
 }
 
+use std::io::Write;
+
+/// A seam over the profile's post-write shell-out, so tests can inject success/failure
+/// without a real binary. The default runner is `run_post_write`.
+pub type PostWriteRunner<'a> = dyn Fn(&PostWriteStep) -> std::result::Result<(), String> + 'a;
+
+/// Write `profile` into `dir`. Never overwrites an existing file (records it in
+/// `skipped`). Runs the profile's post-write step via `run_post`, recording a warning on
+/// failure rather than aborting.
+pub fn scaffold(
+    dir: &Path,
+    profile: &StackProfile,
+    ctx: &ScaffoldContext,
+    run_post: &PostWriteRunner<'_>,
+) -> std::io::Result<ScaffoldReport> {
+    let mut report = ScaffoldReport::default();
+    for file in (profile.files)(ctx) {
+        let abs = dir.join(&file.path);
+        if abs.exists() {
+            report.skipped.push(file.path.clone());
+            continue;
+        }
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = std::fs::File::create(&abs)?;
+        f.write_all(file.contents.as_bytes())?;
+        #[cfg(unix)]
+        if file.executable {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = f.metadata()?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&abs, perms)?;
+        }
+        report.written.push(file.path.clone());
+    }
+    if let Some(step) = &profile.post_write {
+        if let Err(e) = run_post(step) {
+            report
+                .warnings
+                .push(format!("could not {} ({e})", step.describe));
+        }
+    }
+    Ok(report)
+}
+
+/// The default post-write runner: run the program in `dir`, mapping a non-zero exit or a
+/// missing binary to an `Err`.
+pub fn run_post_write(dir: &Path, step: &PostWriteStep) -> std::result::Result<(), String> {
+    let out = std::process::Command::new(&step.program)
+        .args(&step.args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,7 +292,12 @@ mod tests {
         // The canonical gate runs every check and is executable.
         let check = by_path("scripts/check.sh");
         assert!(check.executable);
-        for needle in ["ruff format --check", "ruff check", "mypy --strict", "pytest"] {
+        for needle in [
+            "ruff format --check",
+            "ruff check",
+            "mypy --strict",
+            "pytest",
+        ] {
             assert!(check.contents.contains(needle), "check.sh missing {needle}");
         }
         // The package + a passing placeholder test exist under the src layout.
@@ -239,7 +305,9 @@ mod tests {
         by_path("src/my_repo/core.py");
         by_path("tests/test_core.py");
         // AGENTS.md names the one gate command.
-        assert!(by_path("AGENTS.md").contents.contains("bash scripts/check.sh"));
+        assert!(by_path("AGENTS.md")
+            .contents
+            .contains("bash scripts/check.sh"));
         // CI and interpreter pin.
         by_path(".github/workflows/ci.yml");
         by_path(".python-version");
@@ -249,5 +317,48 @@ mod tests {
     #[test]
     fn available_stacks_lists_python() {
         assert!(available_stacks().iter().any(|s| s.id == "python"));
+    }
+
+    #[test]
+    fn scaffold_writes_the_profile_and_sets_exec_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = scaffold(dir.path(), &python_profile(), &ctx(), &|_| Ok(())).unwrap();
+        assert!(dir.path().join("pyproject.toml").exists());
+        assert!(dir.path().join("src/my_repo/core.py").exists());
+        assert!(report.skipped.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("scripts/check.sh"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert!(mode & 0o111 != 0, "check.sh should be executable");
+        }
+    }
+
+    #[test]
+    fn scaffold_never_clobbers_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "KEEP\n").unwrap();
+        let report = scaffold(dir.path(), &python_profile(), &ctx(), &|_| Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(),
+            "KEEP\n",
+            "existing file must be untouched"
+        );
+        assert!(report
+            .skipped
+            .contains(&std::path::PathBuf::from(".gitignore")));
+    }
+
+    #[test]
+    fn scaffold_records_a_warning_when_post_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = scaffold(dir.path(), &python_profile(), &ctx(), &|_| {
+            Err("uv not found".to_string())
+        })
+        .unwrap();
+        assert!(report.warnings.iter().any(|w| w.contains("uv.lock")));
     }
 }

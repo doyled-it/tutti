@@ -4,8 +4,8 @@
 
 mod scaffold;
 pub use scaffold::{
-    available_stacks, package_name, stack_profile, ScaffoldContext, ScaffoldFile, ScaffoldReport,
-    StackProfile,
+    available_stacks, package_name, run_post_write, scaffold, stack_profile, PostWriteRunner,
+    PostWriteStep, ScaffoldContext, ScaffoldFile, ScaffoldReport, StackProfile,
 };
 
 use serde::{Deserialize, Serialize};
