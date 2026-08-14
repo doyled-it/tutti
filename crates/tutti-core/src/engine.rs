@@ -15,6 +15,19 @@ use crate::traits::{AgentBackend, EngineError, Forge, Result, RoutingStrategy};
 use crate::workspace::{Workspace, WorkspaceHandle};
 use std::path::Path;
 
+/// The label a blocked issue is parked behind, awaiting a human. This is the engine's
+/// park state: `select_ready_issue` always skips it (independent of the operator's
+/// `skip_labels`) and `park_for_human` tags a blocked issue with exactly this label.
+/// Deliberately fixed rather than drawn from `select.skip_labels`, which is an arbitrary
+/// exclusion set that may hold unrelated labels (e.g. `wontfix`).
+const NEEDS_HUMAN_LABEL: &str = "status:needs-human";
+
+/// How many issues may block back-to-back before the drain stops. Isolated blocks are
+/// parked and the drain continues; but if this many block in a row with no ship between,
+/// the failure is treated as systemic (a broken gate or backend) and the drain halts
+/// rather than burning an agent run on every remaining ready issue. A ship resets it.
+const MAX_CONSECUTIVE_BLOCKS: u32 = 3;
+
 /// What one iteration of the loop produced. Drives the outer drain decision.
 #[derive(Debug, PartialEq, Eq)]
 pub enum IterOutcome {
@@ -194,7 +207,7 @@ impl<'a> Engine<'a> {
     /// ordering over a set the forge hands over in a single call, so it is applied here as
     /// exactly that.
     async fn select_ready_issue(&self) -> Result<Option<Issue>> {
-        let ready = self.forge.list_ready_issues(&self.cfg.select).await?;
+        let ready = self.forge.list_ready_issues(&self.select_filter()).await?;
         if !self.cfg.select.milestone_floor || self.cfg.select.milestone.is_some() {
             return Ok(ready.into_iter().next());
         }
@@ -220,9 +233,42 @@ impl<'a> Engine<'a> {
         let handle = self.workspace.create(issue.id, &base).await?;
 
         // Run the stages, then always remove the workspace (Ok or Err).
-        let result = self.run_stages(issue, &handle, plan, hooks).await;
+        let result = self.run_stages(issue, &handle, plan, &base, hooks).await;
         let _ = self.workspace.remove(&handle).await;
         result
+    }
+
+    /// Park a blocked issue for a human rather than returning it to the ready pool.
+    /// Adds the configured skip label(s) (e.g. `status:needs-human`) and removes the
+    /// in-progress label, so the drain's selector no longer sees it and moves on to
+    /// the next issue instead of re-selecting the same block. With no skip label
+    /// configured it still drops the in-progress label, leaving the issue out of the
+    /// ready set. Emits the release event for lifecycle observers.
+    /// The configured select filter with the needs-human park label guaranteed present in
+    /// the skip set, so a parked issue is never re-selected even when the operator did not
+    /// list the park label in `skip_labels` (or left it empty).
+    fn select_filter(&self) -> crate::domain::SelectFilter {
+        let mut filter = self.cfg.select.clone();
+        if !filter.skip_labels.iter().any(|s| s == NEEDS_HUMAN_LABEL) {
+            filter.skip_labels.push(NEEDS_HUMAN_LABEL.to_string());
+        }
+        filter
+    }
+
+    async fn park_for_human(&self, id: crate::domain::IssueId, hooks: &EngineHooks) -> Result<()> {
+        hooks.emit(EngineEvent::IssueParked { id: id.0 });
+        // Add exactly the needs-human park label (not the whole skip set) and drop the
+        // in-progress label, so the selector no longer sees the issue and a human can
+        // find it by the park label.
+        let park = NEEDS_HUMAN_LABEL.to_string();
+        let in_progress = self.cfg.status_labels().in_progress;
+        self.forge
+            .edit_labels(
+                id,
+                std::slice::from_ref(&park),
+                std::slice::from_ref(&in_progress),
+            )
+            .await
     }
 
     /// The stage pipeline for a claimed issue, run inside an already-created worktree.
@@ -231,6 +277,7 @@ impl<'a> Engine<'a> {
         issue: &Issue,
         handle: &WorkspaceHandle,
         plan: crate::domain::BranchPlan,
+        base: &str,
         hooks: &EngineHooks,
     ) -> Result<IterOutcome> {
         let wt = handle.path.as_path();
@@ -240,15 +287,13 @@ impl<'a> Engine<'a> {
             .run_role(Role::Implementer, issue, None, wt, hooks)
             .await?;
         if impl_out.status != AgentStatus::ReadyToShip {
-            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-            self.forge.release(issue.id).await?;
+            self.park_for_human(issue.id, hooks).await?;
             return Ok(IterOutcome::Blocked(
                 impl_out.blocked_reason.unwrap_or_default(),
             ));
         }
         let Some(mut handoff) = impl_out.handoff else {
-            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-            self.forge.release(issue.id).await?;
+            self.park_for_human(issue.id, hooks).await?;
             return Ok(IterOutcome::Blocked(
                 "agent reported ReadyToShip but produced no handoff".into(),
             ));
@@ -269,15 +314,13 @@ impl<'a> Engine<'a> {
                 .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
                 .await?;
             if fix_out.status != AgentStatus::ReadyToShip {
-                hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-                self.forge.release(issue.id).await?;
+                self.park_for_human(issue.id, hooks).await?;
                 return Ok(IterOutcome::Blocked(
                     fix_out.blocked_reason.unwrap_or_default(),
                 ));
             }
             let Some(fix_handoff) = fix_out.handoff else {
-                hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-                self.forge.release(issue.id).await?;
+                self.park_for_human(issue.id, hooks).await?;
                 return Ok(IterOutcome::Blocked(
                     "fix applier reported ReadyToShip but produced no handoff".into(),
                 ));
@@ -289,11 +332,14 @@ impl<'a> Engine<'a> {
         handoff.target = plan;
 
         // Commit the agent's working-tree changes onto the feature branch. The review
-        // stage above reads the uncommitted tree, which is fine. If the agent produced
-        // nothing to commit, there is no work to ship: release and stop clean.
-        if !self.workspace.commit_all(handle, &handoff.pr_title).await? {
-            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-            self.forge.release(issue.id).await?;
+        // stage above reads the uncommitted tree, which is fine. The agent may also
+        // commit its own work (the superpowers workflow does), leaving a clean tree:
+        // ship when EITHER commit_all committed uncommitted changes OR the branch
+        // already carries the agent's commits beyond its base. Block only when there
+        // is genuinely nothing to ship.
+        let committed = self.workspace.commit_all(handle, &handoff.pr_title).await?;
+        if !committed && !self.workspace.has_commits(handle, base).await? {
+            self.park_for_human(issue.id, hooks).await?;
             return Ok(IterOutcome::Blocked(
                 "agent produced no file changes to commit".into(),
             ));
@@ -360,14 +406,29 @@ impl<'a> Engine<'a> {
     pub async fn drain_with(&self, hooks: &EngineHooks) -> Result<(u32, Option<PlanDecision>)> {
         hooks.emit(EngineEvent::DrainStarted);
         let mut shipped = 0;
+        let mut consecutive_blocks = 0u32;
         for _ in 0..self.cfg.max_issues_per_run {
             if hooks.cancelled() {
                 break;
             }
             match self.run_one_hooked(hooks).await? {
-                IterOutcome::Shipped => shipped += 1,
+                IterOutcome::Shipped => {
+                    shipped += 1;
+                    consecutive_blocks = 0;
+                }
                 IterOutcome::NoReadyWork => break,
-                // Any stop condition halts the drain so a human can look.
+                // A blocked issue is parked for a human (dropped from the ready pool);
+                // keep draining so one bad issue cannot starve the rest. But if enough
+                // block back-to-back with no ship between, treat the failure as systemic
+                // and stop rather than burning an agent run on every ready issue.
+                IterOutcome::Blocked(_) => {
+                    consecutive_blocks += 1;
+                    if consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS {
+                        break;
+                    }
+                    continue;
+                }
+                // A red CI or gate leaves a PR open: a genuine stop-for-human.
                 _ => break,
             }
         }
@@ -744,7 +805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_implementer_releases_the_claim() {
+    async fn blocked_implementer_parks_the_issue_for_a_human() {
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
         let blocked = AgentOutcome {
@@ -768,10 +829,10 @@ mod tests {
             engine.run_one().await.unwrap(),
             IterOutcome::Blocked(_)
         ));
-        // Released back to ready for the next run.
-        assert!(forge
-            .labels_of(IssueId(1))
-            .contains(&"status:ready".to_string()));
+        // Parked for a human (needs-human), not returned to the ready pool.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
     }
 
     #[tokio::test]
@@ -815,7 +876,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fix_applier_blocked_releases_claim() {
+    async fn fix_applier_blocked_parks_the_issue() {
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
         let dirty_review = AgentOutcome {
@@ -858,10 +919,11 @@ mod tests {
 
         let outcome = engine.run_one().await.unwrap();
         assert!(matches!(outcome, IterOutcome::Blocked(_)));
-        // The claim is released back to the ready pool for a future attempt.
-        assert!(forge
-            .labels_of(IssueId(1))
-            .contains(&"status:ready".to_string()));
+        // A fix-applier block parks the issue for a human, not back to ready: with the
+        // drain continuing past a block, releasing to ready would re-select and re-block.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
     }
 
     #[tokio::test]
@@ -947,6 +1009,13 @@ mod tests {
         ) -> crate::traits::Result<bool> {
             Ok(true)
         }
+        async fn has_commits(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _base: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
         async fn remove(
             &self,
             _h: &crate::workspace::WorkspaceHandle,
@@ -978,6 +1047,13 @@ mod tests {
             message: &str,
         ) -> crate::traits::Result<bool> {
             self.0.commit_all(h, message).await
+        }
+        async fn has_commits(
+            &self,
+            h: &crate::workspace::WorkspaceHandle,
+            base: &str,
+        ) -> crate::traits::Result<bool> {
+            self.0.has_commits(h, base).await
         }
         async fn remove(&self, h: &crate::workspace::WorkspaceHandle) -> crate::traits::Result<()> {
             self.0.remove(h).await
@@ -1052,6 +1128,55 @@ mod tests {
         ) -> crate::traits::Result<bool> {
             Ok(false)
         }
+        async fn has_commits(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _base: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
+        async fn remove(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+        ) -> crate::traits::Result<()> {
+            Ok(())
+        }
+        async fn prune(&self) -> crate::traits::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A workspace that mimics the superpowers workflow: the agent committed its
+    /// own work, so the worktree is clean (`commit_all` finds nothing) but the
+    /// branch carries commits beyond its base.
+    struct PreCommittedWorkspace;
+    #[async_trait::async_trait]
+    impl crate::workspace::Workspace for PreCommittedWorkspace {
+        async fn create(
+            &self,
+            issue: crate::domain::IssueId,
+            _base: &str,
+        ) -> crate::traits::Result<crate::workspace::WorkspaceHandle> {
+            Ok(crate::workspace::WorkspaceHandle {
+                issue,
+                path: std::path::PathBuf::from("."),
+                branch: format!("feat/issue-{}", issue.0),
+            })
+        }
+        async fn commit_all(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _message: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
+        async fn has_commits(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _base: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(true)
+        }
         async fn remove(
             &self,
             _h: &crate::workspace::WorkspaceHandle,
@@ -1064,7 +1189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_file_changes_blocks_and_releases() {
+    async fn no_shippable_work_parks_the_issue_for_a_human() {
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
         let backend = FakeBackend::new()
@@ -1074,12 +1199,193 @@ mod tests {
 
         let outcome = engine.run_one().await.unwrap();
         assert!(matches!(outcome, IterOutcome::Blocked(_)));
-        // No commit means no ship: the issue must not be done.
+        // No commit and no commits on the branch means no ship: not done.
         assert!(!forge.is_done(IssueId(1)));
-        // The claim is released back to the ready pool for a future attempt.
+        // Parked for a human (needs-human), not returned to the ready pool.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
+    }
+
+    #[tokio::test]
+    async fn ships_when_agent_committed_its_own_work() {
+        // The superpowers workflow has the agent commit its own work, leaving a
+        // clean worktree. `commit_all` then finds nothing to commit, but the branch
+        // carries the agent's commits, so the engine must ship rather than block.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(&cfg, &forge, &backend, Box::new(PreCommittedWorkspace)).unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::Shipped);
+        assert!(forge.is_done(IssueId(1)));
+    }
+
+    #[tokio::test]
+    async fn drain_parks_a_blocked_issue_and_continues_to_the_next() {
+        // Issue 1's implementer blocks; issue 2 ships. One block must not halt the
+        // whole drain: the blocked issue is parked for a human (dropped from the ready
+        // pool) and the drain moves on to ship issue 2.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1), ready(2)], CiState::Pass);
+        let blocked = AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "needs hardware".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("needs a device".into()),
+        };
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, blocked)
+            .script(Role::Implementer, ship_outcome(2))
+            .script(Role::Reviewer, clean_review())
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::Stop,
+                    rationale: "nothing left".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (shipped, _plan) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 1);
+        assert!(forge.is_done(IssueId(2)));
+        assert!(!forge.is_done(IssueId(1)));
+        // Issue 1 is parked for a human, not returned to the ready pool.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
+    }
+
+    fn blocked_outcome() -> AgentOutcome {
+        AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "blocked".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("needs a human".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn park_adds_only_the_needs_human_label_not_the_whole_skip_set() {
+        // skip_labels may carry unrelated exclusions (e.g. wontfix). Parking a blocked
+        // issue must tag it only with the needs-human park label, never the rest.
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec!["status:needs-human".into(), "wontfix".into()];
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new().script(Role::Implementer, blocked_outcome());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert!(matches!(
+            engine.run_one().await.unwrap(),
+            IterOutcome::Blocked(_)
+        ));
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"wontfix".to_string()));
+    }
+
+    #[tokio::test]
+    async fn selection_always_skips_the_needs_human_label_even_when_not_configured() {
+        // An issue carrying both ready and needs-human (a human parked it without removing
+        // ready) must not be selected, even when the operator left the park label out of
+        // skip_labels entirely.
+        let mut cfg = cfg();
+        cfg.select.skip_labels = vec![];
+        let mut issue = ready(1);
+        issue.labels.push("status:needs-human".into());
+        let forge = FakeForge::new(vec![issue], CiState::Pass);
+        let backend = FakeBackend::new();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::NoReadyWork);
+    }
+
+    #[tokio::test]
+    async fn drain_stops_after_max_consecutive_blocks() {
+        // Four ready issues, every implementer blocks. The drain parks the first
+        // MAX_CONSECUTIVE_BLOCKS and then stops, leaving the rest untouched, rather than
+        // burning an agent run on every ready issue for a systemic failure. Only three
+        // outcomes are scripted, so a fourth attempt would error the backend and fail.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1), ready(2), ready(3), ready(4)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, blocked_outcome())
+            .script(Role::Implementer, blocked_outcome())
+            .script(Role::Implementer, blocked_outcome());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        let (shipped, plan) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 0);
+        assert!(plan.is_none());
+        // The fourth issue was never attempted: still ready, never parked.
+        let fourth = forge.labels_of(IssueId(4));
+        assert!(fourth.contains(&"status:ready".to_string()));
+        assert!(!fourth.contains(&"status:needs-human".to_string()));
+        // The first was parked.
         assert!(forge
             .labels_of(IssueId(1))
-            .contains(&"status:ready".to_string()));
+            .contains(&"status:needs-human".to_string()));
+    }
+
+    #[tokio::test]
+    async fn blocking_emits_issue_parked_not_issue_released() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new().script(Role::Implementer, blocked_outcome());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hooks = EngineHooks {
+            sink: Some(tx),
+            cancel: None,
+            subsession: None,
+        };
+        let _ = engine.drain_with(&hooks).await.unwrap();
+        let mut evs = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            evs.push(ev);
+        }
+        assert!(evs.contains(&EngineEvent::IssueParked { id: 1 }));
+        assert!(!evs
+            .iter()
+            .any(|e| matches!(e, EngineEvent::IssueReleased { .. })));
     }
 
     fn new_issue(title: &str) -> NewIssue {
