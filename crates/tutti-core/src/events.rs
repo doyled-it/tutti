@@ -13,10 +13,24 @@ use crate::message::Role;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EngineEvent {
     DrainStarted,
-    IssueClaimed { id: u64, title: String },
-    IssueShipped { id: u64 },
-    IssueReleased { id: u64 },
-    DrainComplete { shipped: u32 },
+    IssueClaimed {
+        id: u64,
+        title: String,
+    },
+    IssueShipped {
+        id: u64,
+    },
+    IssueReleased {
+        id: u64,
+    },
+    /// A blocked issue was parked for a human (labelled needs-human and dropped from
+    /// the ready pool), distinct from `IssueReleased` which returns it to ready.
+    IssueParked {
+        id: u64,
+    },
+    DrainComplete {
+        shipped: u32,
+    },
 }
 
 /// A per-role turn stream from the drain loop, keyed by issue id + role. Serializable so
