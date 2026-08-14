@@ -144,7 +144,10 @@ testpaths = ["tests"]
 r#"#!/usr/bin/env bash
 # The one canonical gate. CI and the agent both run exactly this.
 set -euo pipefail
-uv sync --frozen --extra dev 2>/dev/null || uv sync --extra dev
+# The dev tools live in the `dev` dependency-group (not optional-dependencies), so it is
+# `--group dev`, not `--extra dev`. Prefer the locked resolve, fall back if there is no
+# lock yet (e.g. `uv lock` was unavailable at scaffold time).
+uv sync --frozen --group dev 2>/dev/null || uv sync --group dev
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy --strict src
@@ -452,5 +455,32 @@ mod tests {
             describe: "run a missing binary".to_string(),
         };
         assert!(run_post_write(dir.path(), &step).is_err());
+    }
+
+    /// Live check: emit the Python profile and run its real gate (uv sync, ruff, mypy,
+    /// pytest). Ignored by default so the hermetic gate needs no toolchain; run on demand
+    /// with `env -C <repo> cargo test -p tutti-app-core -- --ignored`. This is the one
+    /// check that proves a generated repo is green on its first run, which the
+    /// content-only assertions above cannot.
+    #[test]
+    #[ignore = "live: needs uv, ruff, mypy, pytest reachable via uv on PATH"]
+    fn python_scaffold_passes_its_own_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ctx();
+        scaffold(dir.path(), &python_profile(), &c, &|s| {
+            run_post_write(dir.path(), s)
+        })
+        .unwrap();
+        let out = std::process::Command::new("bash")
+            .arg("scripts/check.sh")
+            .current_dir(dir.path())
+            .output()
+            .expect("run scripts/check.sh");
+        assert!(
+            out.status.success(),
+            "the emitted Python scaffold failed its own gate\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }
