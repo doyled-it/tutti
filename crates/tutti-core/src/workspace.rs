@@ -29,6 +29,11 @@ pub trait Workspace: Send + Sync {
     /// Stage and commit all changes in the workspace onto its branch. Returns Ok(true)
     /// if a commit was made, Ok(false) if there was nothing to commit.
     async fn commit_all(&self, handle: &WorkspaceHandle, message: &str) -> Result<bool>;
+    /// True if `handle`'s branch carries commits beyond `base` (the ref it was
+    /// created from): work the agent committed itself. The engine ships such a
+    /// branch even when `commit_all` finds a clean tree, rather than mistaking an
+    /// already-committed branch for "no changes to ship".
+    async fn has_commits(&self, handle: &WorkspaceHandle, base: &str) -> Result<bool>;
     /// Remove the workspace after the issue reaches a terminal state (best-effort).
     async fn remove(&self, handle: &WorkspaceHandle) -> Result<()>;
     /// Prune any Tutti workspaces left behind by a crashed run.
@@ -71,6 +76,10 @@ impl Workspace for NoopWorkspace {
     async fn commit_all(&self, _handle: &WorkspaceHandle, _message: &str) -> Result<bool> {
         // Pretend a commit happened so offline engine tests still ship.
         Ok(true)
+    }
+    async fn has_commits(&self, _handle: &WorkspaceHandle, _base: &str) -> Result<bool> {
+        // `commit_all` already reports a commit, so this is never consulted.
+        Ok(false)
     }
     async fn remove(&self, _handle: &WorkspaceHandle) -> Result<()> {
         Ok(())

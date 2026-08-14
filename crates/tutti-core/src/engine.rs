@@ -220,9 +220,27 @@ impl<'a> Engine<'a> {
         let handle = self.workspace.create(issue.id, &base).await?;
 
         // Run the stages, then always remove the workspace (Ok or Err).
-        let result = self.run_stages(issue, &handle, plan, hooks).await;
+        let result = self.run_stages(issue, &handle, plan, &base, hooks).await;
         let _ = self.workspace.remove(&handle).await;
         result
+    }
+
+    /// Park a blocked issue for a human rather than returning it to the ready pool.
+    /// Adds the configured skip label(s) (e.g. `status:needs-human`) and removes the
+    /// in-progress label, so the drain's selector no longer sees it and moves on to
+    /// the next issue instead of re-selecting the same block. With no skip label
+    /// configured it still drops the in-progress label, leaving the issue out of the
+    /// ready set. Emits the release event for lifecycle observers.
+    async fn park_for_human(&self, id: crate::domain::IssueId, hooks: &EngineHooks) -> Result<()> {
+        hooks.emit(EngineEvent::IssueReleased { id: id.0 });
+        let in_progress = self.cfg.status_labels().in_progress;
+        self.forge
+            .edit_labels(
+                id,
+                &self.cfg.select.skip_labels,
+                std::slice::from_ref(&in_progress),
+            )
+            .await
     }
 
     /// The stage pipeline for a claimed issue, run inside an already-created worktree.
@@ -231,6 +249,7 @@ impl<'a> Engine<'a> {
         issue: &Issue,
         handle: &WorkspaceHandle,
         plan: crate::domain::BranchPlan,
+        base: &str,
         hooks: &EngineHooks,
     ) -> Result<IterOutcome> {
         let wt = handle.path.as_path();
@@ -240,15 +259,13 @@ impl<'a> Engine<'a> {
             .run_role(Role::Implementer, issue, None, wt, hooks)
             .await?;
         if impl_out.status != AgentStatus::ReadyToShip {
-            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-            self.forge.release(issue.id).await?;
+            self.park_for_human(issue.id, hooks).await?;
             return Ok(IterOutcome::Blocked(
                 impl_out.blocked_reason.unwrap_or_default(),
             ));
         }
         let Some(mut handoff) = impl_out.handoff else {
-            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-            self.forge.release(issue.id).await?;
+            self.park_for_human(issue.id, hooks).await?;
             return Ok(IterOutcome::Blocked(
                 "agent reported ReadyToShip but produced no handoff".into(),
             ));
@@ -289,11 +306,14 @@ impl<'a> Engine<'a> {
         handoff.target = plan;
 
         // Commit the agent's working-tree changes onto the feature branch. The review
-        // stage above reads the uncommitted tree, which is fine. If the agent produced
-        // nothing to commit, there is no work to ship: release and stop clean.
-        if !self.workspace.commit_all(handle, &handoff.pr_title).await? {
-            hooks.emit(EngineEvent::IssueReleased { id: issue.id.0 });
-            self.forge.release(issue.id).await?;
+        // stage above reads the uncommitted tree, which is fine. The agent may also
+        // commit its own work (the superpowers workflow does), leaving a clean tree:
+        // ship when EITHER commit_all committed uncommitted changes OR the branch
+        // already carries the agent's commits beyond its base. Block only when there
+        // is genuinely nothing to ship.
+        let committed = self.workspace.commit_all(handle, &handoff.pr_title).await?;
+        if !committed && !self.workspace.has_commits(handle, base).await? {
+            self.park_for_human(issue.id, hooks).await?;
             return Ok(IterOutcome::Blocked(
                 "agent produced no file changes to commit".into(),
             ));
@@ -367,7 +387,10 @@ impl<'a> Engine<'a> {
             match self.run_one_hooked(hooks).await? {
                 IterOutcome::Shipped => shipped += 1,
                 IterOutcome::NoReadyWork => break,
-                // Any stop condition halts the drain so a human can look.
+                // A blocked issue is parked for a human (dropped from the ready pool);
+                // keep draining so one bad issue cannot starve the rest.
+                IterOutcome::Blocked(_) => continue,
+                // A red CI or gate leaves a PR open: a genuine stop-for-human.
                 _ => break,
             }
         }
@@ -744,7 +767,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_implementer_releases_the_claim() {
+    async fn blocked_implementer_parks_the_issue_for_a_human() {
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
         let blocked = AgentOutcome {
@@ -768,10 +791,10 @@ mod tests {
             engine.run_one().await.unwrap(),
             IterOutcome::Blocked(_)
         ));
-        // Released back to ready for the next run.
-        assert!(forge
-            .labels_of(IssueId(1))
-            .contains(&"status:ready".to_string()));
+        // Parked for a human (needs-human), not returned to the ready pool.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
     }
 
     #[tokio::test]
@@ -947,6 +970,13 @@ mod tests {
         ) -> crate::traits::Result<bool> {
             Ok(true)
         }
+        async fn has_commits(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _base: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
         async fn remove(
             &self,
             _h: &crate::workspace::WorkspaceHandle,
@@ -978,6 +1008,13 @@ mod tests {
             message: &str,
         ) -> crate::traits::Result<bool> {
             self.0.commit_all(h, message).await
+        }
+        async fn has_commits(
+            &self,
+            h: &crate::workspace::WorkspaceHandle,
+            base: &str,
+        ) -> crate::traits::Result<bool> {
+            self.0.has_commits(h, base).await
         }
         async fn remove(&self, h: &crate::workspace::WorkspaceHandle) -> crate::traits::Result<()> {
             self.0.remove(h).await
@@ -1052,6 +1089,55 @@ mod tests {
         ) -> crate::traits::Result<bool> {
             Ok(false)
         }
+        async fn has_commits(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _base: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
+        async fn remove(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+        ) -> crate::traits::Result<()> {
+            Ok(())
+        }
+        async fn prune(&self) -> crate::traits::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A workspace that mimics the superpowers workflow: the agent committed its
+    /// own work, so the worktree is clean (`commit_all` finds nothing) but the
+    /// branch carries commits beyond its base.
+    struct PreCommittedWorkspace;
+    #[async_trait::async_trait]
+    impl crate::workspace::Workspace for PreCommittedWorkspace {
+        async fn create(
+            &self,
+            issue: crate::domain::IssueId,
+            _base: &str,
+        ) -> crate::traits::Result<crate::workspace::WorkspaceHandle> {
+            Ok(crate::workspace::WorkspaceHandle {
+                issue,
+                path: std::path::PathBuf::from("."),
+                branch: format!("feat/issue-{}", issue.0),
+            })
+        }
+        async fn commit_all(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _message: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(false)
+        }
+        async fn has_commits(
+            &self,
+            _h: &crate::workspace::WorkspaceHandle,
+            _base: &str,
+        ) -> crate::traits::Result<bool> {
+            Ok(true)
+        }
         async fn remove(
             &self,
             _h: &crate::workspace::WorkspaceHandle,
@@ -1064,7 +1150,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_file_changes_blocks_and_releases() {
+    async fn no_shippable_work_parks_the_issue_for_a_human() {
         let cfg = cfg();
         let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
         let backend = FakeBackend::new()
@@ -1074,12 +1160,75 @@ mod tests {
 
         let outcome = engine.run_one().await.unwrap();
         assert!(matches!(outcome, IterOutcome::Blocked(_)));
-        // No commit means no ship: the issue must not be done.
+        // No commit and no commits on the branch means no ship: not done.
         assert!(!forge.is_done(IssueId(1)));
-        // The claim is released back to the ready pool for a future attempt.
-        assert!(forge
-            .labels_of(IssueId(1))
-            .contains(&"status:ready".to_string()));
+        // Parked for a human (needs-human), not returned to the ready pool.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
+    }
+
+    #[tokio::test]
+    async fn ships_when_agent_committed_its_own_work() {
+        // The superpowers workflow has the agent commit its own work, leaving a
+        // clean worktree. `commit_all` then finds nothing to commit, but the branch
+        // carries the agent's commits, so the engine must ship rather than block.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(&cfg, &forge, &backend, Box::new(PreCommittedWorkspace)).unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::Shipped);
+        assert!(forge.is_done(IssueId(1)));
+    }
+
+    #[tokio::test]
+    async fn drain_parks_a_blocked_issue_and_continues_to_the_next() {
+        // Issue 1's implementer blocks; issue 2 ships. One block must not halt the
+        // whole drain: the blocked issue is parked for a human (dropped from the ready
+        // pool) and the drain moves on to ship issue 2.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1), ready(2)], CiState::Pass);
+        let blocked = AgentOutcome {
+            status: AgentStatus::Blocked,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "needs hardware".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("needs a device".into()),
+        };
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, blocked)
+            .script(Role::Implementer, ship_outcome(2))
+            .script(Role::Reviewer, clean_review())
+            .script(
+                Role::Planner,
+                planned(PlanDecision {
+                    action: PlanAction::Stop,
+                    rationale: "nothing left".into(),
+                    needs_human: false,
+                }),
+            );
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (shipped, _plan) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 1);
+        assert!(forge.is_done(IssueId(2)));
+        assert!(!forge.is_done(IssueId(1)));
+        // Issue 1 is parked for a human, not returned to the ready pool.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+        assert!(!labels.contains(&"status:ready".to_string()));
     }
 
     fn new_issue(title: &str) -> NewIssue {

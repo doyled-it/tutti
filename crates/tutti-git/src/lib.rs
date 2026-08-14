@@ -139,6 +139,24 @@ impl Workspace for GitWorkspace {
         Ok(true)
     }
 
+    async fn has_commits(&self, handle: &WorkspaceHandle, base: &str) -> Result<bool> {
+        // Resolve `base` the same way `create` does (local ref, then origin/<base>),
+        // then count commits on the worktree's HEAD that are not on that base. A
+        // non-zero count means the agent committed its own work.
+        let base_ref = self.resolve_base(base).await?;
+        let path_str = handle.path.to_string_lossy().into_owned();
+        let count = self
+            .git(&[
+                "-C",
+                &path_str,
+                "rev-list",
+                "--count",
+                &format!("{base_ref}..HEAD"),
+            ])
+            .await?;
+        Ok(count.trim().parse::<u64>().unwrap_or(0) > 0)
+    }
+
     async fn remove(&self, handle: &WorkspaceHandle) -> Result<()> {
         let path_str = handle.path.to_string_lossy().into_owned();
         self.git(&["worktree", "remove", "--force", &path_str])
@@ -217,6 +235,21 @@ mod tests {
             "base content should be checked out"
         );
         assert_eq!(h.branch, "feat/issue-3");
+    }
+
+    #[tokio::test]
+    async fn has_commits_is_true_only_after_the_branch_advances_past_base() {
+        let dir = temp_repo().await;
+        let ws = GitWorkspace::new(dir.path());
+        let h = ws.create(IssueId(11), "main").await.unwrap();
+        // A fresh worktree is level with base: nothing to ship.
+        assert!(!ws.has_commits(&h, "main").await.unwrap());
+        // The agent commits its own work inside the worktree (the superpowers flow).
+        std::fs::write(h.path.join("feature.txt"), "work").unwrap();
+        run_git(&h.path, vec!["add", "."]).await;
+        run_git(&h.path, vec!["commit", "-m", "feat: work"]).await;
+        // Now the branch is ahead of base: there is work to ship.
+        assert!(ws.has_commits(&h, "main").await.unwrap());
     }
 
     #[tokio::test]
