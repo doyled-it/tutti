@@ -2,6 +2,7 @@
 //! The `tutti` CLI: load config, acquire the run lock, wire adapters, drain issues.
 
 mod lock;
+mod retrofit;
 mod wire;
 
 use clap::{Parser, Subcommand};
@@ -40,6 +41,19 @@ enum Cmd {
         #[arg(long)]
         login: Option<String>,
     },
+    /// Install Tutti's opinionated tooling into an existing repo (detect language, add the
+    /// gate + CI + AGENTS.md, merge config), then run the gate for a baseline.
+    Retrofit {
+        /// Repo root on disk.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Print the plan and stop, writing nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply without the interactive confirmation (CI/scripts).
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -58,6 +72,13 @@ async fn main() -> std::process::ExitCode {
                 report_plan(plan.as_ref());
                 std::process::ExitCode::SUCCESS
             }
+            Err(e) => {
+                eprintln!("tutti: {e}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+        Cmd::Retrofit { path, dry_run, yes } => match retrofit::run(path, dry_run, yes).await {
+            Ok(()) => std::process::ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("tutti: {e}");
                 std::process::ExitCode::FAILURE

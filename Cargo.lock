@@ -488,6 +488,7 @@ dependencies = [
  "clap",
  "tempfile",
  "tokio",
+ "tutti-app-core",
  "tutti-backend-claude",
  "tutti-core",
  "tutti-forge-gitea",
