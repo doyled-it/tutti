@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use toml_edit::{value, Array, DocumentMut, Item, Table};
+
 /// The stack ids retrofit can detect, in a stable order. Each maps to a `StackProfile`
 /// id in `scaffold.rs`.
 pub fn detect_languages(dir: &Path) -> Vec<String> {
@@ -34,6 +36,87 @@ pub fn gitignore_missing_lines(existing: &str, wanted: &[&str]) -> Vec<String> {
         .filter(|w| !present.contains(w.trim()))
         .map(|w| w.to_string())
         .collect()
+}
+
+/// Ensure the table at `path` exists (creating intermediate tables), returning it.
+/// `None` if an existing segment is present but is not a table (e.g. an inline table),
+/// so the caller can bail out without fabricating or clobbering anything.
+fn ensure_table<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+    let mut tbl = doc.as_table_mut();
+    for key in path {
+        tbl = tbl
+            .entry(key)
+            .or_insert_with(|| Item::Table(Table::new()))
+            .as_table_mut()?;
+    }
+    Some(tbl)
+}
+
+/// Set `key = val` only if the key is absent (additive: preserves a user's value).
+fn set_if_absent(tbl: &mut Table, key: &str, val: toml_edit::Value) {
+    if !tbl.contains_key(key) {
+        tbl.insert(key, value(val));
+    }
+}
+
+/// Ensure `key` is a string array containing every element of `wanted` (union: adds the
+/// missing ones, drops nothing). Only mutates when something is actually missing, so an
+/// already-complete array is left byte-identical (idempotency).
+fn ensure_str_array(tbl: &mut Table, key: &str, wanted: &[&str]) {
+    let item = tbl.entry(key).or_insert(value(Array::new()));
+    if let Some(arr) = item.as_array_mut() {
+        for w in wanted {
+            if !arr.iter().any(|v| v.as_str() == Some(*w)) {
+                arr.push(*w);
+            }
+        }
+    }
+}
+
+/// Merge Sotto's opinionated Python config into an existing `pyproject.toml`, preserving
+/// the user's content and comments. Additive for absent keys; enforces the opinion-defining
+/// strictness keys (`mypy strict`, the ruff lint selection); idempotent.
+///
+/// Returns `None` if `existing` does not parse as TOML, or if a section we need to write
+/// into is present but shaped unexpectedly (e.g. an inline table): the file is never
+/// fabricated or clobbered, the caller leaves it untouched.
+pub fn merge_pyproject(existing: &str) -> Option<String> {
+    let mut doc: DocumentMut = existing.parse().ok()?;
+
+    // [dependency-groups] dev: union our tools in.
+    let dg = ensure_table(&mut doc, &["dependency-groups"])?;
+    ensure_str_array(dg, "dev", &["ruff", "mypy", "pytest"]);
+
+    // [tool.ruff]: line-length + target-version are additive (cosmetic).
+    let ruff = ensure_table(&mut doc, &["tool", "ruff"])?;
+    set_if_absent(ruff, "line-length", 88_i64.into());
+    set_if_absent(ruff, "target-version", "py313".into());
+    // [tool.ruff.lint]: enforce our lint selection (union, so a floor not a cap).
+    let lint = ensure_table(&mut doc, &["tool", "ruff", "lint"])?;
+    ensure_str_array(lint, "extend-select", &["I", "UP", "B", "SIM", "RUF"]);
+
+    // [tool.mypy]: enforce strict = true (opinion-defining); python_version additive.
+    let mypy = ensure_table(&mut doc, &["tool", "mypy"])?;
+    if mypy.get("strict").and_then(|i| i.as_bool()) != Some(true) {
+        mypy.insert("strict", value(true));
+    }
+    set_if_absent(mypy, "python_version", "3.13".into());
+
+    // [tool.pytest.ini_options]: additive.
+    let pytest = ensure_table(&mut doc, &["tool", "pytest", "ini_options"])?;
+    set_if_absent(
+        pytest,
+        "addopts",
+        "-q --strict-markers --strict-config".into(),
+    );
+    if !pytest.contains_key("pythonpath") {
+        pytest.insert("pythonpath", value(Array::from_iter(["src"])));
+    }
+    if !pytest.contains_key("testpaths") {
+        pytest.insert("testpaths", value(Array::from_iter(["tests"])));
+    }
+
+    Some(doc.to_string())
 }
 
 #[cfg(test)]
@@ -107,5 +190,55 @@ mod tests {
             gitignore_missing_lines("", &["a", "b"]),
             vec!["a".to_string(), "b".to_string()]
         );
+    }
+
+    #[test]
+    fn merge_pyproject_adds_our_sections_to_a_bare_file() {
+        let out = merge_pyproject("[project]\nname = \"x\"\n").unwrap();
+        assert!(out.contains("[tool.ruff]"));
+        assert!(out.contains("strict = true")); // mypy
+        assert!(out.contains("[tool.pytest.ini_options]"));
+        assert!(out.contains("[dependency-groups]"));
+        assert!(out.contains("name = \"x\"")); // user content preserved
+    }
+
+    #[test]
+    fn merge_pyproject_enforces_mypy_strict_over_a_weaker_value() {
+        let out = merge_pyproject("[tool.mypy]\nstrict = false\n").unwrap();
+        assert!(out.contains("strict = true"));
+        assert!(!out.contains("strict = false"));
+    }
+
+    #[test]
+    fn merge_pyproject_preserves_a_cosmetic_user_value() {
+        let out = merge_pyproject("[tool.ruff]\nline-length = 100\n").unwrap();
+        assert!(out.contains("line-length = 100"));
+    }
+
+    #[test]
+    fn merge_pyproject_unions_dev_deps_without_dropping_the_users() {
+        let out = merge_pyproject("[dependency-groups]\ndev = [\"pytest-cov\"]\n").unwrap();
+        assert!(out.contains("pytest-cov"));
+        assert!(out.contains("ruff"));
+        assert!(out.contains("mypy"));
+    }
+
+    #[test]
+    fn merge_pyproject_is_idempotent() {
+        let once = merge_pyproject("[project]\nname = \"x\"\n").unwrap();
+        let twice = merge_pyproject(&once).unwrap();
+        assert_eq!(once, twice, "a second merge must produce no further change");
+    }
+
+    #[test]
+    fn merge_pyproject_preserves_comments() {
+        let out = merge_pyproject("# keep me\n[project]\nname = \"x\"\n").unwrap();
+        assert!(out.contains("# keep me"));
+    }
+
+    #[test]
+    fn merge_pyproject_returns_none_on_unparseable_input_never_fabricating() {
+        // A malformed pyproject must not be silently replaced with a fresh file.
+        assert!(merge_pyproject("this is not [[[ valid toml = = \"unterminated").is_none());
     }
 }
