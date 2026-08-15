@@ -119,6 +119,86 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
     Some(doc.to_string())
 }
 
+use serde_json::{Map, Value};
+
+/// Strip `//` line comments so a JSONC `tsconfig.json` parses. Block comments are rare in
+/// tsconfig; a merged output is re-serialized without comments (a reformat the plan surfaces).
+fn strip_jsonc(input: &str) -> String {
+    input
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A nested value coerced to an object (an absent or non-object nested field becomes an
+/// empty object we then fill). The ROOT is guarded separately (see `json_root_object`).
+fn object_or_new(v: Value) -> Map<String, Value> {
+    match v {
+        Value::Object(m) => m,
+        _ => Map::new(),
+    }
+}
+
+/// The root object of a JSON document, or `None` if it does not parse as a JSON object.
+/// Returning `None` preserves the no-clobber guarantee: a malformed or non-object config is
+/// left untouched by the caller rather than replaced with a fresh file.
+fn json_root_object(parsed: Result<Value, serde_json::Error>) -> Option<Map<String, Value>> {
+    match parsed.ok()? {
+        Value::Object(m) => Some(m),
+        _ => None,
+    }
+}
+
+/// Merge Sotto's strict TypeScript compiler flags into an existing `tsconfig.json`.
+/// Enforces the strictness flags; preserves other options; idempotent. Returns `None`
+/// (leave the file untouched) if the existing content is not a JSON object.
+pub fn merge_tsconfig(existing: &str) -> Option<String> {
+    let mut root = json_root_object(serde_json::from_str(&strip_jsonc(existing)))?;
+    let mut co = object_or_new(root.remove("compilerOptions").unwrap_or(Value::Null));
+    for (k, v) in [
+        ("strict", Value::Bool(true)),
+        ("noUncheckedIndexedAccess", Value::Bool(true)),
+    ] {
+        co.insert(k.to_string(), v);
+    }
+    for (k, v) in [
+        ("module", Value::String("esnext".into())),
+        ("moduleResolution", Value::String("bundler".into())),
+        ("target", Value::String("es2023".into())),
+        ("skipLibCheck", Value::Bool(true)),
+    ] {
+        co.entry(k.to_string()).or_insert(v);
+    }
+    root.insert("compilerOptions".into(), Value::Object(co));
+    Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
+}
+
+/// Merge the `typescript` + `bun-types` dev dependencies and the `check` script into an
+/// existing `package.json`, preserving every other field. Idempotent. Returns `None`
+/// (leave the file untouched) if the existing content is not a JSON object.
+pub fn merge_package_json(existing: &str) -> Option<String> {
+    let mut root = json_root_object(serde_json::from_str(existing))?;
+
+    let mut scripts = object_or_new(root.remove("scripts").unwrap_or(Value::Null));
+    scripts
+        .entry("check".to_string())
+        .or_insert(Value::String("tsc --noEmit && bun test".into()));
+    root.insert("scripts".into(), Value::Object(scripts));
+
+    let mut dev = object_or_new(root.remove("devDependencies").unwrap_or(Value::Null));
+    dev.entry("typescript".to_string())
+        .or_insert(Value::String("^5.7.0".into()));
+    dev.entry("bun-types".to_string())
+        .or_insert(Value::String("^1.1.0".into()));
+    root.insert("devDependencies".into(), Value::Object(dev));
+
+    Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +320,44 @@ mod tests {
     fn merge_pyproject_returns_none_on_unparseable_input_never_fabricating() {
         // A malformed pyproject must not be silently replaced with a fresh file.
         assert!(merge_pyproject("this is not [[[ valid toml = = \"unterminated").is_none());
+    }
+
+    #[test]
+    fn merge_tsconfig_enforces_strict_flags() {
+        let out = merge_tsconfig("{ \"compilerOptions\": { \"strict\": false } }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["compilerOptions"]["strict"], serde_json::json!(true));
+        assert_eq!(
+            v["compilerOptions"]["noUncheckedIndexedAccess"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn merge_tsconfig_is_idempotent() {
+        let once = merge_tsconfig("{}").unwrap();
+        let twice = merge_tsconfig(&once).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn merge_tsconfig_returns_none_on_unparseable_input() {
+        assert!(merge_tsconfig("{ not valid").is_none());
+    }
+
+    #[test]
+    fn merge_package_json_adds_dev_deps_and_check_script_keeping_user_fields() {
+        let out = merge_package_json("{ \"name\": \"keep\", \"scripts\": { \"build\": \"x\" } }")
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["name"], serde_json::json!("keep"));
+        assert_eq!(v["scripts"]["build"], serde_json::json!("x")); // preserved
+        assert!(v["scripts"]["check"].is_string()); // added
+        assert!(v["devDependencies"]["typescript"].is_string()); // added
+    }
+
+    #[test]
+    fn merge_package_json_returns_none_on_unparseable_input() {
+        assert!(merge_package_json("{ not valid").is_none());
     }
 }
