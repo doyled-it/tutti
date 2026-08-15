@@ -683,4 +683,70 @@ mod tests {
         assert!(second.merges.is_empty(), "no new merges");
         assert!(second.gitignore_append.is_empty(), "no new ignore lines");
     }
+
+    /// Live: retrofit a clean Go fixture (valid, gofmt-clean, test-passing code, no tooling)
+    /// and run the emitted gate. It should be green because there is nothing to fix. Ignored
+    /// by default; run with `env -C <repo> cargo test -p tutti-app-core -- --ignored`.
+    #[tokio::test]
+    #[ignore = "live: needs a go toolchain on PATH"]
+    async fn retrofit_clean_go_repo_is_green() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("go.mod"),
+            "module example.com/clean\n\ngo 1.23\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("clean.go"),
+            "package clean\n\n// Add returns the sum.\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("clean_test.go"),
+            "package clean\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fail()\n\t}\n}\n",
+        )
+        .unwrap();
+        let profile = stack_profile("go").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        apply_retrofit(d.path(), &plan).unwrap();
+        let outcome = run_baseline_gate(d.path(), &profile).await.unwrap();
+        assert!(
+            outcome.passed,
+            "clean repo gate should be green:\n{}",
+            outcome.log
+        );
+    }
+
+    /// Live: retrofit a dirty Go fixture (a real build/vet error) and confirm the baseline
+    /// gate is RED and the log names the problem, which is the honest-gap-report contract.
+    #[tokio::test]
+    #[ignore = "live: needs a go toolchain on PATH"]
+    async fn retrofit_dirty_go_repo_reports_the_gap() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("go.mod"),
+            "module example.com/dirty\n\ngo 1.23\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("dirty.go"),
+            "package dirty\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("dirty_test.go"),
+            "package dirty\n\nimport \"testing\"\n\nfunc TestBad(t *testing.T) {\n\t_ = Missing()\n}\n",
+        )
+        .unwrap();
+        let profile = stack_profile("go").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        apply_retrofit(d.path(), &plan).unwrap();
+        let outcome = run_baseline_gate(d.path(), &profile).await.unwrap();
+        assert!(!outcome.passed, "dirty repo gate should be red");
+        assert!(
+            outcome.log.contains("Missing") || outcome.log.to_lowercase().contains("undefined"),
+            "the baseline log should name the failure:\n{}",
+            outcome.log
+        );
+    }
 }
