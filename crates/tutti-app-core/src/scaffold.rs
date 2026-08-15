@@ -77,9 +77,14 @@ pub fn package_name(repo: &str) -> String {
     out
 }
 
-/// The built-in stacks. This slice ships exactly one.
+/// The built-in stacks, each an opinionated, agent-friendly per-language shape.
 pub fn available_stacks() -> Vec<StackProfile> {
-    vec![python_profile()]
+    vec![
+        python_profile(),
+        rust_profile(),
+        typescript_profile(),
+        go_profile(),
+    ]
 }
 
 /// Look up a stack profile by id.
@@ -193,6 +198,382 @@ Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
 "\"\"\"Core helpers.\"\"\"\n\n\ndef add(a: int, b: int) -> int:\n    \"\"\"Return the sum of two integers.\"\"\"\n    return a + b\n"), false),
         f("tests/test_core.py", format!(
 "from {pkg} import add\n\n\ndef test_add() -> None:\n    assert add(2, 3) == 5\n"), false),
+    ]
+}
+
+/// The opinionated Rust stack: cargo fmt + clippy(-D warnings) + test, a library crate,
+/// one canonical `scripts/check.sh` gate, CI, and an AGENTS.md naming the gate.
+pub fn rust_profile() -> StackProfile {
+    StackProfile {
+        id: "rust",
+        display_name: "Rust",
+        files: rust_files,
+        gate_commands: vec!["bash scripts/check.sh".to_string()],
+        post_write: Some(PostWriteStep {
+            program: "cargo".to_string(),
+            args: vec!["generate-lockfile".to_string()],
+            describe: "generate Cargo.lock".to_string(),
+        }),
+    }
+}
+
+fn rust_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
+    let pkg = &ctx.package_name;
+    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+        path: PathBuf::from(path),
+        contents,
+        executable,
+    };
+    vec![
+        f(
+            "Cargo.toml",
+            format!(
+                r#"[package]
+name = "{pkg}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#
+            ),
+            false,
+        ),
+        f(
+            "src/lib.rs",
+            format!(
+                r#"//! The {pkg} library.
+
+/// Return the sum of two integers.
+pub fn add(a: i64, b: i64) -> i64 {{
+    a + b
+}}
+
+#[cfg(test)]
+mod tests {{
+    use super::*;
+
+    #[test]
+    fn adds() {{
+        assert_eq!(add(2, 3), 5);
+    }}
+}}
+"#
+            ),
+            false,
+        ),
+        f(
+            "scripts/check.sh",
+            String::from(
+                r#"#!/usr/bin/env bash
+# The one canonical gate. CI and the agent both run exactly this.
+set -euo pipefail
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+"#,
+            ),
+            true,
+        ),
+        f(
+            ".github/workflows/ci.yml",
+            String::from(
+                r#"name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/check.sh
+"#,
+            ),
+            false,
+        ),
+        f(
+            "AGENTS.md",
+            String::from(
+                r#"# AGENTS.md
+
+Rust project. One command gates every change:
+
+```
+bash scripts/check.sh
+```
+
+Run it before opening a PR; it must exit 0. It runs `cargo fmt --check`, `cargo clippy
+--all-targets -- -D warnings`, and `cargo test`. Formatting is enforced, do not hand-tune
+style, and clippy warnings are hard errors. New functions ship with tests. Work merges into
+`staging`, never `main`.
+
+Layout: library crate under `src/`, tests inline as `#[cfg(test)]` modules or under `tests/`.
+"#,
+            ),
+            false,
+        ),
+        f(".gitignore", String::from("/target/\n"), false),
+    ]
+}
+
+/// The opinionated TypeScript stack: bun + tsc(strict) + bun test, one canonical
+/// `scripts/check.sh` gate, CI, and an AGENTS.md naming the gate.
+pub fn typescript_profile() -> StackProfile {
+    StackProfile {
+        id: "typescript",
+        display_name: "TypeScript",
+        files: typescript_files,
+        gate_commands: vec!["bash scripts/check.sh".to_string()],
+        post_write: Some(PostWriteStep {
+            program: "bun".to_string(),
+            args: vec!["install".to_string()],
+            describe: "generate bun.lock".to_string(),
+        }),
+    }
+}
+
+fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
+    let pkg = &ctx.package_name;
+    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+        path: PathBuf::from(path),
+        contents,
+        executable,
+    };
+    vec![
+        f(
+            "package.json",
+            format!(
+                r#"{{
+  "name": "{pkg}",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {{
+    "check": "tsc --noEmit && bun test"
+  }},
+  "devDependencies": {{
+    "typescript": "^5.7.0",
+    "bun-types": "^1.1.0"
+  }}
+}}
+"#
+            ),
+            false,
+        ),
+        f(
+            "tsconfig.json",
+            String::from(
+                r#"{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2023",
+    "types": ["bun-types"],
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+"#,
+            ),
+            false,
+        ),
+        f(
+            "src/index.ts",
+            String::from(
+                r#"/** Return the sum of two integers. */
+export function add(a: number, b: number): number {
+  return a + b;
+}
+"#,
+            ),
+            false,
+        ),
+        f(
+            "src/index.test.ts",
+            String::from(
+                r#"import { expect, test } from "bun:test";
+import { add } from "./index";
+
+test("add", () => {
+  expect(add(2, 3)).toBe(5);
+});
+"#,
+            ),
+            false,
+        ),
+        f(
+            "scripts/check.sh",
+            String::from(
+                r#"#!/usr/bin/env bash
+# The one canonical gate. CI and the agent both run exactly this.
+set -euo pipefail
+# Prefer the locked, reproducible install; fall back if there is no lockfile yet (e.g.
+# `bun install` was unavailable at scaffold time).
+bun install --frozen-lockfile 2>/dev/null || bun install
+bunx tsc --noEmit
+bun test
+"#,
+            ),
+            true,
+        ),
+        f(
+            ".github/workflows/ci.yml",
+            String::from(
+                r#"name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bash scripts/check.sh
+"#,
+            ),
+            false,
+        ),
+        f(
+            "AGENTS.md",
+            String::from(
+                r#"# AGENTS.md
+
+TypeScript project (Bun). One command gates every change:
+
+```
+bash scripts/check.sh
+```
+
+Run it before opening a PR; it must exit 0. It installs dependencies, then runs `tsc
+--noEmit` (strict type-check) and `bun test`. Types are enforced under `strict` plus
+`noUncheckedIndexedAccess`; do not loosen them. New functions ship with tests in `src/`.
+Work merges into `staging`, never `main`.
+
+Layout: source and colocated `*.test.ts` under `src/`.
+"#,
+            ),
+            false,
+        ),
+        f(".gitignore", String::from("node_modules/\n"), false),
+    ]
+}
+
+/// The opinionated Go stack: gofmt + go vet + go test, one canonical `scripts/check.sh`
+/// gate, CI, and an AGENTS.md naming the gate.
+pub fn go_profile() -> StackProfile {
+    StackProfile {
+        id: "go",
+        display_name: "Go",
+        files: go_files,
+        gate_commands: vec!["bash scripts/check.sh".to_string()],
+        post_write: None,
+    }
+}
+
+fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
+    let pkg = &ctx.package_name;
+    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+        path: PathBuf::from(path),
+        contents,
+        executable,
+    };
+    // Go source is tab-indented (gofmt enforces it), so these use explicit `\t`.
+    vec![
+        f(
+            "go.mod",
+            format!("module example.com/{pkg}\n\ngo 1.23\n"),
+            false,
+        ),
+        f(
+            &format!("{pkg}.go"),
+            format!(
+                "// Package {pkg} is a small library.\npackage {pkg}\n\n\
+             // Add returns the sum of two integers.\nfunc Add(a, b int) int {{\n\
+             \treturn a + b\n}}\n"
+            ),
+            false,
+        ),
+        f(
+            &format!("{pkg}_test.go"),
+            format!(
+                "package {pkg}\n\nimport \"testing\"\n\n\
+             func TestAdd(t *testing.T) {{\n\
+             \tif got := Add(2, 3); got != 5 {{\n\
+             \t\tt.Errorf(\"Add(2, 3) = %d, want 5\", got)\n\
+             \t}}\n}}\n"
+            ),
+            false,
+        ),
+        f(
+            "scripts/check.sh",
+            String::from(
+                r#"#!/usr/bin/env bash
+# The one canonical gate. CI and the agent both run exactly this.
+set -euo pipefail
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "gofmt needs to run on:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+go vet ./...
+go test ./...
+"#,
+            ),
+            true,
+        ),
+        f(
+            ".github/workflows/ci.yml",
+            String::from(
+                r#"name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: bash scripts/check.sh
+"#,
+            ),
+            false,
+        ),
+        f(
+            "AGENTS.md",
+            String::from(
+                r#"# AGENTS.md
+
+Go project. One command gates every change:
+
+```
+bash scripts/check.sh
+```
+
+Run it before opening a PR; it must exit 0. It checks `gofmt` (no unformatted files), then
+runs `go vet ./...` and `go test ./...`. Formatting is enforced by gofmt, do not hand-tune
+style. New functions ship with `*_test.go` tests. Work merges into `staging`, never `main`.
+
+Layout: package sources at the module root, tests as `*_test.go` beside them.
+"#,
+            ),
+            false,
+        ),
+        f(".gitignore", String::from("*.exe\n*.test\n*.out\n"), false),
     ]
 }
 
@@ -322,8 +703,134 @@ mod tests {
     }
 
     #[test]
-    fn available_stacks_lists_python() {
-        assert!(available_stacks().iter().any(|s| s.id == "python"));
+    fn available_stacks_lists_every_language_profile() {
+        let ids: Vec<&str> = available_stacks().iter().map(|s| s.id).collect();
+        for id in ["python", "rust", "typescript", "go"] {
+            assert!(ids.contains(&id), "available_stacks missing {id}");
+        }
+    }
+
+    /// Every profile shares the uniform canonical gate and emits the four agent-facing
+    /// contract files (the gate, CI, AGENTS.md, .gitignore), each executable-correct.
+    #[test]
+    fn every_profile_emits_the_uniform_contract() {
+        for profile in available_stacks() {
+            let id = profile.id;
+            assert_eq!(
+                profile.gate_commands,
+                vec!["bash scripts/check.sh".to_string()],
+                "{id} gate is not the canonical scripts/check.sh"
+            );
+            let files = (profile.files)(&ctx());
+            let by_path = |rel: &str| {
+                files
+                    .iter()
+                    .find(|f| f.path == std::path::Path::new(rel))
+                    .unwrap_or_else(|| panic!("{id} missing {rel}"))
+            };
+            let check = by_path("scripts/check.sh");
+            assert!(check.executable, "{id} scripts/check.sh must be executable");
+            assert!(
+                check.contents.starts_with("#!/usr/bin/env bash"),
+                "{id} scripts/check.sh must be a bash script"
+            );
+            let ci = &by_path(".github/workflows/ci.yml").contents;
+            assert!(
+                ci.contains("bash scripts/check.sh"),
+                "{id} CI must run the canonical gate"
+            );
+            let agents = &by_path("AGENTS.md").contents;
+            assert!(
+                agents.contains("bash scripts/check.sh"),
+                "{id} AGENTS.md must name the canonical gate"
+            );
+            assert!(
+                agents.contains("`staging`"),
+                "{id} AGENTS.md must state the staging convention"
+            );
+            by_path(".gitignore");
+        }
+    }
+
+    #[test]
+    fn rust_profile_emits_the_opinionated_stack() {
+        let files = (rust_profile().files)(&ctx());
+        let by_path = |rel: &str| {
+            files
+                .iter()
+                .find(|f| f.path == std::path::Path::new(rel))
+                .unwrap_or_else(|| panic!("missing {rel}"))
+        };
+        assert!(by_path("Cargo.toml")
+            .contents
+            .contains("name = \"my_repo\""));
+        by_path("src/lib.rs");
+        let check = &by_path("scripts/check.sh").contents;
+        for needle in [
+            "cargo fmt --check",
+            "cargo clippy --all-targets -- -D warnings",
+            "cargo test",
+        ] {
+            assert!(check.contains(needle), "rust check.sh missing {needle}");
+        }
+        assert!(by_path(".github/workflows/ci.yml")
+            .contents
+            .contains("dtolnay/rust-toolchain"));
+    }
+
+    #[test]
+    fn typescript_profile_emits_the_opinionated_stack() {
+        let files = (typescript_profile().files)(&ctx());
+        let by_path = |rel: &str| {
+            files
+                .iter()
+                .find(|f| f.path == std::path::Path::new(rel))
+                .unwrap_or_else(|| panic!("missing {rel}"))
+        };
+        assert!(by_path("package.json")
+            .contents
+            .contains("\"name\": \"my_repo\""));
+        assert!(by_path("tsconfig.json")
+            .contents
+            .contains("\"strict\": true"));
+        by_path("src/index.ts");
+        by_path("src/index.test.ts");
+        let check = &by_path("scripts/check.sh").contents;
+        for needle in ["bun install", "bunx tsc --noEmit", "bun test"] {
+            assert!(check.contains(needle), "ts check.sh missing {needle}");
+        }
+        assert!(by_path(".github/workflows/ci.yml")
+            .contents
+            .contains("oven-sh/setup-bun"));
+    }
+
+    #[test]
+    fn go_profile_emits_the_opinionated_stack() {
+        let files = (go_profile().files)(&ctx());
+        let by_path = |rel: &str| {
+            files
+                .iter()
+                .find(|f| f.path == std::path::Path::new(rel))
+                .unwrap_or_else(|| panic!("missing {rel}"))
+        };
+        assert!(by_path("go.mod")
+            .contents
+            .contains("module example.com/my_repo"));
+        // Go sources are tab-indented (gofmt), never spaces.
+        let src = &by_path("my_repo.go").contents;
+        assert!(
+            src.contains("\treturn a + b"),
+            "go source must be tab-indented"
+        );
+        assert!(src.contains("package my_repo"));
+        by_path("my_repo_test.go");
+        let check = &by_path("scripts/check.sh").contents;
+        for needle in ["gofmt -l .", "go vet ./...", "go test ./..."] {
+            assert!(check.contains(needle), "go check.sh missing {needle}");
+        }
+        assert!(by_path(".github/workflows/ci.yml")
+            .contents
+            .contains("actions/setup-go"));
     }
 
     #[test]
@@ -465,12 +972,16 @@ mod tests {
     #[test]
     #[ignore = "live: needs uv, ruff, mypy, pytest reachable via uv on PATH"]
     fn python_scaffold_passes_its_own_gate() {
+        assert_scaffold_passes_its_own_gate(&python_profile());
+    }
+
+    /// Emit `profile` into a temp dir (running its real post-write) and run its
+    /// `scripts/check.sh`, asserting a green first run. This is the only check that proves
+    /// a generated repo is green on its first CI, which content-only assertions cannot.
+    fn assert_scaffold_passes_its_own_gate(profile: &StackProfile) {
         let dir = tempfile::tempdir().unwrap();
         let c = ctx();
-        scaffold(dir.path(), &python_profile(), &c, &|s| {
-            run_post_write(dir.path(), s)
-        })
-        .unwrap();
+        scaffold(dir.path(), profile, &c, &|s| run_post_write(dir.path(), s)).unwrap();
         let out = std::process::Command::new("bash")
             .arg("scripts/check.sh")
             .current_dir(dir.path())
@@ -478,9 +989,28 @@ mod tests {
             .expect("run scripts/check.sh");
         assert!(
             out.status.success(),
-            "the emitted Python scaffold failed its own gate\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            "the emitted {} scaffold failed its own gate\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            profile.display_name,
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    #[test]
+    #[ignore = "live: needs a cargo toolchain with rustfmt + clippy on PATH"]
+    fn rust_scaffold_passes_its_own_gate() {
+        assert_scaffold_passes_its_own_gate(&rust_profile());
+    }
+
+    #[test]
+    #[ignore = "live: needs bun (and network for `bun install`) on PATH"]
+    fn typescript_scaffold_passes_its_own_gate() {
+        assert_scaffold_passes_its_own_gate(&typescript_profile());
+    }
+
+    #[test]
+    #[ignore = "live: needs a go toolchain (gofmt, go) on PATH"]
+    fn go_scaffold_passes_its_own_gate() {
+        assert_scaffold_passes_its_own_gate(&go_profile());
     }
 }
