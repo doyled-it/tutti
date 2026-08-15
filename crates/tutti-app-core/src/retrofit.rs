@@ -337,6 +337,74 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
     plan
 }
 
+use std::io::Write as _;
+
+/// What `apply_retrofit` wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetrofitReport {
+    pub written: Vec<PathBuf>,
+    pub merged: Vec<PathBuf>,
+    pub gitignore_appended: usize,
+}
+
+/// Apply a confirmed plan to disk. Creates parent dirs, sets the executable bit on the
+/// gate, writes merged config files in place, and appends the missing .gitignore lines.
+/// Call only after the operator has confirmed the plan.
+pub fn apply_retrofit(dir: &Path, plan: &RetrofitPlan) -> std::io::Result<RetrofitReport> {
+    let mut report = RetrofitReport::default();
+    for file in &plan.adds {
+        let abs = dir.join(&file.path);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&abs, &file.contents)?;
+        #[cfg(unix)]
+        if file.executable {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o755))?;
+        }
+        report.written.push(file.path.clone());
+    }
+    for merge in &plan.merges {
+        std::fs::write(dir.join(&merge.path), &merge.new_contents)?;
+        report.merged.push(merge.path.clone());
+    }
+    if !plan.gitignore_append.is_empty() {
+        let gi = dir.join(".gitignore");
+        // If the file exists without a trailing newline, add one first so the first
+        // appended line does not join the last existing line.
+        let needs_leading_newline = match std::fs::read_to_string(&gi) {
+            Ok(s) => !s.is_empty() && !s.ends_with('\n'),
+            Err(_) => false,
+        };
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gi)?;
+        if needs_leading_newline {
+            writeln!(f)?;
+        }
+        for line in &plan.gitignore_append {
+            writeln!(f, "{line}")?;
+        }
+        report.gitignore_appended = plan.gitignore_append.len();
+    }
+    Ok(report)
+}
+
+/// Build the profile's gate and run it once under `dir`, returning the pass flag and the
+/// combined log for the baseline report. Async because the engine's Gate runs processes.
+pub async fn run_baseline_gate(
+    dir: &Path,
+    profile: &StackProfile,
+) -> tutti_core::traits::Result<tutti_core::gate::GateOutcome> {
+    let gate = tutti_core::gate::Gate {
+        commands: profile.gate_commands.clone(),
+        working_dir: PathBuf::new(),
+    };
+    gate.run(dir).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +650,37 @@ mod tests {
     #[test]
     fn merge_package_json_returns_none_on_unparseable_input() {
         assert!(merge_package_json("{ not valid").is_none());
+    }
+
+    #[test]
+    fn apply_writes_adds_merges_and_appends_gitignore() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("pyproject.toml"), "[project]\nname='x'\n").unwrap();
+        std::fs::write(d.path().join(".gitignore"), "custom/\n").unwrap();
+        let profile = stack_profile("python").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        let report = apply_retrofit(d.path(), &plan).unwrap();
+
+        assert!(d.path().join("scripts/check.sh").exists());
+        assert!(d.path().join("AGENTS.md").exists());
+        let pp = std::fs::read_to_string(d.path().join("pyproject.toml")).unwrap();
+        assert!(pp.contains("[tool.ruff]"));
+        assert!(pp.contains("name='x'") || pp.contains("name = 'x'"));
+        let gi = std::fs::read_to_string(d.path().join(".gitignore")).unwrap();
+        assert!(gi.contains("custom/"));
+        assert!(gi.contains(".ruff_cache/"));
+        assert!(!report.written.is_empty());
+    }
+
+    #[test]
+    fn apply_is_idempotent_a_second_plan_is_empty() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        let profile = stack_profile("rust").unwrap();
+        apply_retrofit(d.path(), &plan_retrofit(d.path(), &profile, &ctx())).unwrap();
+        let second = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(second.adds.is_empty(), "no new adds on a retrofitted repo");
+        assert!(second.merges.is_empty(), "no new merges");
+        assert!(second.gitignore_append.is_empty(), "no new ignore lines");
     }
 }
