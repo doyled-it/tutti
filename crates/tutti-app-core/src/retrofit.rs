@@ -24,6 +24,18 @@ pub fn detect_languages(dir: &Path) -> Vec<String> {
     out
 }
 
+/// The ignore lines from `wanted` not already present in `existing` (exact match after
+/// trimming each existing line), in `wanted` order. Used to append-merge a `.gitignore`
+/// without disturbing what is already there.
+pub fn gitignore_missing_lines(existing: &str, wanted: &[&str]) -> Vec<String> {
+    let present: std::collections::HashSet<&str> = existing.lines().map(|l| l.trim()).collect();
+    wanted
+        .iter()
+        .filter(|w| !present.contains(w.trim()))
+        .map(|w| w.to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +80,32 @@ mod tests {
     fn multiple_languages_are_all_reported() {
         let d = dir_with(&["Cargo.toml", "go.mod"]);
         assert_eq!(detect_languages(d.path()), vec!["rust", "go"]);
+    }
+
+    #[test]
+    fn gitignore_returns_only_missing_lines_preserving_order() {
+        let existing = "target/\n.venv/\n";
+        let wanted = ["target/", ".venv/", "__pycache__/", ".ruff_cache/"];
+        assert_eq!(
+            gitignore_missing_lines(existing, &wanted),
+            vec!["__pycache__/".to_string(), ".ruff_cache/".to_string()]
+        );
+    }
+
+    #[test]
+    fn gitignore_ignores_surrounding_whitespace_when_matching() {
+        let existing = "  target/  \n";
+        assert_eq!(
+            gitignore_missing_lines(existing, &["target/"]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn gitignore_wants_all_when_file_is_empty() {
+        assert_eq!(
+            gitignore_missing_lines("", &["a", "b"]),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 }
