@@ -166,9 +166,13 @@ describe("validateAll", () => {
 });
 
 describe("stack step", () => {
-  it("STACKS includes python and an explicit opt-out", () => {
-    expect(STACKS.map((s) => s.id)).toContain("python");
-    expect(STACKS.map((s) => s.id)).toContain("none");
+  it("STACKS includes every language profile and an explicit opt-out", () => {
+    const ids = STACKS.map((s) => s.id);
+    expect(ids).toContain("python");
+    expect(ids).toContain("rust");
+    expect(ids).toContain("typescript");
+    expect(ids).toContain("go");
+    expect(ids).toContain("none");
   });
 
   it("sits right after repo when repo is asked", () => {

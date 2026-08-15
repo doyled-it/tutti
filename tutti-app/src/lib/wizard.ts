@@ -49,6 +49,9 @@ export const KNOWN_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku
 /** The opinionated stacks the wizard offers, plus an explicit opt-out. */
 export const STACKS = [
   { id: "python", label: "Python (uv, ruff, mypy, pytest)" },
+  { id: "rust", label: "Rust (cargo fmt, clippy, test)" },
+  { id: "typescript", label: "TypeScript (bun, tsc, bun test)" },
+  { id: "go", label: "Go (gofmt, vet, test)" },
   { id: "none", label: "None (I'll wire it myself)" },
 ] as const;
 
