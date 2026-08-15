@@ -123,25 +123,66 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
 
 use serde_json::{Map, Value};
 
-/// Strip `//` line comments so a JSONC `tsconfig.json` parses. Block comments are rare in
-/// tsconfig; a merged output is re-serialized without comments (a reformat the plan surfaces).
+/// Strip JSONC comments (`//` line and `/* */` block) that are OUTSIDE string literals, so a
+/// real `tsconfig.json` parses. String contents are preserved, including `//` inside a value
+/// such as an `https://` schema URL (a naive scan would corrupt those).
 fn strip_jsonc(input: &str) -> String {
-    input
-        .lines()
-        .map(|l| match l.find("//") {
-            Some(i) => &l[..i],
-            None => l,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                // Line comment: consume through the newline (keep the newline).
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next(); // consume the '*'
+                              // Block comment: consume through the closing '*/'.
+                let mut prev = '\0';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
-/// A nested value coerced to an object (an absent or non-object nested field becomes an
-/// empty object we then fill). The ROOT is guarded separately (see `json_root_object`).
-fn object_or_new(v: Value) -> Map<String, Value> {
+/// A nested object field: `Some(map)` when the field is absent/null (start fresh) or already
+/// an object; `None` when it is present as a NON-object. Returning `None` lets the caller bail
+/// (leave the whole file untouched), matching the TOML merger's `ensure_table` guard, rather
+/// than silently discarding the user's value.
+fn nested_object(v: Option<Value>) -> Option<Map<String, Value>> {
     match v {
-        Value::Object(m) => m,
-        _ => Map::new(),
+        None | Some(Value::Null) => Some(Map::new()),
+        Some(Value::Object(m)) => Some(m),
+        Some(_) => None,
     }
 }
 
@@ -160,7 +201,7 @@ fn json_root_object(parsed: Result<Value, serde_json::Error>) -> Option<Map<Stri
 /// (leave the file untouched) if the existing content is not a JSON object.
 pub fn merge_tsconfig(existing: &str) -> Option<String> {
     let mut root = json_root_object(serde_json::from_str(&strip_jsonc(existing)))?;
-    let mut co = object_or_new(root.remove("compilerOptions").unwrap_or(Value::Null));
+    let mut co = nested_object(root.remove("compilerOptions"))?;
     for (k, v) in [
         ("strict", Value::Bool(true)),
         ("noUncheckedIndexedAccess", Value::Bool(true)),
@@ -185,13 +226,13 @@ pub fn merge_tsconfig(existing: &str) -> Option<String> {
 pub fn merge_package_json(existing: &str) -> Option<String> {
     let mut root = json_root_object(serde_json::from_str(existing))?;
 
-    let mut scripts = object_or_new(root.remove("scripts").unwrap_or(Value::Null));
+    let mut scripts = nested_object(root.remove("scripts"))?;
     scripts
         .entry("check".to_string())
         .or_insert(Value::String("tsc --noEmit && bun test".into()));
     root.insert("scripts".into(), Value::Object(scripts));
 
-    let mut dev = object_or_new(root.remove("devDependencies").unwrap_or(Value::Null));
+    let mut dev = nested_object(root.remove("devDependencies"))?;
     dev.entry("typescript".to_string())
         .or_insert(Value::String("^5.7.0".into()));
     dev.entry("bun-types".to_string())
@@ -227,25 +268,28 @@ pub struct RetrofitPlan {
     pub already: Vec<PathBuf>,
 }
 
-/// Whether retrofit has a registered merger for this `Config` file. Cargo.toml and go.mod
-/// have none (their gates need no config), so retrofit leaves them untouched.
-fn has_merger(stack_id: &str, path: &Path) -> bool {
-    matches!(
-        (stack_id, path.file_name().and_then(|s| s.to_str())),
-        ("python", Some("pyproject.toml"))
-            | ("typescript", Some("tsconfig.json"))
-            | ("typescript", Some("package.json"))
-    )
+/// The outcome of attempting to merge a `Config` file.
+enum MergeAttempt {
+    /// No registered merger for this file (Cargo.toml, go.mod): leave it untouched.
+    NoMerger,
+    /// The merger ran and produced this content.
+    Merged(String),
+    /// The existing file could not be parsed: leave it untouched, never fabricate over it.
+    Unparseable,
 }
 
-/// Run the registered merger for a `Config` file. Returns `None` when the existing file
-/// cannot be parsed (retrofit then leaves it untouched, never fabricating over it).
-fn run_merger(stack_id: &str, path: &Path, existing: &str) -> Option<String> {
-    match (stack_id, path.file_name().and_then(|s| s.to_str())) {
+/// Attempt to merge a `Config` file: dispatch to the registered merger by (stack id, file
+/// name). One match arm is the single source of truth for what has a merger.
+fn merge_config(stack_id: &str, path: &Path, existing: &str) -> MergeAttempt {
+    let merged = match (stack_id, path.file_name().and_then(|s| s.to_str())) {
         ("python", Some("pyproject.toml")) => merge_pyproject(existing),
         ("typescript", Some("tsconfig.json")) => merge_tsconfig(existing),
         ("typescript", Some("package.json")) => merge_package_json(existing),
-        _ => None,
+        _ => return MergeAttempt::NoMerger,
+    };
+    match merged {
+        Some(s) => MergeAttempt::Merged(s),
+        None => MergeAttempt::Unparseable,
     }
 }
 
@@ -308,13 +352,11 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
                     plan.adds.push(file);
                     continue;
                 }
-                if !has_merger(profile.id, &file.path) {
-                    plan.already.push(file.path.clone());
-                    continue;
-                }
                 let existing = std::fs::read_to_string(&abs).unwrap_or_default();
-                match run_merger(profile.id, &file.path, &existing) {
-                    Some(new_contents) if new_contents != existing => {
+                match merge_config(profile.id, &file.path, &existing) {
+                    // Config with no merger (Cargo.toml/go.mod): intentionally untouched.
+                    MergeAttempt::NoMerger => plan.already.push(file.path.clone()),
+                    MergeAttempt::Merged(new_contents) if new_contents != existing => {
                         let diff = simple_diff(&existing, &new_contents);
                         plan.merges.push(ConfigMerge {
                             path: file.path.clone(),
@@ -322,8 +364,10 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
                             diff,
                         });
                     }
-                    Some(_) => plan.already.push(file.path.clone()),
-                    None => plan.skipped.push(SkipReason {
+                    // Already satisfies our config: nothing to do.
+                    MergeAttempt::Merged(_) => plan.already.push(file.path.clone()),
+                    // Could not parse: leave untouched and report, never fabricate over it.
+                    MergeAttempt::Unparseable => plan.skipped.push(SkipReason {
                         path: file.path.clone(),
                         why: "could not parse; left untouched".into(),
                     }),
@@ -611,6 +655,35 @@ mod tests {
     fn merge_pyproject_returns_none_on_unparseable_input_never_fabricating() {
         // A malformed pyproject must not be silently replaced with a fresh file.
         assert!(merge_pyproject("this is not [[[ valid toml = = \"unterminated").is_none());
+    }
+
+    #[test]
+    fn merge_tsconfig_preserves_a_url_string_containing_double_slash() {
+        let out = merge_tsconfig(
+            "{\n  \"compilerOptions\": {},\n  \"$schema\": \"https://json.schemastore.org/tsconfig\"\n}",
+        )
+        .unwrap();
+        assert!(out.contains("https://json.schemastore.org/tsconfig"));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["compilerOptions"]["strict"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn merge_tsconfig_ignores_a_real_line_comment() {
+        let out = merge_tsconfig("{\n  // editor comment\n  \"compilerOptions\": {}\n}").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["compilerOptions"]["strict"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn merge_tsconfig_returns_none_when_compiler_options_is_not_an_object() {
+        // A present-but-non-object field must NOT be silently discarded.
+        assert!(merge_tsconfig("{\"compilerOptions\": \"weird\"}").is_none());
+    }
+
+    #[test]
+    fn merge_package_json_returns_none_when_scripts_is_not_an_object() {
+        assert!(merge_package_json("{\"scripts\": \"weird\"}").is_none());
     }
 
     #[test]
