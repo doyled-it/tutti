@@ -4,7 +4,7 @@
 
 mod retrofit;
 mod scaffold;
-pub use retrofit::detect_languages;
+pub use retrofit::{detect_languages, plan_retrofit, ConfigMerge, RetrofitPlan, SkipReason};
 pub use scaffold::{
     available_stacks, package_name, run_post_write, scaffold, stack_profile, PostWriteRunner,
     PostWriteStep, ScaffoldContext, ScaffoldFile, ScaffoldReport, StackProfile,

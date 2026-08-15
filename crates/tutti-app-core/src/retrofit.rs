@@ -2,9 +2,11 @@
 //! Retrofit an existing repo: detect its language, install the opinionated rails
 //! additively, merge our config into existing config files, and report the baseline gap.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use toml_edit::{value, Array, DocumentMut, Item, Table};
+
+use crate::scaffold::{FileRole, ScaffoldContext, ScaffoldFile, StackProfile};
 
 /// The stack ids retrofit can detect, in a stable order. Each maps to a `StackProfile`
 /// id in `scaffold.rs`.
@@ -199,9 +201,230 @@ pub fn merge_package_json(existing: &str) -> Option<String> {
     Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
 }
 
+/// A config file that exists and will be merged, with a preview diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigMerge {
+    pub path: PathBuf,
+    pub new_contents: String,
+    /// A unified diff old -> new for the operator to confirm.
+    pub diff: String,
+}
+
+/// A tooling file skipped because it already exists (reported, never overwritten).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkipReason {
+    pub path: PathBuf,
+    pub why: String,
+}
+
+/// The computed, not-yet-applied retrofit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetrofitPlan {
+    pub adds: Vec<ScaffoldFile>,
+    pub merges: Vec<ConfigMerge>,
+    pub gitignore_append: Vec<String>,
+    pub skipped: Vec<SkipReason>,
+    pub already: Vec<PathBuf>,
+}
+
+/// Whether retrofit has a registered merger for this `Config` file. Cargo.toml and go.mod
+/// have none (their gates need no config), so retrofit leaves them untouched.
+fn has_merger(stack_id: &str, path: &Path) -> bool {
+    matches!(
+        (stack_id, path.file_name().and_then(|s| s.to_str())),
+        ("python", Some("pyproject.toml"))
+            | ("typescript", Some("tsconfig.json"))
+            | ("typescript", Some("package.json"))
+    )
+}
+
+/// Run the registered merger for a `Config` file. Returns `None` when the existing file
+/// cannot be parsed (retrofit then leaves it untouched, never fabricating over it).
+fn run_merger(stack_id: &str, path: &Path, existing: &str) -> Option<String> {
+    match (stack_id, path.file_name().and_then(|s| s.to_str())) {
+        ("python", Some("pyproject.toml")) => merge_pyproject(existing),
+        ("typescript", Some("tsconfig.json")) => merge_tsconfig(existing),
+        ("typescript", Some("package.json")) => merge_package_json(existing),
+        _ => None,
+    }
+}
+
+/// A minimal line-level +/- diff for the preview. Deliberately simple: it exists to let the
+/// operator see what changes, not to be a patch tool.
+fn simple_diff(old: &str, new: &str) -> String {
+    if old == new {
+        return String::new();
+    }
+    let mut out = String::new();
+    for line in old.lines() {
+        out.push_str(&format!("- {line}\n"));
+    }
+    for line in new.lines() {
+        out.push_str(&format!("+ {line}\n"));
+    }
+    out
+}
+
+/// The ignore lines each stack wants in `.gitignore`.
+fn gitignore_wants(stack_id: &str) -> &'static [&'static str] {
+    match stack_id {
+        "python" => &[
+            "__pycache__/",
+            ".venv/",
+            ".pytest_cache/",
+            ".mypy_cache/",
+            ".ruff_cache/",
+        ],
+        "rust" => &["/target/"],
+        "typescript" => &["node_modules/"],
+        "go" => &["*.exe", "*.test", "*.out"],
+        _ => &[],
+    }
+}
+
+/// Compute the retrofit for `profile` against `dir` without writing anything.
+pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) -> RetrofitPlan {
+    let mut plan = RetrofitPlan::default();
+    for file in (profile.files)(ctx) {
+        let abs = dir.join(&file.path);
+        let exists = abs.exists();
+        match file.role {
+            FileRole::Sample => {}
+            FileRole::Tooling => {
+                if file.path == Path::new(".gitignore") {
+                    continue;
+                }
+                if exists {
+                    plan.skipped.push(SkipReason {
+                        path: file.path.clone(),
+                        why: "already present; left untouched".into(),
+                    });
+                } else {
+                    plan.adds.push(file);
+                }
+            }
+            FileRole::Config => {
+                if !exists {
+                    plan.adds.push(file);
+                    continue;
+                }
+                if !has_merger(profile.id, &file.path) {
+                    plan.already.push(file.path.clone());
+                    continue;
+                }
+                let existing = std::fs::read_to_string(&abs).unwrap_or_default();
+                match run_merger(profile.id, &file.path, &existing) {
+                    Some(new_contents) if new_contents != existing => {
+                        let diff = simple_diff(&existing, &new_contents);
+                        plan.merges.push(ConfigMerge {
+                            path: file.path.clone(),
+                            new_contents,
+                            diff,
+                        });
+                    }
+                    Some(_) => plan.already.push(file.path.clone()),
+                    None => plan.skipped.push(SkipReason {
+                        path: file.path.clone(),
+                        why: "could not parse; left untouched".into(),
+                    }),
+                }
+            }
+        }
+    }
+    let gi_path = dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
+    plan.gitignore_append = gitignore_missing_lines(&existing, gitignore_wants(profile.id));
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scaffold::{package_name, stack_profile, ScaffoldContext};
+
+    fn ctx() -> ScaffoldContext {
+        ScaffoldContext {
+            repo_name: "legacy".into(),
+            package_name: package_name("legacy"),
+        }
+    }
+
+    #[test]
+    fn plan_excludes_sample_files_and_adds_only_missing_tooling() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("pyproject.toml"), "[project]\nname='x'\n").unwrap();
+        let profile = stack_profile("python").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(plan
+            .adds
+            .iter()
+            .all(|f| f.path != std::path::Path::new("src/legacy/core.py")));
+        assert!(plan
+            .adds
+            .iter()
+            .any(|f| f.path == std::path::Path::new("scripts/check.sh")));
+        assert!(plan
+            .merges
+            .iter()
+            .any(|m| m.path == std::path::Path::new("pyproject.toml")));
+        assert!(plan
+            .adds
+            .iter()
+            .all(|f| f.path != std::path::Path::new("pyproject.toml")));
+    }
+
+    #[test]
+    fn plan_skips_a_tooling_file_that_already_exists() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        std::fs::create_dir_all(d.path().join("scripts")).unwrap();
+        std::fs::write(d.path().join("scripts/check.sh"), "own\n").unwrap();
+        let profile = stack_profile("rust").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(plan
+            .skipped
+            .iter()
+            .any(|s| s.path == std::path::Path::new("scripts/check.sh")));
+        assert!(plan
+            .adds
+            .iter()
+            .all(|f| f.path != std::path::Path::new("scripts/check.sh")));
+    }
+
+    #[test]
+    fn plan_skips_an_unparseable_config_instead_of_clobbering_it() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("pyproject.toml"),
+            "this is [[[ not valid = =\n",
+        )
+        .unwrap();
+        let profile = stack_profile("python").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(plan
+            .skipped
+            .iter()
+            .any(|s| s.path == std::path::Path::new("pyproject.toml")));
+        assert!(plan
+            .merges
+            .iter()
+            .all(|m| m.path != std::path::Path::new("pyproject.toml")));
+    }
+
+    #[test]
+    fn plan_leaves_a_config_with_no_merger_in_already() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        let profile = stack_profile("rust").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(plan
+            .already
+            .contains(&std::path::PathBuf::from("Cargo.toml")));
+        assert!(plan
+            .merges
+            .iter()
+            .all(|m| m.path != Path::new("Cargo.toml")));
+    }
 
     fn dir_with(files: &[&str]) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
