@@ -27,6 +27,9 @@ fn print_plan(plan: &RetrofitPlan) -> bool {
         println!("\nMerge (your file is edited; diff below):");
         for m in &plan.merges {
             println!("  ~ {}", m.path.display());
+            if let Some(note) = &m.note {
+                println!("      note: {note}");
+            }
             for line in m.diff.lines() {
                 println!("      {line}");
             }
@@ -42,6 +45,12 @@ fn print_plan(plan: &RetrofitPlan) -> bool {
         println!("\nSkip (already present, left untouched):");
         for s in &plan.skipped {
             println!("  = {} ({})", s.path.display(), s.why);
+        }
+    }
+    if !plan.already.is_empty() {
+        println!("\nAlready configured (left untouched):");
+        for p in &plan.already {
+            println!("  = {}", p.display());
         }
     }
     anything

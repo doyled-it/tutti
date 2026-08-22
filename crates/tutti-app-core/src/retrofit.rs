@@ -43,13 +43,26 @@ pub fn gitignore_missing_lines(existing: &str, wanted: &[&str]) -> Vec<String> {
 /// Ensure the table at `path` exists (creating intermediate tables), returning it.
 /// `None` if an existing segment is present but is not a table (e.g. an inline table),
 /// so the caller can bail out without fabricating or clobbering anything.
+///
+/// A parent table this call creates (an intermediate, never the leaf we write keys into,
+/// and never a pre-existing table that may hold the user's own keys) is marked implicit,
+/// so the merged file does not sprout an empty `[tool]` / `[tool.pytest]` header.
 fn ensure_table<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+    if path.is_empty() {
+        return Some(doc.as_table_mut());
+    }
+    let last = path.len() - 1;
     let mut tbl = doc.as_table_mut();
-    for key in path {
-        tbl = tbl
+    for (idx, key) in path.iter().enumerate() {
+        let existed = tbl.contains_key(key);
+        let child = tbl
             .entry(key)
             .or_insert_with(|| Item::Table(Table::new()))
             .as_table_mut()?;
+        if !existed && idx != last {
+            child.set_implicit(true);
+        }
+        tbl = child;
     }
     Some(tbl)
 }
@@ -64,15 +77,23 @@ fn set_if_absent(tbl: &mut Table, key: &str, val: toml_edit::Value) {
 /// Ensure `key` is a string array containing every element of `wanted` (union: adds the
 /// missing ones, drops nothing). Only mutates when something is actually missing, so an
 /// already-complete array is left byte-identical (idempotency).
-fn ensure_str_array(tbl: &mut Table, key: &str, wanted: &[&str]) {
+///
+/// Returns `None` if `key` is present but is NOT an array. Our array keys (`extend-select`,
+/// the dev group) are opinion-defining, so a wrong-shaped value means we cannot enforce our
+/// floor: the caller bails and leaves the whole file untouched rather than silently keeping
+/// the user's value while rewriting the rest (which would report a false "merged" state).
+fn ensure_str_array(tbl: &mut Table, key: &str, wanted: &[&str]) -> Option<()> {
+    if tbl.contains_key(key) && tbl.get(key).and_then(|i| i.as_array()).is_none() {
+        return None;
+    }
     let item = tbl.entry(key).or_insert(value(Array::new()));
-    if let Some(arr) = item.as_array_mut() {
-        for w in wanted {
-            if !arr.iter().any(|v| v.as_str() == Some(*w)) {
-                arr.push(*w);
-            }
+    let arr = item.as_array_mut()?;
+    for w in wanted {
+        if !arr.iter().any(|v| v.as_str() == Some(*w)) {
+            arr.push(*w);
         }
     }
+    Some(())
 }
 
 /// Merge Sotto's opinionated Python config into an existing `pyproject.toml`, preserving
@@ -87,7 +108,7 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
 
     // [dependency-groups] dev: union our tools in.
     let dg = ensure_table(&mut doc, &["dependency-groups"])?;
-    ensure_str_array(dg, "dev", &["ruff", "mypy", "pytest"]);
+    ensure_str_array(dg, "dev", &["ruff", "mypy", "pytest"])?;
 
     // [tool.ruff]: line-length + target-version are additive (cosmetic).
     let ruff = ensure_table(&mut doc, &["tool", "ruff"])?;
@@ -95,7 +116,7 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
     set_if_absent(ruff, "target-version", "py313".into());
     // [tool.ruff.lint]: enforce our lint selection (union, so a floor not a cap).
     let lint = ensure_table(&mut doc, &["tool", "ruff", "lint"])?;
-    ensure_str_array(lint, "extend-select", &["I", "UP", "B", "SIM", "RUF"]);
+    ensure_str_array(lint, "extend-select", &["I", "UP", "B", "SIM", "RUF"])?;
 
     // [tool.mypy]: enforce strict = true (opinion-defining); python_version additive.
     let mypy = ensure_table(&mut doc, &["tool", "mypy"])?;
@@ -174,16 +195,49 @@ fn strip_jsonc(input: &str) -> String {
     out
 }
 
-/// A nested object field: `Some(map)` when the field is absent/null (start fresh) or already
-/// an object; `None` when it is present as a NON-object. Returning `None` lets the caller bail
-/// (leave the whole file untouched), matching the TOML merger's `ensure_table` guard, rather
-/// than silently discarding the user's value.
-fn nested_object(v: Option<Value>) -> Option<Map<String, Value>> {
-    match v {
-        None | Some(Value::Null) => Some(Map::new()),
-        Some(Value::Object(m)) => Some(m),
-        Some(_) => None,
+/// Remove trailing commas (a comma whose next non-whitespace character is `}` or `]`) that
+/// are OUTSIDE string literals, so a real, comma-trailing `tsconfig.json` parses as JSON.
+/// Trailing commas are legal JSONC and idiomatic in editor-generated tsconfig files.
+fn strip_trailing_commas(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ',' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && (chars[j] == '}' || chars[j] == ']') {
+                i += 1; // drop this trailing comma
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
     }
+    out
 }
 
 /// The root object of a JSON document, or `None` if it does not parse as a JSON object.
@@ -196,49 +250,81 @@ fn json_root_object(parsed: Result<Value, serde_json::Error>) -> Option<Map<Stri
     }
 }
 
+/// Ensure `root[key]` is a JSON object, mutating IN PLACE so an existing key keeps its
+/// position (serde_json's `preserve_order` feature holds insertion order). Returns `None`
+/// if the key is present as a non-object, non-null value, so the caller bails and leaves
+/// the whole file untouched rather than discarding the user's value.
+fn ensure_object<'a>(
+    root: &'a mut Map<String, Value>,
+    key: &str,
+) -> Option<&'a mut Map<String, Value>> {
+    match root.get(key) {
+        Some(Value::Object(_)) | Some(Value::Null) | None => {}
+        Some(_) => return None,
+    }
+    let slot = root
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if slot.is_null() {
+        *slot = Value::Object(Map::new());
+    }
+    slot.as_object_mut()
+}
+
+/// Parse a `tsconfig.json` as JSONC (comments and trailing commas tolerated). `None` if it
+/// still does not parse as a JSON object after that.
+fn parse_tsconfig(existing: &str) -> Option<Map<String, Value>> {
+    let cleaned = strip_trailing_commas(&strip_jsonc(existing));
+    json_root_object(serde_json::from_str(&cleaned))
+}
+
 /// Merge Sotto's strict TypeScript compiler flags into an existing `tsconfig.json`.
-/// Enforces the strictness flags; preserves other options; idempotent. Returns `None`
-/// (leave the file untouched) if the existing content is not a JSON object.
+/// Enforces the strictness flags; preserves every other option AND the user's key order;
+/// idempotent. Returns `None` (leave the file untouched) if the existing content is not a
+/// JSON object, or if `compilerOptions` is present as a non-object.
+///
+/// Note: JSON has no comments, so JSONC comments in the source are not carried into the
+/// merged output. `plan_retrofit` surfaces that as a note on the merge so it is not a
+/// silent change; the preview diff shows the removed lines explicitly.
 pub fn merge_tsconfig(existing: &str) -> Option<String> {
-    let mut root = json_root_object(serde_json::from_str(&strip_jsonc(existing)))?;
-    let mut co = nested_object(root.remove("compilerOptions"))?;
-    for (k, v) in [
-        ("strict", Value::Bool(true)),
-        ("noUncheckedIndexedAccess", Value::Bool(true)),
-    ] {
-        co.insert(k.to_string(), v);
+    let mut root = parse_tsconfig(existing)?;
+    {
+        let co = ensure_object(&mut root, "compilerOptions")?;
+        // Opinion-defining strictness flags: enforced (set even over a weaker value).
+        co.insert("strict".into(), Value::Bool(true));
+        co.insert("noUncheckedIndexedAccess".into(), Value::Bool(true));
+        // Additive defaults: only when the user has not set them.
+        for (k, v) in [
+            ("module", Value::String("esnext".into())),
+            ("moduleResolution", Value::String("bundler".into())),
+            ("target", Value::String("es2023".into())),
+            ("skipLibCheck", Value::Bool(true)),
+        ] {
+            co.entry(k.to_string()).or_insert(v);
+        }
     }
-    for (k, v) in [
-        ("module", Value::String("esnext".into())),
-        ("moduleResolution", Value::String("bundler".into())),
-        ("target", Value::String("es2023".into())),
-        ("skipLibCheck", Value::Bool(true)),
-    ] {
-        co.entry(k.to_string()).or_insert(v);
-    }
-    root.insert("compilerOptions".into(), Value::Object(co));
     Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
 }
 
 /// Merge the `typescript` + `bun-types` dev dependencies and the `check` script into an
-/// existing `package.json`, preserving every other field. Idempotent. Returns `None`
-/// (leave the file untouched) if the existing content is not a JSON object.
+/// existing `package.json`, preserving every other field AND the user's key order.
+/// Idempotent. Returns `None` (leave the file untouched) if the existing content is not a
+/// JSON object, or if `scripts`/`devDependencies` is present as a non-object.
 pub fn merge_package_json(existing: &str) -> Option<String> {
     let mut root = json_root_object(serde_json::from_str(existing))?;
-
-    let mut scripts = nested_object(root.remove("scripts"))?;
-    scripts
-        .entry("check".to_string())
-        .or_insert(Value::String("tsc --noEmit && bun test".into()));
-    root.insert("scripts".into(), Value::Object(scripts));
-
-    let mut dev = nested_object(root.remove("devDependencies"))?;
-    dev.entry("typescript".to_string())
-        .or_insert(Value::String("^5.7.0".into()));
-    dev.entry("bun-types".to_string())
-        .or_insert(Value::String("^1.1.0".into()));
-    root.insert("devDependencies".into(), Value::Object(dev));
-
+    {
+        let scripts = ensure_object(&mut root, "scripts")?;
+        scripts
+            .entry("check".to_string())
+            .or_insert(Value::String("tsc --noEmit && bun test".into()));
+    }
+    {
+        let dev = ensure_object(&mut root, "devDependencies")?;
+        dev.entry("typescript".to_string())
+            .or_insert(Value::String("^5.7.0".into()));
+        dev.entry("bun-types".to_string())
+            .or_insert(Value::String("^1.1.0".into()));
+    }
     Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
 }
 
@@ -247,8 +333,11 @@ pub fn merge_package_json(existing: &str) -> Option<String> {
 pub struct ConfigMerge {
     pub path: PathBuf,
     pub new_contents: String,
-    /// A unified diff old -> new for the operator to confirm.
+    /// A line-level diff old -> new for the operator to confirm.
     pub diff: String,
+    /// An optional heads-up about the merge (e.g. JSONC comments not being preserved),
+    /// surfaced in the preview so a reformat is never a silent surprise.
+    pub note: Option<String>,
 }
 
 /// A tooling file skipped because it already exists (reported, never overwritten).
@@ -293,42 +382,106 @@ fn merge_config(stack_id: &str, path: &Path, existing: &str) -> MergeAttempt {
     }
 }
 
-/// A minimal line-level +/- diff for the preview. Deliberately simple: it exists to let the
-/// operator see what changes, not to be a patch tool.
-fn simple_diff(old: &str, new: &str) -> String {
+/// A line-level diff (old -> new) for the operator to confirm: changed lines marked `-`/`+`
+/// with a few lines of surrounding context, and long unchanged runs elided as `  ...`. Empty
+/// when the two are identical. Deliberately a preview aid, not a patch tool.
+fn line_diff(old: &str, new: &str) -> String {
     if old == new {
         return String::new();
     }
-    let mut out = String::new();
-    for line in old.lines() {
-        out.push_str(&format!("- {line}\n"));
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    let (n, m) = (a.len(), b.len());
+    // LCS length table (row n+1 by m+1), filled from the bottom-right.
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
     }
-    for line in new.lines() {
-        out.push_str(&format!("+ {line}\n"));
+    #[derive(PartialEq)]
+    enum Op {
+        Ctx,
+        Del,
+        Add,
+    }
+    let mut ops: Vec<(Op, &str)> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            ops.push((Op::Ctx, a[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            ops.push((Op::Del, a[i]));
+            i += 1;
+        } else {
+            ops.push((Op::Add, b[j]));
+            j += 1;
+        }
+    }
+    while i < n {
+        ops.push((Op::Del, a[i]));
+        i += 1;
+    }
+    while j < m {
+        ops.push((Op::Add, b[j]));
+        j += 1;
+    }
+
+    const CONTEXT: usize = 3;
+    let mut keep = vec![false; ops.len()];
+    for (idx, (op, _)) in ops.iter().enumerate() {
+        if *op != Op::Ctx {
+            let lo = idx.saturating_sub(CONTEXT);
+            let hi = (idx + CONTEXT + 1).min(ops.len());
+            for k in keep.iter_mut().take(hi).skip(lo) {
+                *k = true;
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut elided = false;
+    for (idx, (op, line)) in ops.iter().enumerate() {
+        if !keep[idx] {
+            if !elided {
+                out.push_str("  ...\n");
+                elided = true;
+            }
+            continue;
+        }
+        elided = false;
+        out.push_str(match op {
+            Op::Ctx => "  ",
+            Op::Del => "- ",
+            Op::Add => "+ ",
+        });
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }
 
-/// The ignore lines each stack wants in `.gitignore`.
-fn gitignore_wants(stack_id: &str) -> &'static [&'static str] {
-    match stack_id {
-        "python" => &[
-            "__pycache__/",
-            ".venv/",
-            ".pytest_cache/",
-            ".mypy_cache/",
-            ".ruff_cache/",
-        ],
-        "rust" => &["/target/"],
-        "typescript" => &["node_modules/"],
-        "go" => &["*.exe", "*.test", "*.out"],
-        _ => &[],
+/// A heads-up to attach to a merge when the output cannot round-trip everything in the
+/// source. Today: a JSONC `tsconfig.json` whose comments will not survive the JSON merge.
+fn merge_note(path: &Path, existing: &str) -> Option<String> {
+    let name = path.file_name().and_then(|s| s.to_str())?;
+    if name == "tsconfig.json" && strip_jsonc(existing) != existing {
+        return Some("JSON has no comments; the comments in this file are not preserved.".into());
     }
+    None
 }
 
 /// Compute the retrofit for `profile` against `dir` without writing anything.
 pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) -> RetrofitPlan {
     let mut plan = RetrofitPlan::default();
+    // The profile's own `.gitignore` contents are the single source of truth for the ignore
+    // lines to append (stashed here rather than duplicated in a second table).
+    let mut gitignore_wanted: Vec<String> = Vec::new();
     for file in (profile.files)(ctx) {
         let abs = dir.join(&file.path);
         let exists = abs.exists();
@@ -336,6 +489,12 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
             FileRole::Sample => {}
             FileRole::Tooling => {
                 if file.path == Path::new(".gitignore") {
+                    gitignore_wanted = file
+                        .contents
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| l.to_string())
+                        .collect();
                     continue;
                 }
                 if exists {
@@ -352,21 +511,37 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
                     plan.adds.push(file);
                     continue;
                 }
-                let existing = std::fs::read_to_string(&abs).unwrap_or_default();
+                // A file that exists but cannot be read (a directory, a permission-denied
+                // file, an I/O error) must be left untouched, not treated as empty: an empty
+                // string parses as valid empty TOML, which would fabricate a full config over
+                // the user's real file.
+                let existing = match std::fs::read_to_string(&abs) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        plan.skipped.push(SkipReason {
+                            path: file.path.clone(),
+                            why: "could not read; left untouched".into(),
+                        });
+                        continue;
+                    }
+                };
                 match merge_config(profile.id, &file.path, &existing) {
                     // Config with no merger (Cargo.toml/go.mod): intentionally untouched.
                     MergeAttempt::NoMerger => plan.already.push(file.path.clone()),
                     MergeAttempt::Merged(new_contents) if new_contents != existing => {
-                        let diff = simple_diff(&existing, &new_contents);
+                        let diff = line_diff(&existing, &new_contents);
+                        let note = merge_note(&file.path, &existing);
                         plan.merges.push(ConfigMerge {
                             path: file.path.clone(),
                             new_contents,
                             diff,
+                            note,
                         });
                     }
                     // Already satisfies our config: nothing to do.
                     MergeAttempt::Merged(_) => plan.already.push(file.path.clone()),
-                    // Could not parse: leave untouched and report, never fabricate over it.
+                    // Could not parse (or present as a wrong shape we cannot merge into):
+                    // leave untouched and report, never fabricate or partial-write over it.
                     MergeAttempt::Unparseable => plan.skipped.push(SkipReason {
                         path: file.path.clone(),
                         why: "could not parse; left untouched".into(),
@@ -377,11 +552,10 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
     }
     let gi_path = dir.join(".gitignore");
     let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    plan.gitignore_append = gitignore_missing_lines(&existing, gitignore_wants(profile.id));
+    let wanted: Vec<&str> = gitignore_wanted.iter().map(|s| s.as_str()).collect();
+    plan.gitignore_append = gitignore_missing_lines(&existing, &wanted);
     plan
 }
-
-use std::io::Write as _;
 
 /// What `apply_retrofit` wrote.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -391,46 +565,87 @@ pub struct RetrofitReport {
     pub gitignore_appended: usize,
 }
 
+/// Fail if any component of `rel`'s parent path already exists as a non-directory, so a
+/// blocked path (e.g. `.github` is a file) is caught BEFORE any write, never mid-apply.
+fn preflight_parents(dir: &Path, rel: &Path) -> std::io::Result<()> {
+    let abs = dir.join(rel);
+    let mut cur = abs.parent();
+    while let Some(p) = cur {
+        if p == dir {
+            break;
+        }
+        if p.exists() && !p.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "cannot create {}: {} exists and is not a directory",
+                    rel.display(),
+                    p.display()
+                ),
+            ));
+        }
+        cur = p.parent();
+    }
+    Ok(())
+}
+
+/// Write `contents` to `abs` atomically: write a sibling temp file, set the exec bit if
+/// asked, then rename over the target (an atomic replace on POSIX). A failure mid-write
+/// leaves the original file intact rather than a half-written one.
+fn write_atomic(abs: &Path, contents: &str, executable: bool) -> std::io::Result<()> {
+    let parent = abs.parent().unwrap_or_else(|| Path::new("."));
+    let fname = abs
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tutti".into());
+    let tmp = parent.join(format!(".{fname}.tutti-tmp"));
+    std::fs::write(&tmp, contents)?;
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&tmp, abs)?;
+    Ok(())
+}
+
 /// Apply a confirmed plan to disk. Creates parent dirs, sets the executable bit on the
 /// gate, writes merged config files in place, and appends the missing .gitignore lines.
-/// Call only after the operator has confirmed the plan.
+/// Each file is written atomically (temp + rename), and a pre-flight rejects a plan whose
+/// parent path is blocked by a file before anything is written. Call only after the operator
+/// has confirmed the plan.
 pub fn apply_retrofit(dir: &Path, plan: &RetrofitPlan) -> std::io::Result<RetrofitReport> {
+    // Pre-flight the whole plan first, so a blocked path fails before any partial write.
+    for file in &plan.adds {
+        preflight_parents(dir, &file.path)?;
+    }
     let mut report = RetrofitReport::default();
     for file in &plan.adds {
         let abs = dir.join(&file.path);
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&abs, &file.contents)?;
-        #[cfg(unix)]
-        if file.executable {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o755))?;
-        }
+        write_atomic(&abs, &file.contents, file.executable)?;
         report.written.push(file.path.clone());
     }
     for merge in &plan.merges {
-        std::fs::write(dir.join(&merge.path), &merge.new_contents)?;
+        write_atomic(&dir.join(&merge.path), &merge.new_contents, false)?;
         report.merged.push(merge.path.clone());
     }
     if !plan.gitignore_append.is_empty() {
         let gi = dir.join(".gitignore");
-        // If the file exists without a trailing newline, add one first so the first
-        // appended line does not join the last existing line.
-        let needs_leading_newline = match std::fs::read_to_string(&gi) {
-            Ok(s) => !s.is_empty() && !s.ends_with('\n'),
-            Err(_) => false,
-        };
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&gi)?;
-        if needs_leading_newline {
-            writeln!(f)?;
+        // Build the full new content and write it atomically, so an append never leaves the
+        // file partially extended. A trailing newline is ensured before appending so the
+        // first new line does not join the last existing line.
+        let mut contents = std::fs::read_to_string(&gi).unwrap_or_default();
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
         }
         for line in &plan.gitignore_append {
-            writeln!(f, "{line}")?;
+            contents.push_str(line);
+            contents.push('\n');
         }
+        write_atomic(&gi, &contents, false)?;
         report.gitignore_appended = plan.gitignore_append.len();
     }
     Ok(report)
@@ -755,6 +970,186 @@ mod tests {
         assert!(second.adds.is_empty(), "no new adds on a retrofitted repo");
         assert!(second.merges.is_empty(), "no new merges");
         assert!(second.gitignore_append.is_empty(), "no new ignore lines");
+    }
+
+    #[test]
+    fn merge_package_json_preserves_user_key_order() {
+        // With preserve_order, the user's top-level order is kept and our keys append.
+        let out = merge_package_json("{\"name\":\"z\",\"version\":\"1.0.0\",\"type\":\"module\"}")
+            .unwrap();
+        let name = out.find("\"name\"").unwrap();
+        let version = out.find("\"version\"").unwrap();
+        let typ = out.find("\"type\"").unwrap();
+        let dev = out.find("\"devDependencies\"").unwrap();
+        assert!(
+            name < version && version < typ,
+            "user order preserved: {out}"
+        );
+        assert!(typ < dev, "our added keys append after the user's: {out}");
+    }
+
+    #[test]
+    fn merge_tsconfig_is_idempotent_on_an_already_configured_file() {
+        // A tsconfig that already has our flags (in any order) must not churn on re-merge.
+        let once = merge_tsconfig("{\"compilerOptions\":{\"strict\":true}}").unwrap();
+        let twice = merge_tsconfig(&once).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn merge_tsconfig_tolerates_trailing_commas() {
+        // Trailing commas are legal JSONC and common in real tsconfig files.
+        let out = merge_tsconfig("{\n  \"compilerOptions\": {\n    \"strict\": true,\n  },\n}")
+            .expect("a trailing-comma tsconfig should parse and merge");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["compilerOptions"]["noUncheckedIndexedAccess"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn merge_pyproject_bails_when_extend_select_is_not_an_array() {
+        // A present-but-wrong-shaped opinion-defining value must NOT be silently ignored
+        // while the rest of the file is rewritten: the whole merge bails (reported skipped).
+        assert!(merge_pyproject("[tool.ruff.lint]\nextend-select = \"I\"\n").is_none());
+    }
+
+    #[test]
+    fn merge_pyproject_bails_when_dev_group_is_not_an_array() {
+        assert!(merge_pyproject("[dependency-groups]\ndev = \"ruff\"\n").is_none());
+    }
+
+    #[test]
+    fn merge_pyproject_emits_no_empty_parent_headers() {
+        let out = merge_pyproject("[project]\nname = \"x\"\n").unwrap();
+        assert!(
+            !out.lines().any(|l| l.trim() == "[tool]"),
+            "no bare [tool] header:\n{out}"
+        );
+        assert!(
+            !out.lines().any(|l| l.trim() == "[tool.pytest]"),
+            "no bare [tool.pytest] header:\n{out}"
+        );
+        // The real leaf tables are still present.
+        assert!(out.contains("[tool.ruff]"));
+        assert!(out.contains("[tool.pytest.ini_options]"));
+    }
+
+    #[test]
+    fn plan_skips_an_unreadable_config_instead_of_fabricating_over_it() {
+        // A path that exists but cannot be read as a file (here: a directory named
+        // pyproject.toml) must be left untouched, never treated as empty-and-merged.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("pyproject.toml")).unwrap();
+        let profile = stack_profile("python").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(plan
+            .skipped
+            .iter()
+            .any(|s| s.path == Path::new("pyproject.toml")));
+        assert!(plan
+            .merges
+            .iter()
+            .all(|m| m.path != Path::new("pyproject.toml")));
+    }
+
+    #[test]
+    fn merge_tsconfig_notes_comment_loss() {
+        // A tsconfig WITH comments merges, and plan_retrofit attaches a note about it.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("tsconfig.json"),
+            "{\n  // my comment\n  \"compilerOptions\": {}\n}\n",
+        )
+        .unwrap();
+        // typescript profile detects on tsconfig.json; give it one to detect.
+        let profile = stack_profile("typescript").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        let m = plan
+            .merges
+            .iter()
+            .find(|m| m.path == Path::new("tsconfig.json"))
+            .expect("tsconfig is merged");
+        assert!(
+            m.note.as_deref().is_some_and(|n| n.contains("comments")),
+            "a comment-bearing tsconfig merge is noted: {:?}",
+            m.note
+        );
+    }
+
+    #[test]
+    fn line_diff_shows_only_changed_lines_with_context_not_a_full_dump() {
+        let old = (1..=20)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut new_lines: Vec<String> = old.lines().map(|s| s.to_string()).collect();
+        new_lines[9] = "line 10 CHANGED".to_string();
+        let new = new_lines.join("\n");
+        let diff = line_diff(&old, &new);
+        assert!(
+            diff.contains("- line 10\n"),
+            "shows the removed line:\n{diff}"
+        );
+        assert!(
+            diff.contains("+ line 10 CHANGED\n"),
+            "shows the added line:\n{diff}"
+        );
+        assert!(
+            diff.contains("  ..."),
+            "elides distant unchanged runs:\n{diff}"
+        );
+        assert!(
+            !diff.contains("line 1\n") || !diff.contains("line 20"),
+            "not a full dump"
+        );
+        assert_eq!(
+            line_diff("same\n", "same\n"),
+            "",
+            "identical inputs diff to empty"
+        );
+    }
+
+    #[test]
+    fn apply_preflight_rejects_a_blocked_parent_without_partial_writes() {
+        // `.github` present as a FILE blocks creating `.github/workflows/ci.yml`. Apply must
+        // fail before writing anything (no half-retrofitted repo).
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        std::fs::write(d.path().join(".github"), "i am a file\n").unwrap();
+        let profile = stack_profile("rust").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        assert!(
+            apply_retrofit(d.path(), &plan).is_err(),
+            "blocked parent should error"
+        );
+        assert!(
+            !d.path().join("scripts/check.sh").exists(),
+            "nothing should be written when the plan is rejected"
+        );
+        assert!(!d.path().join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn apply_leaves_no_temp_files_behind() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        let profile = stack_profile("rust").unwrap();
+        apply_retrofit(d.path(), &plan_retrofit(d.path(), &profile, &ctx())).unwrap();
+        // No `.tutti-tmp` sidecar left in the repo root or scripts/.
+        for dir in [d.path().to_path_buf(), d.path().join("scripts")] {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name();
+                    assert!(
+                        !name.to_string_lossy().contains("tutti-tmp"),
+                        "leftover temp file: {:?}",
+                        e.path()
+                    );
+                }
+            }
+        }
     }
 
     /// Live: retrofit a clean Go fixture (valid, gofmt-clean, test-passing code, no tooling)

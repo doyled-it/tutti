@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 tutti-core = { path = "../tutti-core" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order keeps a merged JSON config in the user's key order (serde_json's default
+# Map sorts keys alphabetically, which would reorder the whole file on merge).
+serde_json = { version = "1", features = ["preserve_order"] }
 toml_edit = "0.22"
 
 [dev-dependencies]
