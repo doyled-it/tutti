@@ -142,190 +142,70 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
     Some(doc.to_string())
 }
 
-use serde_json::{Map, Value};
+use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
+use jsonc_parser::ParseOptions;
 
-/// Strip JSONC comments (`//` line and `/* */` block) that are OUTSIDE string literals, so a
-/// real `tsconfig.json` parses. String contents are preserved, including `//` inside a value
-/// such as an `https://` schema URL (a naive scan would corrupt those).
-fn strip_jsonc(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(c) = chars.next() {
-        if in_string {
-            out.push(c);
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                // Line comment: consume through the newline (keep the newline).
-                for n in chars.by_ref() {
-                    if n == '\n' {
-                        out.push('\n');
-                        break;
-                    }
-                }
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next(); // consume the '*'
-                              // Block comment: consume through the closing '*/'.
-                let mut prev = '\0';
-                for n in chars.by_ref() {
-                    if prev == '*' && n == '/' {
-                        break;
-                    }
-                    prev = n;
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Remove trailing commas (a comma whose next non-whitespace character is `}` or `]`) that
-/// are OUTSIDE string literals, so a real, comma-trailing `tsconfig.json` parses as JSON.
-/// Trailing commas are legal JSONC and idiomatic in editor-generated tsconfig files.
-fn strip_trailing_commas(input: &str) -> String {
-    let chars: Vec<char> = input.chars().collect();
-    let mut out = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if in_string {
-            out.push(c);
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '"' {
-            in_string = true;
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if c == ',' {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j].is_whitespace() {
-                j += 1;
-            }
-            if j < chars.len() && (chars[j] == '}' || chars[j] == ']') {
-                i += 1; // drop this trailing comma
-                continue;
+/// Enforce `obj[key] = val` (an opinion-defining boolean). Sets it even over a weaker value,
+/// but only rewrites when the current value differs, so an already-correct file is left
+/// byte-identical (idempotency, and no spurious "merge" reported for an already-configured
+/// repo). Comments and formatting around the value are preserved by the CST.
+fn cst_enforce_bool(obj: &CstObject, key: &str, val: bool) {
+    let want = if val { "true" } else { "false" };
+    match obj.get(key) {
+        Some(prop) => {
+            let current = prop.value().map(|n| n.to_string());
+            if current.as_deref().map(str::trim) != Some(want) {
+                prop.set_value(val.into());
             }
         }
-        out.push(c);
-        i += 1;
-    }
-    out
-}
-
-/// The root object of a JSON document, or `None` if it does not parse as a JSON object.
-/// Returning `None` preserves the no-clobber guarantee: a malformed or non-object config is
-/// left untouched by the caller rather than replaced with a fresh file.
-fn json_root_object(parsed: Result<Value, serde_json::Error>) -> Option<Map<String, Value>> {
-    match parsed.ok()? {
-        Value::Object(m) => Some(m),
-        _ => None,
+        None => {
+            obj.append(key, val.into());
+        }
     }
 }
 
-/// Ensure `root[key]` is a JSON object, mutating IN PLACE so an existing key keeps its
-/// position (serde_json's `preserve_order` feature holds insertion order). Returns `None`
-/// if the key is present as a non-object, non-null value, so the caller bails and leaves
-/// the whole file untouched rather than discarding the user's value.
-fn ensure_object<'a>(
-    root: &'a mut Map<String, Value>,
-    key: &str,
-) -> Option<&'a mut Map<String, Value>> {
-    match root.get(key) {
-        Some(Value::Object(_)) | Some(Value::Null) | None => {}
-        Some(_) => return None,
+/// Add `obj[key] = val` only if the key is absent (additive: never overwrites the user's
+/// value, never churns an already-present key).
+fn cst_add_if_absent(obj: &CstObject, key: &str, val: impl Into<CstInputValue>) {
+    if obj.get(key).is_none() {
+        obj.append(key, val.into());
     }
-    let slot = root
-        .entry(key.to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if slot.is_null() {
-        *slot = Value::Object(Map::new());
-    }
-    slot.as_object_mut()
 }
 
-/// Parse a `tsconfig.json` as JSONC (comments and trailing commas tolerated). `None` if it
-/// still does not parse as a JSON object after that.
-fn parse_tsconfig(existing: &str) -> Option<Map<String, Value>> {
-    let cleaned = strip_trailing_commas(&strip_jsonc(existing));
-    json_root_object(serde_json::from_str(&cleaned))
-}
-
-/// Merge Sotto's strict TypeScript compiler flags into an existing `tsconfig.json`.
-/// Enforces the strictness flags; preserves every other option AND the user's key order;
-/// idempotent. Returns `None` (leave the file untouched) if the existing content is not a
-/// JSON object, or if `compilerOptions` is present as a non-object.
-///
-/// Note: JSON has no comments, so JSONC comments in the source are not carried into the
-/// merged output. `plan_retrofit` surfaces that as a note on the merge so it is not a
-/// silent change; the preview diff shows the removed lines explicitly.
+/// Merge Sotto's strict TypeScript compiler flags into an existing `tsconfig.json`,
+/// preserving the user's comments, formatting, and key order (the JSONC concrete syntax
+/// tree edits in place rather than reserializing). Enforces the strictness flags; additive
+/// for the rest; idempotent. Returns `None` (leave the file untouched) if the content is not
+/// a JSON object, or if `compilerOptions` is present as a non-object.
 pub fn merge_tsconfig(existing: &str) -> Option<String> {
-    let mut root = parse_tsconfig(existing)?;
-    {
-        let co = ensure_object(&mut root, "compilerOptions")?;
-        // Opinion-defining strictness flags: enforced (set even over a weaker value).
-        co.insert("strict".into(), Value::Bool(true));
-        co.insert("noUncheckedIndexedAccess".into(), Value::Bool(true));
-        // Additive defaults: only when the user has not set them.
-        for (k, v) in [
-            ("module", Value::String("esnext".into())),
-            ("moduleResolution", Value::String("bundler".into())),
-            ("target", Value::String("es2023".into())),
-            ("skipLibCheck", Value::Bool(true)),
-        ] {
-            co.entry(k.to_string()).or_insert(v);
-        }
-    }
-    Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
+    let root = CstRootNode::parse(existing, &ParseOptions::default()).ok()?;
+    let obj = root.object_value()?;
+    let co = obj.object_value_or_create("compilerOptions")?;
+    // Opinion-defining strictness flags: enforced (set even over a weaker value).
+    cst_enforce_bool(&co, "strict", true);
+    cst_enforce_bool(&co, "noUncheckedIndexedAccess", true);
+    // Additive defaults: only when the user has not set them.
+    cst_add_if_absent(&co, "module", "esnext");
+    cst_add_if_absent(&co, "moduleResolution", "bundler");
+    cst_add_if_absent(&co, "target", "es2023");
+    cst_add_if_absent(&co, "skipLibCheck", true);
+    Some(root.to_string())
 }
 
 /// Merge the `typescript` + `bun-types` dev dependencies and the `check` script into an
-/// existing `package.json`, preserving every other field AND the user's key order.
-/// Idempotent. Returns `None` (leave the file untouched) if the existing content is not a
-/// JSON object, or if `scripts`/`devDependencies` is present as a non-object.
+/// existing `package.json`, preserving the user's formatting and key order (CST edit in
+/// place). Additive for every field; idempotent. Returns `None` (leave the file untouched)
+/// if the content is not a JSON object, or if `scripts`/`devDependencies` is present as a
+/// non-object.
 pub fn merge_package_json(existing: &str) -> Option<String> {
-    let mut root = json_root_object(serde_json::from_str(existing))?;
-    {
-        let scripts = ensure_object(&mut root, "scripts")?;
-        scripts
-            .entry("check".to_string())
-            .or_insert(Value::String("tsc --noEmit && bun test".into()));
-    }
-    {
-        let dev = ensure_object(&mut root, "devDependencies")?;
-        dev.entry("typescript".to_string())
-            .or_insert(Value::String("^5.7.0".into()));
-        dev.entry("bun-types".to_string())
-            .or_insert(Value::String("^1.1.0".into()));
-    }
-    Some(serde_json::to_string_pretty(&Value::Object(root)).unwrap() + "\n")
+    let root = CstRootNode::parse(existing, &ParseOptions::default()).ok()?;
+    let obj = root.object_value()?;
+    let scripts = obj.object_value_or_create("scripts")?;
+    cst_add_if_absent(&scripts, "check", "tsc --noEmit && bun test");
+    let dev = obj.object_value_or_create("devDependencies")?;
+    cst_add_if_absent(&dev, "typescript", "^5.7.0");
+    cst_add_if_absent(&dev, "bun-types", "^1.1.0");
+    Some(root.to_string())
 }
 
 /// A config file that exists and will be merged, with a preview diff.
@@ -335,9 +215,6 @@ pub struct ConfigMerge {
     pub new_contents: String,
     /// A line-level diff old -> new for the operator to confirm.
     pub diff: String,
-    /// An optional heads-up about the merge (e.g. JSONC comments not being preserved),
-    /// surfaced in the preview so a reformat is never a silent surprise.
-    pub note: Option<String>,
 }
 
 /// A tooling file skipped because it already exists (reported, never overwritten).
@@ -466,16 +343,6 @@ fn line_diff(old: &str, new: &str) -> String {
     out
 }
 
-/// A heads-up to attach to a merge when the output cannot round-trip everything in the
-/// source. Today: a JSONC `tsconfig.json` whose comments will not survive the JSON merge.
-fn merge_note(path: &Path, existing: &str) -> Option<String> {
-    let name = path.file_name().and_then(|s| s.to_str())?;
-    if name == "tsconfig.json" && strip_jsonc(existing) != existing {
-        return Some("JSON has no comments; the comments in this file are not preserved.".into());
-    }
-    None
-}
-
 /// Compute the retrofit for `profile` against `dir` without writing anything.
 pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) -> RetrofitPlan {
     let mut plan = RetrofitPlan::default();
@@ -530,12 +397,10 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
                     MergeAttempt::NoMerger => plan.already.push(file.path.clone()),
                     MergeAttempt::Merged(new_contents) if new_contents != existing => {
                         let diff = line_diff(&existing, &new_contents);
-                        let note = merge_note(&file.path, &existing);
                         plan.merges.push(ConfigMerge {
                             path: file.path.clone(),
                             new_contents,
                             diff,
-                            note,
                         });
                     }
                     // Already satisfies our config: nothing to do.
@@ -884,10 +749,20 @@ mod tests {
     }
 
     #[test]
-    fn merge_tsconfig_ignores_a_real_line_comment() {
-        let out = merge_tsconfig("{\n  // editor comment\n  \"compilerOptions\": {}\n}").unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["compilerOptions"]["strict"], serde_json::json!(true));
+    fn merge_tsconfig_preserves_comments_while_merging() {
+        // The CST merge keeps the user's JSONC comments (line and inline) in place, and
+        // still flips an existing strict:false to true.
+        let out = merge_tsconfig(
+            "{\n  // editor comment\n  \"compilerOptions\": {\n    \"strict\": false // inline\n  }\n}\n",
+        )
+        .unwrap();
+        assert!(
+            out.contains("// editor comment"),
+            "line comment kept:\n{out}"
+        );
+        assert!(out.contains("// inline"), "inline comment kept:\n{out}");
+        assert!(out.contains("\"strict\": true"), "strict flipped:\n{out}");
+        assert!(!out.contains("strict\": false"), "old value gone:\n{out}");
     }
 
     #[test]
@@ -997,15 +872,21 @@ mod tests {
     }
 
     #[test]
-    fn merge_tsconfig_tolerates_trailing_commas() {
-        // Trailing commas are legal JSONC and common in real tsconfig files.
+    fn merge_tsconfig_tolerates_and_preserves_trailing_commas() {
+        // Trailing commas are legal JSONC and common in real tsconfig files. The merge
+        // parses them AND keeps the file's trailing-comma style (tsconfig is JSONC, so tsc
+        // and editors accept it); the output is idempotent on a second merge.
         let out = merge_tsconfig("{\n  \"compilerOptions\": {\n    \"strict\": true,\n  },\n}")
             .expect("a trailing-comma tsconfig should parse and merge");
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(
-            v["compilerOptions"]["noUncheckedIndexedAccess"],
-            serde_json::json!(true)
+        assert!(
+            out.contains("\"noUncheckedIndexedAccess\": true"),
+            "merged:\n{out}"
         );
+        assert!(
+            out.contains("},"),
+            "the trailing-comma style is preserved:\n{out}"
+        );
+        assert_eq!(merge_tsconfig(&out).unwrap(), out, "idempotent");
     }
 
     #[test]
@@ -1055,15 +936,15 @@ mod tests {
     }
 
     #[test]
-    fn merge_tsconfig_notes_comment_loss() {
-        // A tsconfig WITH comments merges, and plan_retrofit attaches a note about it.
+    fn plan_merge_preserves_tsconfig_comments_end_to_end() {
+        // A tsconfig WITH comments merges through plan_retrofit with its comments intact in
+        // the merged contents (no note needed: nothing is lost).
         let d = tempfile::tempdir().unwrap();
         std::fs::write(
             d.path().join("tsconfig.json"),
             "{\n  // my comment\n  \"compilerOptions\": {}\n}\n",
         )
         .unwrap();
-        // typescript profile detects on tsconfig.json; give it one to detect.
         let profile = stack_profile("typescript").unwrap();
         let plan = plan_retrofit(d.path(), &profile, &ctx());
         let m = plan
@@ -1072,10 +953,19 @@ mod tests {
             .find(|m| m.path == Path::new("tsconfig.json"))
             .expect("tsconfig is merged");
         assert!(
-            m.note.as_deref().is_some_and(|n| n.contains("comments")),
-            "a comment-bearing tsconfig merge is noted: {:?}",
-            m.note
+            m.new_contents.contains("// my comment"),
+            "the user's comment survives the merge:\n{}",
+            m.new_contents
         );
+        assert!(m.new_contents.contains("\"strict\": true"));
+    }
+
+    #[test]
+    fn merge_tsconfig_leaves_an_already_configured_file_byte_identical() {
+        // A tsconfig that already has every key we set must merge to itself (no churn), so
+        // plan_retrofit reports it as already-done rather than a spurious merge.
+        let configured = "{\n  \"compilerOptions\": {\n    \"strict\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"module\": \"esnext\",\n    \"moduleResolution\": \"bundler\",\n    \"target\": \"es2023\",\n    \"skipLibCheck\": true\n  }\n}\n";
+        assert_eq!(merge_tsconfig(configured).unwrap(), configured);
     }
 
     #[test]

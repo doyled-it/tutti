@@ -27,9 +27,6 @@ fn print_plan(plan: &RetrofitPlan) -> bool {
         println!("\nMerge (your file is edited; diff below):");
         for m in &plan.merges {
             println!("  ~ {}", m.path.display());
-            if let Some(note) = &m.note {
-                println!("      note: {note}");
-            }
             for line in m.diff.lines() {
                 println!("      {line}");
             }

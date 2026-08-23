@@ -7,10 +7,12 @@ license.workspace = true
 [dependencies]
 tutti-core = { path = "../tutti-core" }
 serde = { version = "1", features = ["derive"] }
-# preserve_order keeps a merged JSON config in the user's key order (serde_json's default
-# Map sorts keys alphabetically, which would reorder the whole file on merge).
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = "1"
 toml_edit = "0.22"
+# cst: the concrete-syntax-tree API, which edits JSON/JSONC in place while preserving the
+# user's comments, formatting, and key order (used to merge tsconfig.json / package.json
+# non-destructively). This is what lets a tsconfig keep its comments through a merge.
+jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
