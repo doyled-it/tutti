@@ -36,6 +36,12 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
         Role::Reviewer => "Review the current work for this issue and report findings.",
         Role::FixApplier => "Apply the review findings below to the current work.",
         Role::Planner => "Decide the next action for this project.",
+        Role::Greener => {
+            "Make the repository's gate pass by fixing the underlying code. Do NOT suppress \
+             errors (`# type: ignore`, `# noqa`, `#[allow(...)]`, `eslint-disable`), weaken \
+             the gate configuration, or delete tests to make it pass. Fix the root cause. The \
+             current gate failure is in the issue body."
+        }
     };
 
     let schema = match task.playbook.role {
@@ -137,6 +143,24 @@ mod tests {
     #[test]
     fn planner_output_path_is_plan_json() {
         assert!(output_path(Path::new("/wt"), Role::Planner).ends_with(".tutti/plan.json"));
+    }
+
+    #[test]
+    fn greener_prompt_states_the_no_cheat_constraint() {
+        let mut t = task(Role::Implementer, vec![]);
+        t.playbook.role = Role::Greener;
+        t.issue.title = "Green up the python gate".into();
+        t.issue.body = "$ bash scripts/check.sh\nmypy: 3 errors".into();
+        let p = build_prompt(&t, std::path::Path::new("/wt"));
+        assert!(p.contains("gate pass"), "states the goal");
+        assert!(
+            p.contains("type: ignore") || p.contains("suppress"),
+            "forbids suppression"
+        );
+        assert!(
+            p.contains("mypy: 3 errors"),
+            "includes the current gate log (issue body)"
+        );
     }
 
     #[test]
