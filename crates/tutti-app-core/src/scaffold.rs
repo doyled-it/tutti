@@ -15,12 +15,27 @@ pub struct ScaffoldContext {
     pub package_name: String,
 }
 
+/// What a scaffold file is for, so one `StackProfile` serves both create (emits all) and
+/// retrofit (emits `Tooling`, merges `Config`, never emits `Sample`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileRole {
+    /// Placeholder source/tests. Create-only; retrofit never emits these.
+    Sample,
+    /// New additive files (the gate, CI, AGENTS.md, interpreter pin, .gitignore).
+    Tooling,
+    /// A config file retrofit merges into when it already exists (pyproject/tsconfig/
+    /// package.json). Config files with no registered merger (Cargo.toml, go.mod) are
+    /// left untouched by retrofit.
+    Config,
+}
+
 /// One file a profile emits, relative to the repo root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScaffoldFile {
     pub path: PathBuf,
     pub contents: String,
     pub executable: bool,
+    pub role: FileRole,
 }
 
 /// A best-effort command run after the files are written (e.g. `uv lock`).
@@ -110,10 +125,11 @@ pub fn python_profile() -> StackProfile {
 
 fn python_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
-    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+    let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
         executable,
+        role,
     };
     vec![
         f("pyproject.toml", format!(
@@ -144,7 +160,7 @@ python_version = "3.13"
 addopts = "-q --strict-markers --strict-config"
 pythonpath = ["src"]
 testpaths = ["tests"]
-"#), false),
+"#), false, FileRole::Config),
         f("scripts/check.sh", String::from(
 r#"#!/usr/bin/env bash
 # The one canonical gate. CI and the agent both run exactly this.
@@ -157,7 +173,7 @@ uv run ruff format --check .
 uv run ruff check .
 uv run mypy --strict src
 uv run pytest
-"#), true),
+"#), true, FileRole::Tooling),
         f(".github/workflows/ci.yml", String::from(
 r#"name: CI
 on:
@@ -173,7 +189,7 @@ jobs:
         with:
           enable-cache: true
       - run: bash scripts/check.sh
-"#), false),
+"#), false, FileRole::Tooling),
         f("AGENTS.md", format!(
 r#"# AGENTS.md
 
@@ -188,16 +204,16 @@ and pytest. Formatting is enforced, do not hand-tune style. New functions ship w
 in `tests/`. Work merges into `staging`, never `main`.
 
 Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
-"#), false),
-        f(".python-version", String::from("3.13\n"), false),
+"#), false, FileRole::Tooling),
+        f(".python-version", String::from("3.13\n"), false, FileRole::Tooling),
         f(".gitignore", String::from(
-"__pycache__/\n.venv/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n"), false),
+"__pycache__/\n.venv/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n"), false, FileRole::Tooling),
         f(&format!("src/{pkg}/__init__.py"), format!(
-"\"\"\"The {pkg} package.\"\"\"\n\nfrom {pkg}.core import add\n\n__all__ = [\"add\"]\n"), false),
+"\"\"\"The {pkg} package.\"\"\"\n\nfrom {pkg}.core import add\n\n__all__ = [\"add\"]\n"), false, FileRole::Sample),
         f(&format!("src/{pkg}/core.py"), String::from(
-"\"\"\"Core helpers.\"\"\"\n\n\ndef add(a: int, b: int) -> int:\n    \"\"\"Return the sum of two integers.\"\"\"\n    return a + b\n"), false),
+"\"\"\"Core helpers.\"\"\"\n\n\ndef add(a: int, b: int) -> int:\n    \"\"\"Return the sum of two integers.\"\"\"\n    return a + b\n"), false, FileRole::Sample),
         f("tests/test_core.py", format!(
-"from {pkg} import add\n\n\ndef test_add() -> None:\n    assert add(2, 3) == 5\n"), false),
+"from {pkg} import add\n\n\ndef test_add() -> None:\n    assert add(2, 3) == 5\n"), false, FileRole::Sample),
     ]
 }
 
@@ -219,10 +235,11 @@ pub fn rust_profile() -> StackProfile {
 
 fn rust_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
-    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+    let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
         executable,
+        role,
     };
     vec![
         f(
@@ -237,6 +254,7 @@ edition = "2021"
 "#
             ),
             false,
+            FileRole::Config,
         ),
         f(
             "src/lib.rs",
@@ -260,6 +278,7 @@ mod tests {{
 "#
             ),
             false,
+            FileRole::Sample,
         ),
         f(
             "scripts/check.sh",
@@ -273,6 +292,7 @@ cargo test
 "#,
             ),
             true,
+            FileRole::Tooling,
         ),
         f(
             ".github/workflows/ci.yml",
@@ -295,6 +315,7 @@ jobs:
 "#,
             ),
             false,
+            FileRole::Tooling,
         ),
         f(
             "AGENTS.md",
@@ -316,8 +337,14 @@ Layout: library crate under `src/`, tests inline as `#[cfg(test)]` modules or un
 "#,
             ),
             false,
+            FileRole::Tooling,
         ),
-        f(".gitignore", String::from("/target/\n"), false),
+        f(
+            ".gitignore",
+            String::from("/target/\n"),
+            false,
+            FileRole::Tooling,
+        ),
     ]
 }
 
@@ -339,10 +366,11 @@ pub fn typescript_profile() -> StackProfile {
 
 fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
-    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+    let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
         executable,
+        role,
     };
     vec![
         f(
@@ -364,6 +392,7 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
 "#
             ),
             false,
+            FileRole::Config,
         ),
         f(
             "tsconfig.json",
@@ -384,6 +413,7 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
 "#,
             ),
             false,
+            FileRole::Config,
         ),
         f(
             "src/index.ts",
@@ -395,6 +425,7 @@ export function add(a: number, b: number): number {
 "#,
             ),
             false,
+            FileRole::Sample,
         ),
         f(
             "src/index.test.ts",
@@ -408,6 +439,7 @@ test("add", () => {
 "#,
             ),
             false,
+            FileRole::Sample,
         ),
         f(
             "scripts/check.sh",
@@ -423,6 +455,7 @@ bun test
 "#,
             ),
             true,
+            FileRole::Tooling,
         ),
         f(
             ".github/workflows/ci.yml",
@@ -442,6 +475,7 @@ jobs:
 "#,
             ),
             false,
+            FileRole::Tooling,
         ),
         f(
             "AGENTS.md",
@@ -463,8 +497,14 @@ Layout: source and colocated `*.test.ts` under `src/`.
 "#,
             ),
             false,
+            FileRole::Tooling,
         ),
-        f(".gitignore", String::from("node_modules/\n"), false),
+        f(
+            ".gitignore",
+            String::from("node_modules/\n"),
+            false,
+            FileRole::Tooling,
+        ),
     ]
 }
 
@@ -482,10 +522,11 @@ pub fn go_profile() -> StackProfile {
 
 fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
-    let f = |path: &str, contents: String, executable: bool| ScaffoldFile {
+    let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
         executable,
+        role,
     };
     // Go source is tab-indented (gofmt enforces it), so these use explicit `\t`.
     vec![
@@ -493,6 +534,7 @@ fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
             "go.mod",
             format!("module example.com/{pkg}\n\ngo 1.23\n"),
             false,
+            FileRole::Config,
         ),
         f(
             &format!("{pkg}.go"),
@@ -502,6 +544,7 @@ fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
              \treturn a + b\n}}\n"
             ),
             false,
+            FileRole::Sample,
         ),
         f(
             &format!("{pkg}_test.go"),
@@ -513,6 +556,7 @@ fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
              \t}}\n}}\n"
             ),
             false,
+            FileRole::Sample,
         ),
         f(
             "scripts/check.sh",
@@ -531,6 +575,7 @@ go test ./...
 "#,
             ),
             true,
+            FileRole::Tooling,
         ),
         f(
             ".github/workflows/ci.yml",
@@ -552,6 +597,7 @@ jobs:
 "#,
             ),
             false,
+            FileRole::Tooling,
         ),
         f(
             "AGENTS.md",
@@ -572,8 +618,14 @@ Layout: package sources at the module root, tests as `*_test.go` beside them.
 "#,
             ),
             false,
+            FileRole::Tooling,
         ),
-        f(".gitignore", String::from("*.exe\n*.test\n*.out\n"), false),
+        f(
+            ".gitignore",
+            String::from("*.exe\n*.test\n*.out\n"),
+            false,
+            FileRole::Tooling,
+        ),
     ]
 }
 
@@ -700,6 +752,23 @@ mod tests {
         by_path(".github/workflows/ci.yml");
         by_path(".python-version");
         by_path(".gitignore");
+    }
+
+    #[test]
+    fn python_profile_tags_file_roles() {
+        let files = (python_profile().files)(&ctx());
+        let role_of = |rel: &str| {
+            files
+                .iter()
+                .find(|f| f.path == std::path::Path::new(rel))
+                .unwrap_or_else(|| panic!("missing {rel}"))
+                .role
+        };
+        assert_eq!(role_of("src/my_repo/core.py"), FileRole::Sample);
+        assert_eq!(role_of("tests/test_core.py"), FileRole::Sample);
+        assert_eq!(role_of("scripts/check.sh"), FileRole::Tooling);
+        assert_eq!(role_of(".github/workflows/ci.yml"), FileRole::Tooling);
+        assert_eq!(role_of("pyproject.toml"), FileRole::Config);
     }
 
     #[test]

@@ -2,7 +2,12 @@
 //! Hermetic logic behind the desktop app: the board model and its assembly from a Forge.
 //! No Tauri dependency, so it runs in the fast workspace gate.
 
+mod retrofit;
 mod scaffold;
+pub use retrofit::{
+    apply_retrofit, detect_languages, plan_retrofit, run_baseline_gate, ConfigMerge, RetrofitPlan,
+    RetrofitReport, SkipReason,
+};
 pub use scaffold::{
     available_stacks, package_name, run_post_write, scaffold, stack_profile, PostWriteRunner,
     PostWriteStep, ScaffoldContext, ScaffoldFile, ScaffoldReport, StackProfile,

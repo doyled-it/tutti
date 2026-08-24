@@ -1818,6 +1818,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonc-parser"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0560e3f9a9a03ea6b6e90b41138c5db9e21526c99eb192c1a26c68176593285"
+
+[[package]]
 name = "jsonptr"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4008,6 +4014,7 @@ dependencies = [
 name = "tutti-app-core"
 version = "0.0.0"
 dependencies = [
+ "jsonc-parser",
  "serde",
  "serde_json",
  "toml_edit 0.22.27",
