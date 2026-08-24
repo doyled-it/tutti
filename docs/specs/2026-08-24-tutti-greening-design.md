@@ -129,9 +129,11 @@ pub async fn green_all(
 Per-target flow:
 
 1. **Worktree.** `green/<label>` under `.worktrees/`. If the branch exists and `!fresh`, add
-   the worktree onto the existing branch (resume); else create it fresh from `config.trunk`
-   (where the un-green code lives). The PR later targets `opts.base` (the integration branch
-   by default), never trunk directly. (A named-worktree helper, see unit 3.)
+   the worktree onto the existing branch (resume); else create it fresh from `opts.base` (the
+   PR base, the integration branch by default, overridable with `--base`). Basing the
+   worktree on the PR base is deliberate: the greening branch then diffs cleanly against it,
+   so the PR contains only the greening changes. `--base` points greening at whatever branch
+   carries the retrofitted, un-green code. (A named-worktree helper, see unit 3.)
 2. **Baseline.** Run the target's gate in the worktree. Green already -> `AlreadyGreen`, no
    PR.
 3. **Loop** `1..=max_iters`: build a synthetic `AgentTask` (`Role::Greener`, `issue.title =
