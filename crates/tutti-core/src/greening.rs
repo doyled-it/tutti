@@ -3,8 +3,10 @@
 //! worktree branch that opens a PR. Orchestration over the AgentBackend, Gate, Forge, and
 //! GreenWorkspace seams, so it is testable with no `claude`, git, or network.
 
+use crate::domain::{Issue, IssueId, IssueState, PrRequest};
 use crate::gate::Gate;
-use crate::traits::Result;
+use crate::message::{AgentTask, Role, RolePlaybook};
+use crate::traits::{AgentBackend, Forge, Result};
 use std::path::PathBuf;
 
 /// An isolated checkout the greening loop runs in: a git worktree on `branch`.
@@ -202,6 +204,197 @@ pub fn discover_targets(
     }]
 }
 
+/// Options for a greening run.
+#[derive(Debug, Clone)]
+pub struct GreenOptions {
+    pub max_iters: u32,
+    pub fresh: bool,
+    pub base: String,
+    pub model: String,
+}
+
+/// What became of one target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GreenOutcome {
+    AlreadyGreen,
+    Greened {
+        iters: u32,
+        pr: u64,
+        flags: Vec<String>,
+    },
+    Exhausted {
+        iters: u32,
+        gate_log: String,
+    },
+    Rejected {
+        reason: String,
+    },
+    Error(String),
+}
+
+/// One target's result, for the combined report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GreenTargetResult {
+    pub label: String,
+    pub branch: String,
+    pub outcome: GreenOutcome,
+}
+
+/// Build the greener stage's task: fix the code so `target.gate` passes.
+fn greener_task(target: &GateTarget, gate_log: &str, model: &str) -> AgentTask {
+    AgentTask {
+        playbook: RolePlaybook {
+            role: Role::Greener,
+            skills: Vec::new(),
+        },
+        issue: Issue {
+            id: IssueId(0),
+            title: format!("Green up the {} gate", target.label),
+            body: format!(
+                "Make the gate pass by fixing the code (working dir: {}). The current failure:\n\n{}",
+                target.gate.working_dir.display(),
+                gate_log
+            ),
+            labels: Vec::new(),
+            milestone: None,
+            state: IssueState::Open,
+        },
+        worktree_branch: format!("green/{}", target.label),
+        model: model.to_string(),
+        review: None,
+        mcp_servers: Vec::new(),
+    }
+}
+
+/// Green one target: worktree (resume or fresh) -> loop gate/agent -> anti-cheat -> commit -> PR.
+/// Every terminal path removes the worktree checkout (the branch persists).
+pub async fn green_target(
+    target: &GateTarget,
+    opts: &GreenOptions,
+    backend: &dyn AgentBackend,
+    workspace: &dyn GreenWorkspace,
+    forge: &dyn Forge,
+) -> GreenTargetResult {
+    let branch = format!("green/{}", target.label);
+    let outcome = match green_target_inner(target, opts, backend, workspace, forge, &branch).await {
+        Ok(outcome) => outcome,
+        Err(e) => GreenOutcome::Error(e),
+    };
+    GreenTargetResult {
+        label: target.label.clone(),
+        branch,
+        outcome,
+    }
+}
+
+async fn green_target_inner(
+    target: &GateTarget,
+    opts: &GreenOptions,
+    backend: &dyn AgentBackend,
+    workspace: &dyn GreenWorkspace,
+    forge: &dyn Forge,
+    branch: &str,
+) -> std::result::Result<GreenOutcome, String> {
+    let resume = !opts.fresh
+        && workspace
+            .branch_exists(branch)
+            .await
+            .map_err(|e| e.to_string())?;
+    let co = workspace
+        .checkout(branch, &opts.base, resume)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Run the whole body, then ALWAYS remove the checkout (Ok or Err). The branch persists,
+    // so a later resume can add a fresh worktree onto it; leaving this one behind would wedge
+    // that (`git worktree add` refuses a path that already exists).
+    let result = green_body(target, opts, backend, workspace, forge, branch, &co).await;
+    let _ = workspace.remove(&co).await;
+    result
+}
+
+/// The post-checkout body: baseline gate check, the fix loop, the anti-cheat audit, commit,
+/// and PR. Never touches the checkout's lifecycle; the caller removes it unconditionally.
+async fn green_body(
+    target: &GateTarget,
+    opts: &GreenOptions,
+    backend: &dyn AgentBackend,
+    workspace: &dyn GreenWorkspace,
+    forge: &dyn Forge,
+    branch: &str,
+    co: &GreenCheckout,
+) -> std::result::Result<GreenOutcome, String> {
+    let mut last = target.gate.run(&co.path).await.map_err(|e| e.to_string())?;
+    if last.passed {
+        return Ok(GreenOutcome::AlreadyGreen);
+    }
+
+    let mut iters = 0;
+    for i in 1..=opts.max_iters {
+        iters = i;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let task = greener_task(target, &last.log, &opts.model);
+        let run = backend.run(task, &co.path, tx).await;
+        let _ = drain.await;
+        if let Err(e) = run {
+            return Err(format!("agent run failed: {e}"));
+        }
+        last = target.gate.run(&co.path).await.map_err(|e| e.to_string())?;
+        if last.passed {
+            break;
+        }
+    }
+
+    if !last.passed {
+        return Ok(GreenOutcome::Exhausted {
+            iters,
+            gate_log: last.log,
+        });
+    }
+
+    let diff = workspace
+        .diff(co, &opts.base)
+        .await
+        .map_err(|e| e.to_string())?;
+    let audit = audit_green_diff(&diff.changed_files, &diff.patch);
+    if let Some(reason) = audit.reject {
+        return Ok(GreenOutcome::Rejected { reason });
+    }
+    workspace
+        .commit_all(
+            co,
+            &format!("fix({}): green up the gate\n\nPart of #40", target.label),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    forge.push_branch(branch).await.map_err(|e| e.to_string())?;
+    let pr = forge
+        .open_pr(PrRequest {
+            base: opts.base.clone(),
+            head: branch.to_string(),
+            title: format!("Green up the {} gate", target.label),
+            body: format!(
+                "Automated greening of the `{}` gate in {} iteration(s).{}",
+                target.label,
+                iters,
+                if audit.flags.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n\nReview flags:\n- {}", audit.flags.join("\n- "))
+                }
+            ),
+            labels: Vec::new(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(GreenOutcome::Greened {
+        iters,
+        pr: pr.number,
+        flags: audit.flags,
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod fakes {
     use super::*;
@@ -215,6 +408,7 @@ pub(crate) mod fakes {
         pub committed: Mutex<Vec<String>>,
         pub diff: Mutex<GreenDiff>,
         pub resumed: Mutex<Vec<String>>,
+        pub removed: Mutex<Vec<String>>,
     }
 
     impl FakeGreenWorkspace {
@@ -225,6 +419,7 @@ pub(crate) mod fakes {
                 committed: Mutex::new(Vec::new()),
                 diff: Mutex::new(GreenDiff::default()),
                 resumed: Mutex::new(Vec::new()),
+                removed: Mutex::new(Vec::new()),
             }
         }
     }
@@ -250,7 +445,8 @@ pub(crate) mod fakes {
         async fn diff(&self, _co: &GreenCheckout, _base: &str) -> Result<GreenDiff> {
             Ok(self.diff.lock().unwrap().clone())
         }
-        async fn remove(&self, _co: &GreenCheckout) -> Result<()> {
+        async fn remove(&self, co: &GreenCheckout) -> Result<()> {
+            self.removed.lock().unwrap().push(co.branch.clone());
             Ok(())
         }
     }
@@ -360,5 +556,283 @@ mod tests {
         let a = audit_green_diff(&[PathBuf::from("src/x.py")], "+ def f(): pass\n");
         assert!(a.reject.is_none());
         assert!(a.flags.is_empty());
+    }
+
+    use crate::greening::fakes::FakeGreenWorkspace;
+    use crate::message::{AgentEvent, AgentOutcome, AgentStatus, AgentTask, Usage};
+    use crate::testing::FakeForge;
+    use crate::traits::AgentBackend;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::mpsc::Sender;
+
+    struct MarkerBackend {
+        green_on: u32,
+        calls: Arc<AtomicU32>,
+    }
+    #[async_trait::async_trait]
+    impl AgentBackend for MarkerBackend {
+        async fn run(
+            &self,
+            _task: AgentTask,
+            worktree: &std::path::Path,
+            _tx: Sender<AgentEvent>,
+        ) -> Result<AgentOutcome> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if n >= self.green_on {
+                std::fs::write(worktree.join(".green"), "ok").unwrap();
+            }
+            Ok(AgentOutcome {
+                status: AgentStatus::ReadyToShip,
+                handoff: None,
+                review: None,
+                plan: None,
+                summary: String::new(),
+                usage: Usage::default(),
+                blocked_reason: None,
+            })
+        }
+    }
+
+    fn marker_gate() -> Gate {
+        Gate {
+            commands: vec!["test -f .green".to_string()],
+            working_dir: std::path::PathBuf::new(),
+        }
+    }
+    fn gopts() -> GreenOptions {
+        GreenOptions {
+            max_iters: 5,
+            fresh: false,
+            base: "staging".into(),
+            model: "m".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn green_target_greens_and_opens_a_pr() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace::new(d.path().to_path_buf());
+        let backend = MarkerBackend {
+            green_on: 2,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(
+            matches!(r.outcome, GreenOutcome::Greened { iters: 2, .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(ws.committed.lock().unwrap().len(), 1, "committed once");
+        assert_eq!(forge.pr_count(), 1, "exactly one PR opened");
+        assert_eq!(
+            ws.removed.lock().unwrap().len(),
+            1,
+            "checkout removed on the happy path"
+        );
+    }
+
+    #[tokio::test]
+    async fn green_target_already_green_does_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(".green"), "ok").unwrap();
+        let ws = FakeGreenWorkspace::new(d.path().to_path_buf());
+        let calls = Arc::new(AtomicU32::new(0));
+        let backend = MarkerBackend {
+            green_on: 99,
+            calls: calls.clone(),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(matches!(r.outcome, GreenOutcome::AlreadyGreen));
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no agent call");
+        assert_eq!(forge.pr_count(), 0, "no PR opened");
+    }
+
+    #[tokio::test]
+    async fn green_target_exhausts_without_a_pr() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace::new(d.path().to_path_buf());
+        let backend = MarkerBackend {
+            green_on: 99,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(
+            matches!(r.outcome, GreenOutcome::Exhausted { iters: 5, .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(forge.pr_count(), 0, "no PR opened");
+    }
+
+    #[tokio::test]
+    async fn green_target_rejects_a_gate_edit_and_opens_no_pr() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace::new(d.path().to_path_buf());
+        *ws.diff.lock().unwrap() = GreenDiff {
+            changed_files: vec![std::path::PathBuf::from("scripts/check.sh")],
+            patch: "- strict\n+ lenient\n".into(),
+        };
+        let backend = MarkerBackend {
+            green_on: 1,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(
+            matches!(r.outcome, GreenOutcome::Rejected { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(forge.pr_count(), 0, "no PR opened");
+        assert!(
+            ws.committed.lock().unwrap().is_empty(),
+            "a rejected diff must not be committed"
+        );
+        assert_eq!(
+            ws.removed.lock().unwrap().len(),
+            1,
+            "checkout removed even when rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn green_target_resumes_an_existing_branch() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace {
+            existing_branches: vec!["green/python".to_string()],
+            ..FakeGreenWorkspace::new(d.path().to_path_buf())
+        };
+        let backend = MarkerBackend {
+            green_on: 1,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let opts = GreenOptions {
+            fresh: false,
+            ..gopts()
+        };
+        let _ = green_target(&target, &opts, &backend, &ws, &forge).await;
+        assert_eq!(
+            ws.resumed.lock().unwrap().as_slice(),
+            ["green/python".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn green_target_fresh_suppresses_resume() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace {
+            existing_branches: vec!["green/python".to_string()],
+            ..FakeGreenWorkspace::new(d.path().to_path_buf())
+        };
+        let backend = MarkerBackend {
+            green_on: 1,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let opts = GreenOptions {
+            fresh: true,
+            ..gopts()
+        };
+        let _ = green_target(&target, &opts, &backend, &ws, &forge).await;
+        assert!(
+            ws.resumed.lock().unwrap().is_empty(),
+            "fresh must suppress resume"
+        );
+    }
+
+    #[tokio::test]
+    async fn green_target_flags_surface_but_still_open_a_pr() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace::new(d.path().to_path_buf());
+        *ws.diff.lock().unwrap() = GreenDiff {
+            changed_files: vec![std::path::PathBuf::from("src/x.py")],
+            patch: "+ x = 1  # type: ignore\n".into(),
+        };
+        let backend = MarkerBackend {
+            green_on: 1,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        match r.outcome {
+            GreenOutcome::Greened { flags, .. } => {
+                assert!(!flags.is_empty(), "the suppression comment must flag");
+            }
+            other => panic!("expected Greened, got {other:?}"),
+        }
+        assert_eq!(
+            forge.pr_count(),
+            1,
+            "a flagged-but-not-rejected diff still opens a PR"
+        );
+    }
+
+    struct ErrBackend;
+    #[async_trait::async_trait]
+    impl AgentBackend for ErrBackend {
+        async fn run(
+            &self,
+            _task: AgentTask,
+            _worktree: &std::path::Path,
+            _tx: Sender<AgentEvent>,
+        ) -> Result<AgentOutcome> {
+            Err(crate::traits::EngineError::Backend("boom".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn green_target_cleans_up_the_checkout_on_an_agent_error() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace::new(d.path().to_path_buf());
+        let backend = ErrBackend;
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(
+            matches!(r.outcome, GreenOutcome::Error(_)),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(
+            ws.removed.lock().unwrap().len(),
+            1,
+            "checkout removed even when the agent run errors"
+        );
     }
 }
