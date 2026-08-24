@@ -3,6 +3,7 @@
 //! worktree branch that opens a PR. Orchestration over the AgentBackend, Gate, Forge, and
 //! GreenWorkspace seams, so it is testable with no `claude`, git, or network.
 
+use crate::gate::Gate;
 use crate::traits::Result;
 use std::path::PathBuf;
 
@@ -127,6 +128,80 @@ pub fn audit_green_diff(changed_files: &[std::path::PathBuf], patch: &str) -> Gr
     audit
 }
 
+/// One unit of greening: a gate to make pass, in a working directory, with a friendly label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateTarget {
+    pub label: String,
+    pub gate: Gate,
+}
+
+/// A friendly label for a directory, from its language marker files (falls back to the dir
+/// name, or "repo" at the root). Kept local so `tutti-core` needs no `tutti-app-core` dep.
+fn label_for_dir(abs: &std::path::Path, rel: &std::path::Path) -> String {
+    let has = |n: &str| abs.join(n).exists();
+    if has("pyproject.toml") || has("setup.py") || has("requirements.txt") {
+        "python".to_string()
+    } else if has("Cargo.toml") {
+        "rust".to_string()
+    } else if has("package.json") || has("tsconfig.json") {
+        "typescript".to_string()
+    } else if has("go.mod") {
+        "go".to_string()
+    } else {
+        rel.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "repo".to_string())
+    }
+}
+
+/// Discover the gate targets to green in `repo`:
+/// 1. `gate_override` -> one root target with that command.
+/// 2. else each immediate subdirectory containing `scripts/check.sh` -> one target each.
+/// 3. else one root target running `config_gate` at the repo root.
+pub fn discover_targets(
+    repo: &std::path::Path,
+    config_gate: &[String],
+    gate_override: Option<&str>,
+) -> Vec<GateTarget> {
+    if let Some(cmd) = gate_override {
+        return vec![GateTarget {
+            label: label_for_dir(repo, repo),
+            gate: Gate {
+                commands: vec![cmd.to_string()],
+                working_dir: std::path::PathBuf::new(),
+            },
+        }];
+    }
+    let mut subdir_targets = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(repo) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("scripts/check.sh").is_file() {
+                let rel = std::path::PathBuf::from(entry.file_name());
+                subdir_targets.push(GateTarget {
+                    label: label_for_dir(&path, &rel),
+                    gate: Gate {
+                        commands: vec!["bash scripts/check.sh".to_string()],
+                        working_dir: rel,
+                    },
+                });
+            }
+        }
+    }
+    if !subdir_targets.is_empty() {
+        subdir_targets.sort_by(|a, b| a.gate.working_dir.cmp(&b.gate.working_dir));
+        return subdir_targets;
+    }
+    vec![GateTarget {
+        label: label_for_dir(repo, repo),
+        gate: Gate {
+            commands: config_gate.to_vec(),
+            working_dir: std::path::PathBuf::new(),
+        },
+    }]
+}
+
 #[cfg(test)]
 pub(crate) mod fakes {
     use super::*;
@@ -185,6 +260,53 @@ pub(crate) mod fakes {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn touch(dir: &std::path::Path, rel: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "x").unwrap();
+    }
+
+    #[test]
+    fn discover_single_root_target_uses_the_config_gate() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "scripts/check.sh");
+        touch(d.path(), "pyproject.toml");
+        let targets = discover_targets(d.path(), &["bash scripts/check.sh".to_string()], None);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].gate.working_dir, std::path::PathBuf::new());
+        assert_eq!(
+            targets[0].gate.commands,
+            vec!["bash scripts/check.sh".to_string()]
+        );
+        assert_eq!(targets[0].label, "python");
+    }
+
+    #[test]
+    fn discover_finds_one_target_per_subdir_gate() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "py/scripts/check.sh");
+        touch(d.path(), "py/pyproject.toml");
+        touch(d.path(), "rs/scripts/check.sh");
+        touch(d.path(), "rs/Cargo.toml");
+        let mut targets = discover_targets(d.path(), &["bash scripts/check.sh".to_string()], None);
+        targets.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].label, "python");
+        assert_eq!(targets[0].gate.working_dir, std::path::PathBuf::from("py"));
+        assert_eq!(targets[1].label, "rust");
+        assert_eq!(targets[1].gate.working_dir, std::path::PathBuf::from("rs"));
+    }
+
+    #[test]
+    fn discover_gate_override_is_a_single_root_target() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "py/scripts/check.sh"); // ignored when overridden
+        let targets = discover_targets(d.path(), &["true".to_string()], Some("make ci"));
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].gate.commands, vec!["make ci".to_string()]);
+        assert_eq!(targets[0].gate.working_dir, std::path::PathBuf::new());
+    }
 
     #[test]
     fn audit_rejects_editing_the_gate_script() {
