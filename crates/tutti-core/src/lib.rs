@@ -9,6 +9,7 @@ pub mod engine;
 pub mod events;
 pub mod executor;
 pub mod gate;
+pub mod greening;
 pub mod mcp;
 pub mod message;
 pub mod routing;
