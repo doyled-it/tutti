@@ -73,13 +73,13 @@ the per-subdir `scripts/check.sh` convention.)
 tutti green [PATH]                 # discover targets, green each in parallel, open a PR per target
 tutti green --max-iters N [PATH]   # cap per-target iterations (default 5)
 tutti green --fresh [PATH]         # discard any existing greening branch, restart from trunk
-tutti green --base <branch> [PATH] # PR base (default: config integration_branch)
+tutti green --base <branch> [PATH] # PR base (default: the current branch / HEAD)
 tutti green --gate "<cmd>" [PATH]  # override the gate command (single-target repos)
 tutti retrofit --then-green [PATH] # chain: retrofit apply, then green (also needs a forge)
 ```
 
-`tutti green` reads `tutti.toml` for `[forge]` (+ login), `[model]`, `[gate]`, and
-`integration_branch`, exactly as `tutti run` does. It **requires** `tutti.toml` and a
+`tutti green` reads `tutti.toml` for `[forge]` (+ login), `[model]`, and `[gate]`,
+exactly as `tutti run` does. It **requires** `tutti.toml` and a
 forge; absent either, it errors with a clear message (opening a PR is the deliverable).
 `retrofit --then-green` therefore also requires a forge; plain `retrofit` does not.
 
@@ -129,11 +129,14 @@ pub async fn green_all(
 Per-target flow:
 
 1. **Worktree.** `green/<label>` under `.worktrees/`. If the branch exists and `!fresh`, add
-   the worktree onto the existing branch (resume); else create it fresh from `opts.base` (the
-   PR base, the integration branch by default, overridable with `--base`). Basing the
-   worktree on the PR base is deliberate: the greening branch then diffs cleanly against it,
-   so the PR contains only the greening changes. `--base` points greening at whatever branch
-   carries the retrofitted, un-green code. (A named-worktree helper, see unit 3.)
+   the worktree onto the existing branch (resume); else create it fresh from `opts.base`,
+   which defaults to the **current branch (HEAD)** and is the PR base. Basing on the current
+   branch is deliberate and load-bearing: that branch is the one that actually holds the code
+   and the gate (including the retrofit output), so the gate runs against real code and the
+   PR diffs cleanly against it (only the greening changes). `--base` overrides. Because the
+   worktree forks from the current branch, `retrofit --then-green` must **commit** the
+   retrofit output first (retrofit only writes the working tree); the CLI does that before
+   handing off to greening. (A named-worktree helper, see unit 3.)
 2. **Baseline.** Run the target's gate in the worktree. Green already -> `AlreadyGreen`, no
    PR.
 3. **Loop** `1..=max_iters`: build a synthetic `AgentTask` (`Role::Greener`, `issue.title =
