@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `tutti` CLI: load config, acquire the run lock, wire adapters, drain issues.
 
+mod green;
 mod lock;
 mod retrofit;
 mod wire;
@@ -53,6 +54,41 @@ enum Cmd {
         /// Apply without the interactive confirmation (CI/scripts).
         #[arg(long)]
         yes: bool,
+        /// After a successful retrofit, immediately run `tutti green` on the result.
+        /// Requires `--repo`.
+        #[arg(long)]
+        then_green: bool,
+        /// The forge target for `--then-green` ("owner/name" etc, see `Run`).
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Drive the agent to a green gate per target, opening a PR per target.
+    Green {
+        /// Repo root on disk (where `tutti.toml` lives and the greening worktree is made).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// The target: "owner/name" for GitHub and Gitea, a project id or URL-encoded
+        /// path ("group%2Fproject") for GitLab.
+        #[arg(long)]
+        repo: String,
+        /// Forge kind: github (default) | gitea | gitlab. Overrides [forge].kind in config.
+        #[arg(long)]
+        forge: Option<String>,
+        /// Forge login (the `tea` login for gitea). Overrides [forge].login in config.
+        #[arg(long)]
+        login: Option<String>,
+        /// Max greener iterations per target before giving up.
+        #[arg(long, default_value_t = 5)]
+        max_iters: u32,
+        /// Discard and recreate any existing greening branch for a target.
+        #[arg(long)]
+        fresh: bool,
+        /// Branch each greening branch is cut from. Defaults to the config's integration branch.
+        #[arg(long)]
+        base: Option<String>,
+        /// Run this single command as the only target instead of discovering per-language gates.
+        #[arg(long)]
+        gate: Option<String>,
     },
 }
 
@@ -77,7 +113,47 @@ async fn main() -> std::process::ExitCode {
                 std::process::ExitCode::FAILURE
             }
         },
-        Cmd::Retrofit { path, dry_run, yes } => match retrofit::run(path, dry_run, yes).await {
+        Cmd::Retrofit {
+            path,
+            dry_run,
+            yes,
+            then_green,
+            repo,
+        } => {
+            if then_green && repo.is_none() {
+                eprintln!("tutti: --then-green requires --repo");
+                return std::process::ExitCode::FAILURE;
+            }
+            match retrofit::run(path.clone(), dry_run, yes).await {
+                Ok(()) => {
+                    if dry_run || !then_green {
+                        return std::process::ExitCode::SUCCESS;
+                    }
+                    let repo = repo.expect("checked above");
+                    match green::run(path, repo, None, None, 5, false, None, None).await {
+                        Ok(()) => std::process::ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("tutti: {e}");
+                            std::process::ExitCode::FAILURE
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("tutti: {e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::Green {
+            path,
+            repo,
+            forge,
+            login,
+            max_iters,
+            fresh,
+            base,
+            gate,
+        } => match green::run(path, repo, forge, login, max_iters, fresh, base, gate).await {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("tutti: {e}");
