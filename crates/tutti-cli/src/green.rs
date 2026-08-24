@@ -6,6 +6,28 @@ use std::str::FromStr;
 use tutti_core::config::Config;
 use tutti_core::greening::{discover_targets, green_all, GreenOptions, GreenOutcome};
 
+/// Resolve the current git branch name at `repo`. Greening forks its worktree from HEAD
+/// (the branch that actually has the code and the gate), not the configured integration
+/// branch, so a target PRs into the branch it was built on unless `--base` overrides it.
+fn current_branch(repo: &std::path::Path) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("git rev-parse: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "could not resolve the current branch in {}",
+            repo.display()
+        ));
+    }
+    let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if b.is_empty() || b == "HEAD" {
+        return Err("greening needs a named current branch (detached HEAD)".into());
+    }
+    Ok(b)
+}
+
 /// Run `tutti green`. `path` is the repo root (where `tutti.toml` lives and where the
 /// greening worktree is created); `repo` is the forge-specific target, matching `Run`.
 #[allow(clippy::too_many_arguments)]
@@ -42,7 +64,10 @@ pub async fn run(
     let opts = GreenOptions {
         max_iters,
         fresh,
-        base: base.unwrap_or_else(|| cfg.integration_branch.clone()),
+        base: match base {
+            Some(b) => b,
+            None => current_branch(&path)?,
+        },
         model: cfg.model.clone(),
     };
     let workspace = tutti_git::GitGreenWorkspace::new(path.clone());

@@ -9,12 +9,18 @@ use tutti_core::traits::{EngineError, Result};
 /// Isolates a greening branch in a git worktree rooted at `repo_root`.
 pub struct GitGreenWorkspace {
     repo_root: PathBuf,
+    /// Serializes worktree-admin mutations (`worktree add` / `worktree remove`): git's
+    /// `.git/worktrees` bookkeeping is not safe for concurrent targets to contend on.
+    lock: tokio::sync::Mutex<()>,
 }
 
 impl GitGreenWorkspace {
     /// Build a green workspace manager for the git repo at `repo_root`.
     pub fn new(repo_root: PathBuf) -> Self {
-        Self { repo_root }
+        Self {
+            repo_root,
+            lock: tokio::sync::Mutex::new(()),
+        }
     }
 
     async fn git(&self, args: &[&str]) -> Result<std::process::Output> {
@@ -49,32 +55,42 @@ impl GreenWorkspace for GitGreenWorkspace {
     async fn checkout(&self, branch: &str, base: &str, resume: bool) -> Result<GreenCheckout> {
         let path = self.checkout_path(branch);
         let path_str = path.to_string_lossy().to_string();
-        // Drop any stale worktree at that path first (best-effort).
-        let _ = self
-            .git(&["worktree", "remove", "--force", &path_str])
-            .await;
-        if resume && self.branch_exists(branch).await? {
-            let out = self.git(&["worktree", "add", &path_str, branch]).await?;
-            if !out.status.success() {
-                return Err(EngineError::Forge(format!(
-                    "git worktree add (resume) failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                )));
-            }
+        let base_ref = if resume && self.branch_exists(branch).await? {
+            None
         } else {
-            let base_ref = if self.branch_exists(base).await? {
+            Some(if self.branch_exists(base).await? {
                 base.to_string()
             } else {
                 format!("origin/{base}")
-            };
-            let out = self
-                .git(&["worktree", "add", "-B", branch, &path_str, &base_ref])
-                .await?;
-            if !out.status.success() {
-                return Err(EngineError::Forge(format!(
-                    "git worktree add failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                )));
+            })
+        };
+        {
+            let _guard = self.lock.lock().await;
+            // Drop any stale worktree at that path first (best-effort).
+            let _ = self
+                .git(&["worktree", "remove", "--force", &path_str])
+                .await;
+            match &base_ref {
+                None => {
+                    let out = self.git(&["worktree", "add", &path_str, branch]).await?;
+                    if !out.status.success() {
+                        return Err(EngineError::Forge(format!(
+                            "git worktree add (resume) failed: {}",
+                            String::from_utf8_lossy(&out.stderr)
+                        )));
+                    }
+                }
+                Some(base_ref) => {
+                    let out = self
+                        .git(&["worktree", "add", "-B", branch, &path_str, base_ref])
+                        .await?;
+                    if !out.status.success() {
+                        return Err(EngineError::Forge(format!(
+                            "git worktree add failed: {}",
+                            String::from_utf8_lossy(&out.stderr)
+                        )));
+                    }
+                }
             }
         }
         Ok(GreenCheckout {
@@ -124,6 +140,7 @@ impl GreenWorkspace for GitGreenWorkspace {
 
     async fn remove(&self, co: &GreenCheckout) -> Result<()> {
         let path_str = co.path.to_string_lossy().to_string();
+        let _guard = self.lock.lock().await;
         let _ = self
             .git(&["worktree", "remove", "--force", &path_str])
             .await;

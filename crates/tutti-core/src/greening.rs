@@ -192,6 +192,19 @@ pub fn discover_targets(
         }
     }
     if !subdir_targets.is_empty() {
+        // Disambiguate colliding labels (e.g. two Python subdirs) so each target gets a unique
+        // branch/worktree path. Keep the plain language label when it is already unique.
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for t in &subdir_targets {
+            *seen.entry(t.label.clone()).or_insert(0) += 1;
+        }
+        for t in &mut subdir_targets {
+            if seen[&t.label] > 1 {
+                if let Some(dir) = t.gate.working_dir.file_name().and_then(|n| n.to_str()) {
+                    t.label = format!("{}-{}", t.label, dir);
+                }
+            }
+        }
         subdir_targets.sort_by(|a, b| a.gate.working_dir.cmp(&b.gate.working_dir));
         return subdir_targets;
     }
@@ -361,13 +374,18 @@ async fn green_body(
     if let Some(reason) = audit.reject {
         return Ok(GreenOutcome::Rejected { reason });
     }
-    workspace
+    let committed = workspace
         .commit_all(
             co,
             &format!("fix({}): green up the gate\n\nPart of #40", target.label),
         )
         .await
         .map_err(|e| e.to_string())?;
+    if !committed {
+        // Nothing staged (empty net diff): a `gh pr create` on an empty branch errors, so
+        // there is nothing left to push or open a PR for.
+        return Ok(GreenOutcome::AlreadyGreen);
+    }
     forge.push_branch(branch).await.map_err(|e| e.to_string())?;
     let pr = forge
         .open_pr(PrRequest {
@@ -428,6 +446,8 @@ pub(crate) mod fakes {
         pub diff: Mutex<GreenDiff>,
         pub resumed: Mutex<Vec<String>>,
         pub removed: Mutex<Vec<String>>,
+        /// What `commit_all` returns; false simulates nothing-to-commit (empty net diff).
+        pub commit_result: bool,
     }
 
     impl FakeGreenWorkspace {
@@ -439,6 +459,7 @@ pub(crate) mod fakes {
                 diff: Mutex::new(GreenDiff::default()),
                 resumed: Mutex::new(Vec::new()),
                 removed: Mutex::new(Vec::new()),
+                commit_result: true,
             }
         }
     }
@@ -459,7 +480,7 @@ pub(crate) mod fakes {
         }
         async fn commit_all(&self, _co: &GreenCheckout, message: &str) -> Result<bool> {
             self.committed.lock().unwrap().push(message.to_string());
-            Ok(true)
+            Ok(self.commit_result)
         }
         async fn diff(&self, _co: &GreenCheckout, _base: &str) -> Result<GreenDiff> {
             Ok(self.diff.lock().unwrap().clone())
@@ -558,6 +579,23 @@ mod tests {
         assert_eq!(targets[0].gate.working_dir, std::path::PathBuf::from("py"));
         assert_eq!(targets[1].label, "rust");
         assert_eq!(targets[1].gate.working_dir, std::path::PathBuf::from("rs"));
+    }
+
+    #[test]
+    fn discover_disambiguates_colliding_labels_across_same_language_subdirs() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "api/scripts/check.sh");
+        touch(d.path(), "api/pyproject.toml");
+        touch(d.path(), "worker/scripts/check.sh");
+        touch(d.path(), "worker/pyproject.toml");
+        let mut targets = discover_targets(d.path(), &["bash scripts/check.sh".to_string()], None);
+        targets.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(targets.len(), 2);
+        assert_ne!(targets[0].label, targets[1].label, "labels must be unique");
+        assert!(targets[0].label.contains("python"));
+        assert!(targets[1].label.contains("python"));
+        assert_eq!(targets[0].label, "python-api");
+        assert_eq!(targets[1].label, "python-worker");
     }
 
     #[test]
@@ -779,6 +817,31 @@ mod tests {
             1,
             "checkout removed even when rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn green_target_skips_push_and_pr_when_nothing_was_committed() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace {
+            commit_result: false,
+            ..FakeGreenWorkspace::new(d.path().to_path_buf())
+        };
+        let backend = MarkerBackend {
+            green_on: 1,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(
+            matches!(r.outcome, GreenOutcome::AlreadyGreen),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(forge.pr_count(), 0, "an empty net diff must not open a PR");
     }
 
     #[tokio::test]

@@ -130,6 +130,22 @@ async fn main() -> std::process::ExitCode {
                         return std::process::ExitCode::SUCCESS;
                     }
                     let repo = repo.expect("checked above");
+                    // Retrofit only writes to the working tree; commit the output so the
+                    // greening worktree (forked from HEAD) sees the new gate + tooling.
+                    // Best-effort: if there is nothing to commit, ignore the failure and
+                    // proceed to greening anyway.
+                    let _ = std::process::Command::new("git")
+                        .args(["-C", &path.to_string_lossy(), "add", "-A"])
+                        .status();
+                    let _ = std::process::Command::new("git")
+                        .args([
+                            "-C",
+                            &path.to_string_lossy(),
+                            "commit",
+                            "-m",
+                            "chore: install Tutti tooling (retrofit)",
+                        ])
+                        .status();
                     match green::run(path, repo, None, None, 5, false, None, None).await {
                         Ok(()) => std::process::ExitCode::SUCCESS,
                         Err(e) => {
