@@ -37,6 +37,96 @@ pub trait GreenWorkspace: Send + Sync {
     async fn remove(&self, co: &GreenCheckout) -> Result<()>;
 }
 
+/// The result of auditing a greening diff: a reason to reject (block the PR) plus non-fatal
+/// flags to surface in the report.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GreenAudit {
+    pub reject: Option<String>,
+    pub flags: Vec<String>,
+}
+
+/// True if `path` is a gate definition (the gate script or a CI workflow), at the repo root
+/// or any subdirectory.
+fn is_gate_definition(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy().replace('\\', "/");
+    s == "scripts/check.sh"
+        || s.ends_with("/scripts/check.sh")
+        || s.starts_with(".github/workflows/")
+        || s.contains("/.github/workflows/")
+}
+
+fn is_test_file(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    s.contains("/tests/")
+        || s.starts_with("tests/")
+        || name.ends_with("_test.go")
+        || name.ends_with(".test.ts")
+        || (name.starts_with("test_") && name.ends_with(".py"))
+}
+
+fn is_gate_config(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    matches!(
+        name,
+        "pyproject.toml" | "tsconfig.json" | "package.json" | "Cargo.toml" | "go.mod"
+    )
+}
+
+/// Audit a greening branch's diff (changed files + unified patch). Hard-reject when the diff
+/// edits the gate definition itself; otherwise collect non-fatal flags (added suppressions,
+/// deleted tests, config edits) for the reviewer.
+pub fn audit_green_diff(changed_files: &[std::path::PathBuf], patch: &str) -> GreenAudit {
+    let mut audit = GreenAudit::default();
+    if let Some(p) = changed_files.iter().find(|p| is_gate_definition(p)) {
+        audit.reject = Some(format!(
+            "the greening diff edits the gate definition ({}); that is gate-weakening, not a fix",
+            p.display()
+        ));
+        return audit;
+    }
+    let suppressions = patch
+        .lines()
+        .filter(|l| l.starts_with('+'))
+        .filter(|l| {
+            l.contains("# type: ignore")
+                || l.contains("# noqa")
+                || l.contains("#[allow(")
+                || l.contains("eslint-disable")
+        })
+        .count();
+    if suppressions > 0 {
+        audit.flags.push(format!(
+            "added {suppressions} suppression comment(s) (type: ignore / noqa / allow / eslint-disable)"
+        ));
+    }
+    let deleted_tests = changed_files
+        .iter()
+        .filter(|p| is_test_file(p))
+        .filter(|p| {
+            let s = p.to_string_lossy();
+            patch.contains(&format!("--- a/{s}")) && patch.contains("+++ /dev/null")
+        })
+        .count();
+    if deleted_tests > 0 {
+        audit
+            .flags
+            .push(format!("deleted {deleted_tests} test file(s)"));
+    }
+    let configs: Vec<_> = changed_files
+        .iter()
+        .filter(|p| is_gate_config(p))
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+        .collect();
+    if !configs.is_empty() {
+        audit.flags.push(format!(
+            "edited gate/linter config ({}); confirm it was not loosened",
+            configs.join(", ")
+        ));
+    }
+    audit
+}
+
 #[cfg(test)]
 pub(crate) mod fakes {
     use super::*;
@@ -88,5 +178,65 @@ pub(crate) mod fakes {
         async fn remove(&self, _co: &GreenCheckout) -> Result<()> {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn audit_rejects_editing_the_gate_script() {
+        let a = audit_green_diff(&[PathBuf::from("scripts/check.sh")], "- old\n+ new\n");
+        assert!(a.reject.is_some(), "editing the gate is a reject");
+    }
+
+    #[test]
+    fn audit_rejects_editing_a_ci_workflow() {
+        let a = audit_green_diff(&[PathBuf::from(".github/workflows/ci.yml")], "");
+        assert!(a.reject.is_some());
+    }
+
+    #[test]
+    fn audit_rejects_a_subdir_gate_script() {
+        let a = audit_green_diff(&[PathBuf::from("py/scripts/check.sh")], "");
+        assert!(a.reject.is_some(), "a subdir gate script is still the gate");
+    }
+
+    #[test]
+    fn audit_flags_but_allows_suppressions() {
+        let patch = "+ x = 1  # type: ignore\n+ y = 2  # noqa\n";
+        let a = audit_green_diff(&[PathBuf::from("src/x.py")], patch);
+        assert!(a.reject.is_none());
+        assert!(
+            a.flags.iter().any(|f| f.contains("suppress")),
+            "flags: {:?}",
+            a.flags
+        );
+    }
+
+    #[test]
+    fn audit_flags_deleted_tests_and_config_edits() {
+        let a = audit_green_diff(
+            &[
+                PathBuf::from("tests/test_core.py"),
+                PathBuf::from("pyproject.toml"),
+            ],
+            "--- a/tests/test_core.py\n+++ /dev/null\n",
+        );
+        assert!(a.reject.is_none());
+        assert!(a.flags.iter().any(|f| f.contains("test")));
+        assert!(a
+            .flags
+            .iter()
+            .any(|f| f.contains("pyproject.toml") || f.contains("config")));
+    }
+
+    #[test]
+    fn audit_clean_diff_has_no_reject_no_flags() {
+        let a = audit_green_diff(&[PathBuf::from("src/x.py")], "+ def f(): pass\n");
+        assert!(a.reject.is_none());
+        assert!(a.flags.is_empty());
     }
 }
