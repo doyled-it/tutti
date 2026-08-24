@@ -395,6 +395,25 @@ async fn green_body(
     })
 }
 
+/// Green every target concurrently and collect the results. A per-target failure is captured
+/// in its `GreenTargetResult` (never aborts the batch). Concurrency is bounded so a
+/// pathological target count cannot spawn unboundedly.
+pub async fn green_all(
+    targets: &[GateTarget],
+    opts: &GreenOptions,
+    backend: &dyn AgentBackend,
+    workspace: &dyn GreenWorkspace,
+    forge: &dyn Forge,
+) -> Vec<GreenTargetResult> {
+    use futures::stream::{self, StreamExt};
+    const MAX_CONCURRENT: usize = 4;
+    stream::iter(targets.iter())
+        .map(|t| green_target(t, opts, backend, workspace, forge))
+        .buffer_unordered(MAX_CONCURRENT)
+        .collect()
+        .await
+}
+
 #[cfg(test)]
 pub(crate) mod fakes {
     use super::*;
@@ -444,6 +463,53 @@ pub(crate) mod fakes {
         }
         async fn diff(&self, _co: &GreenCheckout, _base: &str) -> Result<GreenDiff> {
             Ok(self.diff.lock().unwrap().clone())
+        }
+        async fn remove(&self, co: &GreenCheckout) -> Result<()> {
+            self.removed.lock().unwrap().push(co.branch.clone());
+            Ok(())
+        }
+    }
+
+    /// A GreenWorkspace that routes each branch to its own dir, so green_all can drive
+    /// multiple targets that each run the real Gate in a distinct tempdir.
+    pub struct RoutingGreenWorkspace {
+        pub dirs: std::collections::HashMap<String, std::path::PathBuf>,
+        pub removed: Mutex<Vec<String>>,
+    }
+    impl RoutingGreenWorkspace {
+        pub fn new(map: Vec<(String, std::path::PathBuf)>) -> Self {
+            Self {
+                dirs: map.into_iter().collect(),
+                removed: Mutex::new(Vec::new()),
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl GreenWorkspace for RoutingGreenWorkspace {
+        async fn branch_exists(&self, _branch: &str) -> Result<bool> {
+            Ok(false)
+        }
+        async fn checkout(
+            &self,
+            branch: &str,
+            _base: &str,
+            _resume: bool,
+        ) -> Result<GreenCheckout> {
+            let path = self
+                .dirs
+                .get(branch)
+                .cloned()
+                .unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"));
+            Ok(GreenCheckout {
+                branch: branch.to_string(),
+                path,
+            })
+        }
+        async fn commit_all(&self, _co: &GreenCheckout, _message: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn diff(&self, _co: &GreenCheckout, _base: &str) -> Result<GreenDiff> {
+            Ok(GreenDiff::default())
         }
         async fn remove(&self, co: &GreenCheckout) -> Result<()> {
             self.removed.lock().unwrap().push(co.branch.clone());
@@ -834,5 +900,39 @@ mod tests {
             1,
             "checkout removed even when the agent run errors"
         );
+    }
+
+    #[tokio::test]
+    async fn green_all_runs_every_target_and_collects_mixed_results() {
+        let d1 = tempfile::tempdir().unwrap();
+        std::fs::write(d1.path().join(".green"), "ok").unwrap(); // target "a" already green
+        let d2 = tempfile::tempdir().unwrap(); // target "b" never greens
+        let ws = fakes::RoutingGreenWorkspace::new(vec![
+            ("green/a".into(), d1.path().to_path_buf()),
+            ("green/b".into(), d2.path().to_path_buf()),
+        ]);
+        let backend = MarkerBackend {
+            green_on: 99,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let targets = vec![
+            GateTarget {
+                label: "a".into(),
+                gate: marker_gate(),
+            },
+            GateTarget {
+                label: "b".into(),
+                gate: marker_gate(),
+            },
+        ];
+        let results = green_all(&targets, &gopts(), &backend, &ws, &forge).await;
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .any(|r| matches!(r.outcome, GreenOutcome::AlreadyGreen)));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r.outcome, GreenOutcome::Exhausted { .. })));
     }
 }
