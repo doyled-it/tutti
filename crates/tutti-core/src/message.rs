@@ -131,6 +131,15 @@ impl ReviewReport {
                 .iter()
                 .any(|f| f.severity == Severity::Blocking)
     }
+
+    /// True when the report has any finding that MUST be resolved before shipping. Minor
+    /// findings are deliberately excluded: they are cleared best-effort but never gate the
+    /// ship or extend the review loop (the verdict field is advisory; severity is the gate).
+    pub fn has_blocking_or_major(&self) -> bool {
+        self.findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Blocking | Severity::Major))
+    }
 }
 
 /// A new issue the planner proposes creating.
@@ -195,5 +204,42 @@ mod tests {
             verdict: Verdict::Approve,
         };
         assert!(!report.needs_fixes());
+    }
+
+    #[test]
+    fn major_finding_is_blocking_or_major() {
+        let report = ReviewReport {
+            findings: vec![Finding {
+                severity: Severity::Major,
+                file: "a.rs".into(),
+                line: Some(3),
+                claim: "wrong condition".into(),
+            }],
+            verdict: Verdict::Approve,
+        };
+        assert!(report.has_blocking_or_major());
+    }
+
+    #[test]
+    fn minor_only_finding_is_not_blocking_or_major() {
+        let report = ReviewReport {
+            findings: vec![Finding {
+                severity: Severity::Minor,
+                file: "a.rs".into(),
+                line: None,
+                claim: "missing coverage note".into(),
+            }],
+            verdict: Verdict::RequestChanges,
+        };
+        assert!(!report.has_blocking_or_major());
+    }
+
+    #[test]
+    fn empty_report_is_not_blocking_or_major() {
+        let report = ReviewReport {
+            findings: vec![],
+            verdict: Verdict::Approve,
+        };
+        assert!(!report.has_blocking_or_major());
     }
 }
