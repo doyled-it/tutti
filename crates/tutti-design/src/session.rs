@@ -63,6 +63,11 @@ impl SessionState {
     /// loads; it only checks that the two fields already on the struct agree with each
     /// other, not that they agree with the current code's selection rule.
     pub fn validate(&self) -> Result<()> {
+        if self.movements.is_empty() {
+            return Err(DesignError::Corrupt(
+                "movements is empty; a session must run at least one movement".to_string(),
+            ));
+        }
         if self.ratified.len() > self.movements.len() {
             return Err(DesignError::Corrupt(format!(
                 "ratified has {} entries, more than movements' {}",
@@ -122,5 +127,25 @@ mod tests {
         let resumed: SessionState = serde_json::from_str(&json).unwrap();
         assert_eq!(resumed.current(), Some(MovementId::Impact));
         assert_eq!(resumed.ratified.len(), 2);
+    }
+
+    #[test]
+    fn validate_rejects_an_empty_movement_list() {
+        // A session that runs no movements is degenerate: it would report itself
+        // complete without ever doing work. A valid session always has movements
+        // (movements_for never returns an empty set), so an empty list means corruption.
+        let s = SessionState {
+            shape: ProjectShape::SmallCli,
+            movements: Vec::new(),
+            ratified: Vec::new(),
+        };
+        assert!(matches!(s.validate(), Err(DesignError::Corrupt(_))));
+    }
+
+    #[test]
+    fn validate_accepts_a_well_formed_session() {
+        let mut s = SessionState::new(ProjectShape::MultiService);
+        s.ratify().unwrap();
+        assert!(s.validate().is_ok());
     }
 }

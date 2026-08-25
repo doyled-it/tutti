@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn save_overwrites_a_previous_session_atomically() {
+    fn save_overwrites_a_previous_session() {
         let repo = tempfile::tempdir().unwrap();
         let mut s = SessionState::new(ProjectShape::SmallCli);
         save(repo.path(), &s).unwrap();
@@ -89,6 +89,21 @@ mod tests {
         save(repo.path(), &s).unwrap();
         let resumed = load(repo.path()).unwrap().unwrap();
         assert_eq!(resumed.ratified.len(), 1);
+    }
+
+    #[test]
+    fn round_trips_a_full_multi_service_walk_to_completion() {
+        // The end-to-end integration test in lib.rs walks a 6-movement SmallCli session;
+        // this covers the full 8-movement MultiService chain persisted and resumed to the end.
+        let repo = tempfile::tempdir().unwrap();
+        let mut s = SessionState::new(ProjectShape::MultiService);
+        while s.current().is_some() {
+            s.ratify().unwrap();
+            save(repo.path(), &s).unwrap();
+            assert_eq!(load(repo.path()).unwrap().unwrap(), s);
+        }
+        assert_eq!(s.ratified.len(), 8);
+        assert!(load(repo.path()).unwrap().unwrap().is_complete());
     }
 
     #[test]
