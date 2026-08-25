@@ -3,6 +3,8 @@
 //! core: the movement model, project-shape branching, the session state machine, and
 //! resumable on-disk state.
 
+pub mod shape;
+
 /// The crate's semantic version, surfaced in artifacts later.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
