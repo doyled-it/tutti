@@ -123,13 +123,13 @@ pub struct ReviewReport {
 }
 
 impl ReviewReport {
-    /// True when at least one finding must be fixed before merge.
-    pub fn needs_fixes(&self) -> bool {
-        self.verdict == Verdict::RequestChanges
-            || self
-                .findings
-                .iter()
-                .any(|f| f.severity == Severity::Blocking)
+    /// True when the report has any finding that MUST be resolved before shipping. Minor
+    /// findings are deliberately excluded: they are cleared best-effort but never gate the
+    /// ship or extend the review loop (the verdict field is advisory; severity is the gate).
+    pub fn has_blocking_or_major(&self) -> bool {
+        self.findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Blocking | Severity::Major))
     }
 }
 
@@ -175,25 +175,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn review_with_blocking_finding_needs_fixes() {
+    fn major_finding_is_blocking_or_major() {
         let report = ReviewReport {
             findings: vec![Finding {
-                severity: Severity::Blocking,
+                severity: Severity::Major,
                 file: "a.rs".into(),
                 line: Some(3),
-                claim: "off-by-one".into(),
+                claim: "wrong condition".into(),
             }],
-            verdict: Verdict::Approve, // even on Approve, a blocking finding forces fixes
+            verdict: Verdict::Approve,
         };
-        assert!(report.needs_fixes());
+        assert!(report.has_blocking_or_major());
     }
 
     #[test]
-    fn clean_approve_needs_no_fixes() {
+    fn minor_only_finding_is_not_blocking_or_major() {
+        let report = ReviewReport {
+            findings: vec![Finding {
+                severity: Severity::Minor,
+                file: "a.rs".into(),
+                line: None,
+                claim: "missing coverage note".into(),
+            }],
+            verdict: Verdict::RequestChanges,
+        };
+        assert!(!report.has_blocking_or_major());
+    }
+
+    #[test]
+    fn empty_report_is_not_blocking_or_major() {
         let report = ReviewReport {
             findings: vec![],
             verdict: Verdict::Approve,
         };
-        assert!(!report.needs_fixes());
+        assert!(!report.has_blocking_or_major());
     }
 }

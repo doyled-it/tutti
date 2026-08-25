@@ -76,6 +76,7 @@ mod tests {
             integration_branch: "version/v0.1".into(),
             model: "m".into(),
             max_issues_per_run: 5,
+            max_review_iterations: 3,
             select: SelectFilter {
                 require_label: "status:ready".into(),
                 skip_labels: vec![],

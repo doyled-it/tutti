@@ -33,7 +33,17 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
 
     let role_line = match task.playbook.role {
         Role::Implementer => "Implement the issue below, test-first.",
-        Role::Reviewer => "Review the current work for this issue and report findings.",
+        Role::Reviewer => {
+            "Adversarially review the current work for correctness. Assume the gate (format, \
+             lint, types) and CI are already green: your job is to find the real bugs they \
+             cannot see. Hunt for wrong conditions, off-by-one and boundary errors, \
+             unhandled inputs, panics and overflow, broken invariants, incorrect error \
+             handling, and missing test coverage of real behavior. Do NOT raise formatting, \
+             style, naming, or structural findings: those are settled by the opinionated \
+             gate and the project's conventions. Report only substantive findings, each with \
+             an honest severity (blocking or major means it must be fixed before shipping; \
+             minor is a small correctness or coverage note)."
+        }
         Role::FixApplier => "Apply the review findings below to the current work.",
         Role::Planner => "Decide the next action for this project.",
         Role::Greener => {
@@ -132,6 +142,23 @@ mod tests {
         assert!(p.contains("/superpowers:test-driven-development"));
         assert!(p.contains("Issue #42: Do X"));
         assert!(p.contains("/wt/.tutti/handoff.json"));
+    }
+
+    #[test]
+    fn reviewer_prompt_is_adversarial_and_correctness_scoped() {
+        let p = build_prompt(
+            &task(Role::Reviewer, vec![]),
+            Path::new("/wt/.tutti/review.json"),
+        );
+        assert!(p.contains("Adversarially review"));
+        assert!(p.contains("Do NOT raise formatting"));
+
+        let implementer_p = build_prompt(
+            &task(Role::Implementer, vec![]),
+            Path::new("/wt/.tutti/handoff.json"),
+        );
+        assert!(!implementer_p.contains("Adversarially review"));
+        assert!(!implementer_p.contains("Do NOT raise formatting"));
     }
 
     #[test]
