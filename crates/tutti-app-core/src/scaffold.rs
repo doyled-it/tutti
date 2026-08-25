@@ -150,7 +150,10 @@ line-length = 88
 target-version = "py313"
 
 [tool.ruff.lint]
-extend-select = ["I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PIE", "PERF", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
 
 [tool.mypy]
 strict = true
@@ -199,9 +202,11 @@ Python project. One command gates every change:
 bash scripts/check.sh
 ```
 
-Run it before opening a PR; it must exit 0. It runs ruff (format + lint), mypy --strict,
-and pytest. Formatting is enforced, do not hand-tune style. New functions ship with tests
-in `tests/`. Work merges into `staging`, never `main`.
+Run it before opening a PR; it must exit 0. It runs ruff (format + an opinionated lint set:
+bugbear, simplify, comprehensions, perf, and ruff's own rules, on top of the pyflakes/
+pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest. Formatting is enforced,
+do not hand-tune style. New functions ship with tests in `tests/`. Work merges into
+`staging`, never `main`.
 
 Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
 "#), false, FileRole::Tooling),
@@ -251,7 +256,29 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+
+[lints.clippy]
+semicolon_if_nothing_returned = "deny"
+manual_let_else               = "deny"
+explicit_iter_loop            = "deny"
+map_unwrap_or                 = "deny"
+needless_pass_by_value        = "deny"
+inefficient_to_string         = "deny"
+implicit_clone                = "deny"
+dbg_macro    = "deny"
+unwrap_used  = "deny"
+expect_used  = "deny"
 "#
+            ),
+            false,
+            FileRole::Config,
+        ),
+        f(
+            "clippy.toml",
+            String::from(
+                r#"allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+"#,
             ),
             false,
             FileRole::Config,
@@ -329,8 +356,10 @@ bash scripts/check.sh
 ```
 
 Run it before opening a PR; it must exit 0. It runs `cargo fmt --check`, `cargo clippy
---all-targets -- -D warnings`, and `cargo test`. Formatting is enforced, do not hand-tune
-style, and clippy warnings are hard errors. New functions ship with tests. Work merges into
+--all-targets -- -D warnings` against the crate's opinionated `[lints.clippy]` table
+(`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, `dbg!` is denied
+everywhere), and `cargo test`. Formatting is enforced, do not hand-tune style, and clippy
+warnings are hard errors. New functions ship with tests. Work merges into
 `staging`, never `main`.
 
 Layout: library crate under `src/`, tests inline as `#[cfg(test)]` modules or under `tests/`.
@@ -382,11 +411,12 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
   "type": "module",
   "private": true,
   "scripts": {{
-    "check": "tsc --noEmit && bun test"
+    "check": "tsc --noEmit && biome check . && bun test"
   }},
   "devDependencies": {{
     "typescript": "^5.7.0",
-    "bun-types": "^1.1.0"
+    "bun-types": "^1.1.0",
+    "@biomejs/biome": "^2.0.0"
   }}
 }}
 "#
@@ -401,6 +431,12 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
   "compilerOptions": {
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2023",
@@ -409,6 +445,19 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     "skipLibCheck": true
   },
   "include": ["src"]
+}
+"#,
+            ),
+            false,
+            FileRole::Config,
+        ),
+        f(
+            "biome.json",
+            String::from(
+                r#"{
+  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "linter": { "enabled": true, "rules": { "recommended": true } },
+  "formatter": { "enabled": true, "indentStyle": "space" }
 }
 "#,
             ),
@@ -451,6 +500,7 @@ set -euo pipefail
 # `bun install` was unavailable at scaffold time).
 bun install --frozen-lockfile 2>/dev/null || bun install
 bunx tsc --noEmit
+bunx @biomejs/biome check .
 bun test
 "#,
             ),
@@ -489,9 +539,13 @@ bash scripts/check.sh
 ```
 
 Run it before opening a PR; it must exit 0. It installs dependencies, then runs `tsc
---noEmit` (strict type-check) and `bun test`. Types are enforced under `strict` plus
-`noUncheckedIndexedAccess`; do not loosen them. New functions ship with tests in `src/`.
+--noEmit` (strict type-check, plus `noUncheckedIndexedAccess` and
+`exactOptionalPropertyTypes`), `biome check .` (lint and format), and `bun test`. Types
+and formatting are enforced; do not loosen them. New functions ship with tests in `src/`.
 Work merges into `staging`, never `main`.
+
+Note `exactOptionalPropertyTypes` is strict: a third-party dependency whose type
+definitions were not authored to it can surface type errors that are not your code's fault.
 
 Layout: source and colocated `*.test.ts` under `src/`.
 "#,
@@ -559,6 +613,23 @@ fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
             FileRole::Sample,
         ),
         f(
+            ".golangci.yml",
+            String::from(
+                r#"version: "2"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+"#,
+            ),
+            false,
+            FileRole::Config,
+        ),
+        f(
             "scripts/check.sh",
             String::from(
                 r#"#!/usr/bin/env bash
@@ -570,8 +641,7 @@ if [ -n "$unformatted" ]; then
   echo "$unformatted" >&2
   exit 1
 fi
-go vet ./...
-go test ./...
+go vet ./... && golangci-lint run ./... && go test ./...
 "#,
             ),
             true,
@@ -593,6 +663,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.0.0
+          install-mode: binary
       - run: bash scripts/check.sh
 "#,
             ),
@@ -611,8 +685,10 @@ bash scripts/check.sh
 ```
 
 Run it before opening a PR; it must exit 0. It checks `gofmt` (no unformatted files), then
-runs `go vet ./...` and `go test ./...`. Formatting is enforced by gofmt, do not hand-tune
-style. New functions ship with `*_test.go` tests. Work merges into `staging`, never `main`.
+runs `go vet ./...`, `golangci-lint run ./...` (staticcheck, errcheck, ineffassign, unused),
+and `go test ./...`. `golangci-lint` is a prerequisite, not part of the Go toolchain.
+Formatting is enforced by gofmt, do not hand-tune style. New functions ship with
+`*_test.go` tests. Work merges into `staging`, never `main`.
 
 Layout: package sources at the module root, tests as `*_test.go` beside them.
 "#,
@@ -726,7 +802,15 @@ mod tests {
         };
         // The pinned, agent-friendly tooling is present in pyproject.
         let pyproject = &by_path("pyproject.toml").contents;
-        for needle in ["[tool.ruff]", "strict = true", "pytest", "requires-python"] {
+        for needle in [
+            "[tool.ruff]",
+            "strict = true",
+            "pytest",
+            "requires-python",
+            "\"B\"",
+            "\"SIM\"",
+            "\"RUF\"",
+        ] {
             assert!(pyproject.contains(needle), "pyproject missing {needle}");
         }
         // The canonical gate runs every check and is executable.
@@ -830,9 +914,13 @@ mod tests {
                 .find(|f| f.path == std::path::Path::new(rel))
                 .unwrap_or_else(|| panic!("missing {rel}"))
         };
-        assert!(by_path("Cargo.toml")
+        let cargo_toml = &by_path("Cargo.toml").contents;
+        assert!(cargo_toml.contains("name = \"my_repo\""));
+        assert!(cargo_toml.contains("[lints.clippy]"));
+        assert!(cargo_toml.contains("unwrap_used  = \"deny\""));
+        assert!(by_path("clippy.toml")
             .contents
-            .contains("name = \"my_repo\""));
+            .contains("allow-unwrap-in-tests"));
         by_path("src/lib.rs");
         let check = &by_path("scripts/check.sh").contents;
         for needle in [
@@ -859,13 +947,24 @@ mod tests {
         assert!(by_path("package.json")
             .contents
             .contains("\"name\": \"my_repo\""));
-        assert!(by_path("tsconfig.json")
-            .contents
-            .contains("\"strict\": true"));
+        let tsconfig = &by_path("tsconfig.json").contents;
+        for needle in [
+            "\"strict\": true",
+            "\"noUncheckedIndexedAccess\": true",
+            "\"exactOptionalPropertyTypes\": true",
+        ] {
+            assert!(tsconfig.contains(needle), "tsconfig missing {needle}");
+        }
+        assert!(by_path("biome.json").contents.contains("\"linter\""));
         by_path("src/index.ts");
         by_path("src/index.test.ts");
         let check = &by_path("scripts/check.sh").contents;
-        for needle in ["bun install", "bunx tsc --noEmit", "bun test"] {
+        for needle in [
+            "bun install",
+            "bunx tsc --noEmit",
+            "biome check",
+            "bun test",
+        ] {
             assert!(check.contains(needle), "ts check.sh missing {needle}");
         }
         assert!(by_path(".github/workflows/ci.yml")
@@ -892,14 +991,30 @@ mod tests {
             "go source must be tab-indented"
         );
         assert!(src.contains("package my_repo"));
+        assert!(
+            src.contains("// Package my_repo"),
+            "go source must carry a package doc comment (staticcheck ST1000)"
+        );
         by_path("my_repo_test.go");
+        let golangci = &by_path(".golangci.yml").contents;
+        for needle in ["staticcheck", "errcheck"] {
+            assert!(golangci.contains(needle), "golangci.yml missing {needle}");
+        }
         let check = &by_path("scripts/check.sh").contents;
-        for needle in ["gofmt -l .", "go vet ./...", "go test ./..."] {
+        for needle in [
+            "gofmt -l .",
+            "go vet ./...",
+            "golangci-lint run",
+            "go test ./...",
+        ] {
             assert!(check.contains(needle), "go check.sh missing {needle}");
         }
         assert!(by_path(".github/workflows/ci.yml")
             .contents
             .contains("actions/setup-go"));
+        assert!(by_path(".github/workflows/ci.yml")
+            .contents
+            .contains("golangci-lint"));
     }
 
     #[test]
