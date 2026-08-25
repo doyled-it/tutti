@@ -36,12 +36,23 @@ pub struct Skill {
 /// bare or wrapped in single or double quotes. A file with no frontmatter, a frontmatter
 /// missing either key, or a duplicate key is an error.
 pub fn parse_frontmatter(content: &str) -> Result<(Frontmatter, String), DesignError> {
-    let mut lines = content.lines();
+    // A SKILL.md exported by some editors carries a leading UTF-8 BOM; strip it before the
+    // opening-fence check so those files still parse.
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
 
-    let first = lines
+    // `split_inclusive('\n')` keeps each terminator (including the `\r` of a `\r\n` pair)
+    // attached to its line, so summing the raw slice lengths gives the real byte offset of
+    // the body regardless of line ending. `str::lines()` strips `\r`, which under-counts
+    // CRLF content and either leaks the closing fence into the body or, combined with
+    // multibyte characters, walks `consumed_bytes` past a char boundary.
+    let mut raw_lines = content.split_inclusive('\n');
+    let mut consumed_bytes = 0usize;
+
+    let first_raw = raw_lines
         .next()
         .ok_or_else(|| DesignError::Skill("empty SKILL.md content".to_string()))?;
-    if first != "---" {
+    consumed_bytes += first_raw.len();
+    if first_raw.trim_end_matches(['\r', '\n']) != "---" {
         return Err(DesignError::Skill(
             "SKILL.md must open with a `---` frontmatter fence on the first line".to_string(),
         ));
@@ -50,10 +61,10 @@ pub fn parse_frontmatter(content: &str) -> Result<(Frontmatter, String), DesignE
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
     let mut closed = false;
-    let mut consumed_bytes = first.len() + 1; // "---\n"
 
-    for line in lines {
-        consumed_bytes += line.len() + 1;
+    for raw_line in raw_lines {
+        consumed_bytes += raw_line.len();
+        let line = raw_line.trim_end_matches(['\r', '\n']);
         if line == "---" {
             closed = true;
             break;
@@ -98,16 +109,10 @@ pub fn parse_frontmatter(content: &str) -> Result<(Frontmatter, String), DesignE
         DesignError::Skill("SKILL.md frontmatter is missing required key `description`".to_string())
     })?;
 
-    let body = content
-        .get(consumed_bytes.min(content.len())..)
-        .unwrap_or("")
-        .strip_prefix('\n')
-        .unwrap_or_else(|| {
-            content
-                .get(consumed_bytes.min(content.len())..)
-                .unwrap_or("")
-        })
-        .to_string();
+    // `consumed_bytes` points exactly at the first byte after the closing fence's line
+    // terminator, so the remainder is the body verbatim: a deliberate leading blank line
+    // in the body must survive, not be eaten.
+    let body = content.get(consumed_bytes..).unwrap_or("").to_string();
 
     Ok((Frontmatter { name, description }, body))
 }
@@ -213,6 +218,33 @@ mod tests {
         let (fm, _) = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name, "x");
         assert_eq!(fm.description, "y");
+    }
+
+    #[test]
+    fn parse_frontmatter_handles_crlf_line_endings() {
+        let content = "---\r\nname: pdf-extractor\r\ndescription: Extract text from PDFs.\r\n---\r\n# Body\r\nSome content.\r\n";
+        let (fm, body) = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.name, "pdf-extractor");
+        assert_eq!(fm.description, "Extract text from PDFs.");
+        // No leaked fence, no truncation: the body is exactly the CRLF content after it.
+        assert_eq!(body, "# Body\r\nSome content.\r\n");
+        assert!(!body.contains("---"));
+    }
+
+    #[test]
+    fn parse_frontmatter_keeps_a_deliberate_leading_blank_line_in_the_body() {
+        let content = "---\nname: x\ndescription: y\n---\n\nBody after blank.\n";
+        let (_, body) = parse_frontmatter(content).unwrap();
+        assert_eq!(body, "\nBody after blank.\n");
+    }
+
+    #[test]
+    fn parse_frontmatter_strips_a_leading_bom() {
+        let content = "\u{FEFF}---\nname: x\ndescription: y\n---\nbody\n";
+        let (fm, body) = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.name, "x");
+        assert_eq!(fm.description, "y");
+        assert_eq!(body, "body\n");
     }
 
     #[test]

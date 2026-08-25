@@ -53,7 +53,10 @@ pub fn lint(skill: &Skill) -> Vec<Violation> {
     }
 
     let lower_name = skill.name.to_lowercase();
-    if let Some(word) = RESERVED_WORDS.iter().find(|w| lower_name.contains(*w)) {
+    if let Some(word) = RESERVED_WORDS
+        .iter()
+        .find(|w| lower_name.split('-').any(|segment| segment == **w))
+    {
         violations.push(Violation {
             rule: "name-reserved",
             message: format!(
@@ -93,7 +96,9 @@ pub fn lint(skill: &Skill) -> Vec<Violation> {
         });
     }
 
-    let body_lines = skill.body.split('\n').count();
+    // `str::lines()` does not count a trailing terminator as an extra line, unlike
+    // `split('\n')`, which over-counts a canonical newline-terminated body by one.
+    let body_lines = skill.body.lines().count();
     if body_lines > MAX_BODY_LINES {
         violations.push(Violation {
             rule: "body-length",
@@ -101,15 +106,13 @@ pub fn lint(skill: &Skill) -> Vec<Violation> {
         });
     }
 
-    let has_backslash_path = skill
-        .references
-        .iter()
-        .chain(skill.scripts.iter())
-        .any(|p| p.to_string_lossy().contains('\\'));
-    if has_backslash_path {
+    // `references`/`scripts` are `PathBuf`s this crate itself built with `Path::join`, so
+    // they carry the host's native separator and say nothing about what the author wrote.
+    // Scan the author's own content instead for a backslash used as a path separator.
+    if contains_backslash_path(&skill.body) || contains_backslash_path(&skill.description) {
         violations.push(Violation {
             rule: "forward-slash-paths",
-            message: "a reference or script path contains a backslash; use forward slashes"
+            message: "skill content uses a backslash as a path separator; use forward slashes"
                 .to_string(),
         });
     }
@@ -117,18 +120,51 @@ pub fn lint(skill: &Skill) -> Vec<Violation> {
     violations
 }
 
+/// True when `text` contains a `\` flanked on both sides by a non-whitespace,
+/// non-backslash character, the shape of a Windows-style path separator (`scripts\check.sh`)
+/// rather than ordinary prose punctuation.
+fn contains_backslash_path(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    chars.iter().enumerate().any(|(i, &c)| {
+        if c != '\\' {
+            return false;
+        }
+        let before_ok = i > 0 && {
+            let b = chars[i - 1];
+            !b.is_whitespace() && b != '\\'
+        };
+        let after_ok = i + 1 < chars.len() && {
+            let a = chars[i + 1];
+            !a.is_whitespace() && a != '\\'
+        };
+        before_ok && after_ok
+    })
+}
+
 fn is_valid_name_charset(name: &str) -> bool {
     name.chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// True when `text` contains a `<...>` XML-ish tag: a `<` followed later by a `>`.
+/// True when `text` contains a `<...>` XML-ish tag: a `<` immediately followed by an ASCII
+/// letter, `/`, or `!` (a plausible tag opener, e.g. `<b>`, `</b>`, `<!--`), with a later
+/// `>`. A bare comparison like `x < 5 and result > 10` does not qualify, since `<` there is
+/// followed by a digit and a space, not a tag-like character.
 fn contains_xml_tag(text: &str) -> bool {
-    if let Some(open) = text.find('<') {
-        text[open + 1..].contains('>')
-    } else {
-        false
+    let bytes = text.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'<' {
+            continue;
+        }
+        let Some(&next) = bytes.get(i + 1) else {
+            continue;
+        };
+        let looks_like_tag_open = next.is_ascii_alphabetic() || next == b'/' || next == b'!';
+        if looks_like_tag_open && text[i + 1..].contains('>') {
+            return true;
+        }
     }
+    false
 }
 
 #[cfg(test)]
@@ -216,5 +252,65 @@ mod tests {
         let violations = lint(&skill);
         assert!(violations.iter().any(|v| v.rule == "name-charset"));
         assert!(violations.iter().any(|v| v.rule == "description-present"));
+    }
+
+    #[test]
+    fn lint_accepts_exactly_500_lines_and_flags_501() {
+        let mut skill = well_formed();
+        skill.body = "line\n".repeat(500);
+        assert!(!lint(&skill).iter().any(|v| v.rule == "body-length"));
+
+        skill.body = "line\n".repeat(501);
+        assert!(lint(&skill).iter().any(|v| v.rule == "body-length"));
+    }
+
+    #[test]
+    fn lint_does_not_flag_a_bare_comparison_as_an_xml_tag() {
+        let mut skill = well_formed();
+        skill.description = "use when x < 5 and result > 10".to_string();
+        assert!(!lint(&skill).iter().any(|v| v.rule == "no-xml-tags"));
+    }
+
+    #[test]
+    fn lint_still_flags_a_real_xml_tag() {
+        let mut skill = well_formed();
+        skill.description = "Use this <b>skill</b> for PDFs.".to_string();
+        assert!(lint(&skill).iter().any(|v| v.rule == "no-xml-tags"));
+    }
+
+    #[test]
+    fn lint_flags_a_backslash_path_in_the_body() {
+        let mut skill = well_formed();
+        skill.body = "See scripts\\check.sh for details.".to_string();
+        assert!(lint(&skill).iter().any(|v| v.rule == "forward-slash-paths"));
+    }
+
+    #[test]
+    fn lint_does_not_flag_native_forward_slash_script_paths() {
+        // The enumerated paths on disk use forward slashes; the rule reads author content,
+        // not these PathBufs, so a normal skill is never flagged for its own file listing.
+        let skill = well_formed();
+        assert!(!lint(&skill).iter().any(|v| v.rule == "forward-slash-paths"));
+    }
+
+    #[test]
+    fn lint_does_not_flag_a_body_with_no_backslash() {
+        let mut skill = well_formed();
+        skill.body = "Nothing but plain prose here.".to_string();
+        assert!(!lint(&skill).iter().any(|v| v.rule == "forward-slash-paths"));
+    }
+
+    #[test]
+    fn lint_does_not_flag_a_substring_reserved_word() {
+        let mut skill = well_formed();
+        skill.name = "misanthropic-helper".to_string();
+        assert!(!lint(&skill).iter().any(|v| v.rule == "name-reserved"));
+    }
+
+    #[test]
+    fn lint_flags_a_whole_segment_reserved_word() {
+        let mut skill = well_formed();
+        skill.name = "claude-helper".to_string();
+        assert!(lint(&skill).iter().any(|v| v.rule == "name-reserved"));
     }
 }

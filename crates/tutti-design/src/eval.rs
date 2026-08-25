@@ -24,15 +24,37 @@ pub struct EvalRecord {
 }
 
 /// Load a skill directory's eval records from `<dir>/evals.json` (a JSON array).
-/// `Ok(vec![])` when the file is absent.
+/// `Ok(vec![])` when the file is absent. Errors if any record's `expected_behavior` is
+/// empty or contains only empty/whitespace-only entries: such a record would let `score`
+/// pass vacuously and undermines `has_minimum_evals`' three-record floor.
 pub fn load_evals(skill_dir: &Path) -> Result<Vec<EvalRecord>, DesignError> {
     let path = skill_dir.join("evals.json");
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| DesignError::Skill(format!("reading {}: {e}", path.display())))?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(DesignError::Skill(format!(
+                "reading {}: {e}",
+                path.display()
+            )))
+        }
+    };
     let records: Vec<EvalRecord> = serde_json::from_str(&content)?;
+
+    for record in &records {
+        let all_meaningful = !record.expected_behavior.is_empty()
+            && record
+                .expected_behavior
+                .iter()
+                .all(|b| !b.trim().is_empty());
+        if !all_meaningful {
+            return Err(DesignError::Skill(format!(
+                "eval record for query \"{}\" has an empty expected_behavior",
+                record.query
+            )));
+        }
+    }
+
     Ok(records)
 }
 
@@ -54,6 +76,11 @@ pub struct EvalOutcome {
 /// Deterministic proxy scoring: each `expected_behavior` is "met" when it appears as a
 /// case-insensitive substring of the transcript. (A semantic rubric judged by a model is
 /// the live-tier eval; this deterministic form is what the hermetic harness runs.)
+///
+/// `record.expected_behavior` must be non-empty and hold no empty/whitespace-only entries;
+/// an empty entry matches any transcript and an empty list makes scoring vacuously pass.
+/// `load_evals` enforces this at load time, so a record built by hand is the caller's own
+/// responsibility to keep meaningful.
 pub fn score(record: &EvalRecord, transcript: &str) -> EvalOutcome {
     let haystack = transcript.to_lowercase();
     let met: Vec<bool> = record
@@ -133,6 +160,28 @@ mod tests {
         .unwrap();
         let loaded = load_evals(dir.path()).unwrap();
         assert_eq!(loaded.len(), 3);
+    }
+
+    #[test]
+    fn load_evals_rejects_a_record_with_empty_expected_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut empty_list = record();
+        empty_list.expected_behavior = vec![];
+        std::fs::write(
+            dir.path().join("evals.json"),
+            serde_json::to_string(&vec![empty_list]).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(load_evals(dir.path()), Err(DesignError::Skill(_))));
+
+        let mut blank_entry = record();
+        blank_entry.expected_behavior = vec!["   ".to_string()];
+        std::fs::write(
+            dir.path().join("evals.json"),
+            serde_json::to_string(&vec![blank_entry]).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(load_evals(dir.path()), Err(DesignError::Skill(_))));
     }
 
     #[test]
