@@ -19,6 +19,7 @@ pub mod session;
 pub mod shape;
 pub mod skill;
 pub mod store;
+pub mod svg;
 
 pub use decompose::{
     render_plan, seed, BacklogPlan, ProposedEpic, ProposedIssue, ProposedMilestone, SeedReport,
@@ -30,6 +31,7 @@ pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
 pub use session::SessionState;
 pub use shape::ProjectShape;
 pub use skill::{load as load_skill, Frontmatter, Skill};
+pub use svg::{edge, is_well_formed_svg, node, zone, Accent, Diagram, PAGE_CSS};
 
 /// The crate's semantic version, surfaced in artifacts later.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
