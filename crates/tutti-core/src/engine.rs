@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The drain loop. One issue per iteration: select, implement, review,
-//! apply-fixes, gate, merge (via the executor), record, plan.
+//! The drain loop. One issue per iteration: select, implement, then a review verify
+//! loop (review, apply-fixes, re-review) that only breaks once the review carries no
+//! Blocking/Major finding, gate, merge (via the executor), record, plan.
 
 use crate::config::Config;
 use crate::domain::{Issue, IssueState};
