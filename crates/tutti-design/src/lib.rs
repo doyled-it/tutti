@@ -16,7 +16,9 @@ pub mod shape;
 pub mod skill;
 pub mod store;
 
-pub use decompose::{render_plan, BacklogPlan, ProposedEpic, ProposedIssue, ProposedMilestone};
+pub use decompose::{
+    render_plan, seed, BacklogPlan, ProposedEpic, ProposedIssue, ProposedMilestone, SeedReport,
+};
 pub use error::{DesignError, Result};
 pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTranscriptSource};
 pub use lint::{lint, Violation};
