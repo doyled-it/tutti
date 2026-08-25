@@ -8,17 +8,25 @@
 //! (`decompose`): a `BacklogPlan` model for the milestone/epic/issue tree a Score
 //! design proposes, a deterministic `render_plan` for the propose -> review step, and
 //! an idempotent `seed` that creates the tree through `tutti-core`'s `Forge` seam,
-//! re-runnable without duplicating work.
+//! re-runnable without duplicating work. E3 adds the design-page renderer: `svg`
+//! ports the Sotto house-style inline-SVG diagram vocabulary (the page CSS, the
+//! node/zone/edge primitive builders, a `Diagram` composer, and a well-formedness
+//! check), and `page` accretes a `DesignPage` of ratified sections into a single
+//! self-contained HTML document via `render_page`. Generating section content from a
+//! facilitated session is out of scope here; this module only renders what it is
+//! given.
 
 pub mod decompose;
 pub mod error;
 pub mod eval;
 pub mod lint;
 pub mod movement;
+pub mod page;
 pub mod session;
 pub mod shape;
 pub mod skill;
 pub mod store;
+pub mod svg;
 
 pub use decompose::{
     render_plan, seed, BacklogPlan, ProposedEpic, ProposedIssue, ProposedMilestone, SeedReport,
@@ -27,9 +35,11 @@ pub use error::{DesignError, Result};
 pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTranscriptSource};
 pub use lint::{lint, Violation};
 pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
+pub use page::{render_page, DesignPage, Section};
 pub use session::SessionState;
 pub use shape::ProjectShape;
 pub use skill::{load as load_skill, Frontmatter, Skill};
+pub use svg::{edge, is_well_formed_svg, node, zone, Accent, Diagram, PAGE_CSS};
 
 /// The crate's semantic version, surfaced in artifacts later.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
