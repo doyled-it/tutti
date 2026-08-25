@@ -435,7 +435,6 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
-    "noPropertyAccessFromIndexSignature": true,
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true,
     "module": "esnext",
@@ -545,6 +544,9 @@ Run it before opening a PR; it must exit 0. It installs dependencies, then runs 
 and formatting are enforced; do not loosen them. New functions ship with tests in `src/`.
 Work merges into `staging`, never `main`.
 
+Note `exactOptionalPropertyTypes` is strict: a third-party dependency whose type
+definitions were not authored to it can surface type errors that are not your code's fault.
+
 Layout: source and colocated `*.test.ts` under `src/`.
 "#,
             ),
@@ -633,7 +635,13 @@ linters:
                 r#"#!/usr/bin/env bash
 # The one canonical gate. CI and the agent both run exactly this.
 set -euo pipefail
-test -z "$(gofmt -l .)" && go vet ./... && golangci-lint run ./... && go test ./...
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "gofmt needs to run on:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+go vet ./... && golangci-lint run ./... && go test ./...
 "#,
             ),
             true,
