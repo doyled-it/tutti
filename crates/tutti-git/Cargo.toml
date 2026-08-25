@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 tutti-core = { path = "../tutti-core" }
 async-trait = "0.1"
-tokio = { version = "1", features = ["process", "rt", "macros"] }
+tokio = { version = "1", features = ["process", "rt", "macros", "sync"] }
 
 [dev-dependencies]
 tempfile = "3"

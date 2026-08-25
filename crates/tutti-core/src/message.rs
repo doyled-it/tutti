@@ -12,6 +12,7 @@ pub enum Role {
     Reviewer,
     FixApplier,
     Planner,
+    Greener,
 }
 
 /// The resolved role -> skills mapping handed to a backend for one run.

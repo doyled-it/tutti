@@ -79,6 +79,11 @@ impl FakeForge {
         self.state.lock().unwrap().issues.len()
     }
 
+    /// The number of PRs opened so far, for assertions.
+    pub fn pr_count(&self) -> usize {
+        self.state.lock().unwrap().prs.len()
+    }
+
     /// The titles of all tracked issues, for assertions.
     pub fn issue_titles(&self) -> Vec<String> {
         self.state

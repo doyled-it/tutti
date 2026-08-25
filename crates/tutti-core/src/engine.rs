@@ -618,7 +618,7 @@ pub(crate) fn subsession_summary(role: Role, out: &Result<AgentOutcome>) -> (Str
         Err(e) => return (format!("error: {e}"), false),
     };
     match role {
-        Role::Implementer | Role::FixApplier => {
+        Role::Implementer | Role::FixApplier | Role::Greener => {
             if outcome.status == AgentStatus::ReadyToShip {
                 ("ready to ship".to_string(), true)
             } else {

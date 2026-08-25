@@ -9,6 +9,9 @@ use tutti_core::domain::IssueId;
 use tutti_core::traits::{EngineError, Result};
 use tutti_core::workspace::{Workspace, WorkspaceHandle};
 
+mod green;
+pub use green::GitGreenWorkspace;
+
 /// Isolates issue work in git worktrees rooted at `repo_root`.
 pub struct GitWorkspace {
     repo_root: PathBuf,
