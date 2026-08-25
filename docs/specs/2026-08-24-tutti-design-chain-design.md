@@ -42,6 +42,12 @@ thinking chain" and "the backlog it feeds" is designed once, not twice.
 - **Tutti-native and self-contained.** Tutti ships its own design-rails prompt library and
   diagram vocabulary. It does not depend on the superpowers plugin being installed, because
   Tutti runs on other people's machines.
+- **Skills are first-class loadable files, not inline prompts.** The movement facilitation
+  guidance and the diagram authoring ship as **Anthropic-format `SKILL.md` skills**
+  (agentskills.io open standard), loaded through the `ClaudeBackend`'s existing
+  `/plugin:skill` path, and proven by an **evaluation-driven test harness**. See the Skills
+  section. This is a dedicated sub-issue (E1.5) that lands before the facilitation loop
+  (E2) consumes the seam.
 - **State lives under `.tutti/design/`** so a session is stoppable, resumable, and
   **branchable** (fork a session to explore an alternative decision).
 - **Placement: a new front stage of the funnel**, exposed on both the CLI (`tutti design`)
@@ -108,6 +114,50 @@ Two axes:
      large projects invest in the middle where integration risk lives.
 2. **By decision:** a chosen alternative at a movement opens or closes downstream questions,
    and can fork the session to explore an alternative in parallel.
+
+## Skills: movement facilitation and diagram authoring
+
+The rails content and the diagram authoring ship as **loadable skills in the Anthropic
+`SKILL.md` open standard** (agentskills.io), the format the `ClaudeBackend` already loads
+via `/plugin:skill`. Skills are therefore first-class: individually authored, versioned,
+user-overridable, and testable in isolation, rather than prompt strings compiled into the
+binary. Each movement's facilitation guidance is a skill; each diagram type (flow,
+architecture, sequence/data-transport, user-story map, network/deployment) is a skill.
+
+### Format (per Anthropic's authoring guidance)
+
+- A skill is a directory with a `SKILL.md` (YAML frontmatter + markdown body) plus optional
+  reference files (one level deep) and a `scripts/` directory.
+- Required frontmatter is `name` (<= 64 chars, lowercase/numbers/hyphens, no reserved
+  words) and `description` (<= 1024 chars, third person, stating both what it does AND when
+  to use it, with trigger keywords). Progressive disclosure: name + description is the
+  always-loaded surface; the body (<= 500 lines) loads on trigger; references and scripts
+  load only when needed.
+- One default approach with an escape hatch, concrete input/output examples over abstract
+  prose, consistent terminology, no time-sensitive phrasing, forward-slash paths.
+- A diagram skill carries the shared Sotto inline-SVG vocabulary as a reference file and a
+  `scripts/` validator.
+
+### Test harness (evaluation-driven)
+
+Anthropic's guidance is to build evaluations before the prose and ships no runner, so Tutti
+provides one. Each skill ships at least three evaluation records of the shape
+`{ skills, query, inputs, expected_behavior[] }`, where `expected_behavior` is a rubric of
+observable outcomes. The harness has three layers:
+
+1. **Structural lint (deterministic):** frontmatter present and within limits, name and
+   description rules, body <= 500 lines, references one level deep, forward-slash paths, no
+   reserved words. A pure check, hermetic.
+2. **Diagram validators:** for a diagram skill, the produced inline SVG is well-formed and
+   renders (shared with E4's validators).
+3. **Behavioral evals:** run the skill over its scenarios against a no-skill baseline and
+   score the `expected_behavior` rubric. Live-tier (needs a real backend).
+
+Sources: Anthropic Agent Skills best practices
+(https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices), the
+"Equipping agents for the real world with Agent Skills" engineering post
+(https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills),
+and the open standard (https://agentskills.io).
 
 ## Architecture
 
@@ -206,14 +256,22 @@ raw idea
 
 - **E1. Crate skeleton.** `tutti-design` with the rails model, `ProjectShape`, the session
   state machine, and in-memory fakes. Hermetic core.
+- **E1.5. Skill seam + test harness.** The loadable-skill packaging (Anthropic `SKILL.md`
+  format, `ClaudeBackend` `/plugin:skill` wiring) and the evaluation-driven test harness
+  (structural lint + the eval-record runner + the diagram-validator hook). Lands before E2,
+  the first consumer, so facilitation and E4/E5 author skills against a proven seam.
+  Grounded in Anthropic's skill-authoring guidance (see the Skills section).
 - **E2. Single-movement facilitation loop.** Drive one movement end to end over the fake
-  `AgentBackend`: checklist coverage plus free depth, ratification gate, state persist.
+  `AgentBackend`: checklist coverage plus free depth, ratification gate, state persist. The
+  movement's guidance is loaded as a `SKILL.md` skill via E1.5's seam.
 - **E3. Design-page renderer + SVG vocabulary.** Port the Sotto inline-SVG diagram
   vocabulary into a reusable asset; render the accreting self-contained `design.html`.
 - **E4. Diagram sub-skills.** The five generators (architecture, flow, sequence/data-
-  transport, user-story map, network/deployment) with validators.
-- **E5. Full rails + branching.** The eight-movement prompt library and the branching rule
-  set (small / mobile / multi-service), with golden tests.
+  transport, user-story map, network/deployment) authored as `SKILL.md` skills against
+  E1.5's harness, each with its inline-SVG validator and eval records.
+- **E5. Full rails + branching.** The eight movement facilitation skills (`SKILL.md`,
+  authored against E1.5's harness) and the branching rule set (small / mobile /
+  multi-service), with golden tests.
 - **E6. Forge decomposer.** Story map -> milestones/epics/issues + EARS + dependency/
   complexity; plan/diff/confirm/seed via the `Forge` seam; idempotent.
 - **E7a. Existing-repo design grounding (own spec).** How the chain reads an existing
