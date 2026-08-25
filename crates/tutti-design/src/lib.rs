@@ -8,7 +8,13 @@
 //! (`decompose`): a `BacklogPlan` model for the milestone/epic/issue tree a Score
 //! design proposes, a deterministic `render_plan` for the propose -> review step, and
 //! an idempotent `seed` that creates the tree through `tutti-core`'s `Forge` seam,
-//! re-runnable without duplicating work.
+//! re-runnable without duplicating work. E3 adds the design-page renderer: `svg`
+//! ports the Sotto house-style inline-SVG diagram vocabulary (the page CSS, the
+//! node/zone/edge primitive builders, a `Diagram` composer, and a well-formedness
+//! check), and `page` accretes a `DesignPage` of ratified sections into a single
+//! self-contained HTML document via `render_page`. Generating section content from a
+//! facilitated session is out of scope here; this module only renders what it is
+//! given.
 
 pub mod decompose;
 pub mod error;
