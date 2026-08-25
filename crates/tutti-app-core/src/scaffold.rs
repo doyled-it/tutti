@@ -92,6 +92,103 @@ pub fn package_name(repo: &str) -> String {
     out
 }
 
+/// The language-specific parts that feed the shared `constitution` template. The shared
+/// sections (gate framing, testing, simplicity, naming, prose conventions, git) live once
+/// in `constitution`, not duplicated per profile.
+struct ConstitutionParts {
+    /// The language name as it reads in prose (e.g. "Rust").
+    language: &'static str,
+    /// What the gate runs, as a clause completing "It runs {gate_runs}."
+    gate_runs: &'static str,
+    /// Where tests live, as a clause completing "Tests live in {tests_live}."
+    tests_live: &'static str,
+    /// The per-language idiom bullets, verbatim.
+    idioms: &'static [&'static str],
+    /// The one-line error-handling rule.
+    error_handling: &'static str,
+    /// The layout line. May contain the literal placeholder `{pkg}`, substituted with the
+    /// project's package name.
+    layout: &'static str,
+}
+
+/// Render an AGENTS.md body: the project's constitution. The shared sections (the gate
+/// framing, testing, simplicity, naming, prose conventions, git) are written once here;
+/// `parts` supplies only what differs per language.
+fn constitution(parts: &ConstitutionParts, pkg: &str) -> String {
+    let idioms_block = parts
+        .idioms
+        .iter()
+        .map(|idiom| format!("- {idiom}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let layout = parts.layout.replace("{pkg}", pkg);
+    format!(
+        r#"# AGENTS.md
+
+{language} project. This file is the project's constitution: the conventions below are
+settled. Follow them. The reviewer enforces them and does not raise style beyond them. To
+change a convention, edit this file in its own PR, do not relitigate it in review.
+
+## The gate
+
+One command gates every change:
+
+```
+bash scripts/check.sh
+```
+
+Run it before opening a PR; it must exit 0. It runs {gate_runs}. Formatting and lint are
+enforced mechanically, do not hand-tune style.
+
+## Testing
+
+New behavior ships with tests that assert real behavior, not tautologies or mock-only
+assertions. A bug fix ships with a regression test that fails before the fix. Tests live in
+{tests_live}.
+
+## {language} conventions
+
+{idioms_block}
+
+Error handling: {error_handling}.
+
+## Simplicity
+
+The simplest thing that works. No speculative abstraction (YAGNI). Delete dead code rather
+than commenting it out.
+
+## Naming
+
+Names say what a thing does, not how. No `utils`, `helpers`, or `manager` grab-bag modules.
+
+## Prose (comments, commits, PRs, docs)
+
+Write plainly. Avoid the patterns that read as machine-generated and cost the writing its
+credibility:
+
+- No em dashes. Use a period, comma, or parentheses. (Hyphens and numeric en dashes are fine.)
+- No "not just X, but Y" or "not only ... but also" reframing. State the point directly.
+- Cut filler openers and closers ("In conclusion", "Overall", "It is important to note").
+- Avoid the inflated vocabulary (delve, leverage, robust, seamless, comprehensive, crucial,
+  pivotal, boasts, testament). Prefer the plain word.
+- Do not pad to three parallel items when one or two carry the meaning.
+- Prefer prose to bullet lists for a short connected argument. No emoji. Sentence-case headings.
+
+## Git
+
+Conventional Commits. Small, focused PRs. Work merges into `staging`, never `main`.
+
+Layout: {layout}.
+"#,
+        language = parts.language,
+        gate_runs = parts.gate_runs,
+        tests_live = parts.tests_live,
+        idioms_block = idioms_block,
+        error_handling = parts.error_handling,
+        layout = layout,
+    )
+}
+
 /// The built-in stacks, each an opinionated, agent-friendly per-language shape.
 pub fn available_stacks() -> Vec<StackProfile> {
     vec![
@@ -193,23 +290,30 @@ jobs:
           enable-cache: true
       - run: bash scripts/check.sh
 "#), false, FileRole::Tooling),
-        f("AGENTS.md", format!(
-r#"# AGENTS.md
-
-Python project. One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It runs ruff (format + an opinionated lint set:
-bugbear, simplify, comprehensions, perf, and ruff's own rules, on top of the pyflakes/
-pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest. Formatting is enforced,
-do not hand-tune style. New functions ship with tests in `tests/`. Work merges into
-`staging`, never `main`.
-
-Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
-"#), false, FileRole::Tooling),
+        f("AGENTS.md", constitution(
+            &ConstitutionParts {
+                language: "Python",
+                gate_runs: "ruff (format + an opinionated lint set: bugbear, simplify, \
+                    comprehensions, perf, and ruff's own rules, on top of the pyflakes/ \
+                    pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest",
+                tests_live: "`tests/`",
+                idioms: &[
+                    "Use `pathlib.Path` over `os.path` string juggling.",
+                    "Use `dataclasses` for structured records rather than ad-hoc dicts or \
+                        tuples.",
+                    "Use f-strings for formatting.",
+                    "Manage resources (files, locks, sessions) with `with` context managers.",
+                    "Type-hint public function signatures (mypy strict makes these \
+                        load-bearing).",
+                    "Iterate directly and use comprehensions, `enumerate`, and `zip` rather \
+                        than C-style index loops.",
+                ],
+                error_handling: "prefer EAFP (try/except) over precondition-checking; do not \
+                    use a bare `except`",
+                layout: "package under `src/{pkg}/`, tests under `tests/` mirroring it",
+            },
+            pkg,
+        ), false, FileRole::Tooling),
         f(".python-version", String::from("3.13\n"), false, FileRole::Tooling),
         f(".gitignore", String::from(
 "__pycache__/\n.venv/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n"), false, FileRole::Tooling),
@@ -346,24 +450,33 @@ jobs:
         ),
         f(
             "AGENTS.md",
-            String::from(
-                r#"# AGENTS.md
-
-Rust project. One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It runs `cargo fmt --check`, `cargo clippy
---all-targets -- -D warnings` against the crate's opinionated `[lints.clippy]` table
-(`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, `dbg!` is denied
-everywhere), and `cargo test`. Formatting is enforced, do not hand-tune style, and clippy
-warnings are hard errors. New functions ship with tests. Work merges into
-`staging`, never `main`.
-
-Layout: library crate under `src/`, tests inline as `#[cfg(test)]` modules or under `tests/`.
-"#,
+            constitution(
+                &ConstitutionParts {
+                    language: "Rust",
+                    gate_runs: "`cargo fmt --check`, `cargo clippy --all-targets -- -D \
+                        warnings` against the crate's opinionated `[lints.clippy]` table \
+                        (`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, \
+                        `dbg!` is denied everywhere), and `cargo test`",
+                    tests_live: "inline `#[cfg(test)]` modules or under `tests/`",
+                    idioms: &[
+                        "Use newtypes over stringly-typed or primitive-obsessed APIs, so the \
+                            representation can change without breaking callers.",
+                        "Accept borrowed or generic arguments (`&str`, `&[T]`, \
+                            `impl AsRef<_>`) and return owned values (`String`, `Vec<T>`).",
+                        "Derive standard traits (`Debug`, `Clone`, `PartialEq`) rather than \
+                            hand-implementing; derive `Debug` on all public types.",
+                        "Make illegal states unrepresentable: model variants as `enum`s and \
+                            match them exhaustively.",
+                        "Take `self`/`&self`/`&mut self` to match the access the method \
+                            needs; do not borrow-and-clone when it needs ownership.",
+                    ],
+                    error_handling: "prefer `?`; reserve `unwrap`/`expect` for tests and \
+                        provable invariants, and give `expect` a message; do not panic \
+                        across a public API",
+                    layout: "library crate under `src/`, tests inline as `#[cfg(test)]` \
+                        modules or under `tests/`",
+                },
+                pkg,
             ),
             false,
             FileRole::Tooling,
@@ -529,26 +642,33 @@ jobs:
         ),
         f(
             "AGENTS.md",
-            String::from(
-                r#"# AGENTS.md
-
-TypeScript project (Bun). One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It installs dependencies, then runs `tsc
---noEmit` (strict type-check, plus `noUncheckedIndexedAccess` and
-`exactOptionalPropertyTypes`), `biome check .` (lint and format), and `bun test`. Types
-and formatting are enforced; do not loosen them. New functions ship with tests in `src/`.
-Work merges into `staging`, never `main`.
-
-Note `exactOptionalPropertyTypes` is strict: a third-party dependency whose type
-definitions were not authored to it can surface type errors that are not your code's fault.
-
-Layout: source and colocated `*.test.ts` under `src/`.
-"#,
+            constitution(
+                &ConstitutionParts {
+                    language: "TypeScript",
+                    gate_runs: "`tsc --noEmit` (strict type-check, plus \
+                        `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`), \
+                        `biome check .` (lint and format), and `bun test`. Note \
+                        `exactOptionalPropertyTypes` is strict: a third-party dependency \
+                        whose type definitions were not authored to it can surface type \
+                        errors that are not your code's fault",
+                    tests_live: "colocated `*.test.ts` files under `src/`",
+                    idioms: &[
+                        "Model variant data as discriminated unions (a shared literal \
+                            `kind` field) so the compiler narrows each case.",
+                        "Make exhaustive `switch`es provably complete with a `never`-typed \
+                            default, so a new variant fails compilation.",
+                        "Use `readonly` and `as const` for data that should not be mutated.",
+                        "Prefer `interface` or `type` aliases for public object shapes over \
+                            inline anonymous types.",
+                        "Prefer type guards over assertions (`as`); assert only when you \
+                            genuinely know more than the compiler.",
+                    ],
+                    error_handling: "avoid `any`; take `unknown` at untyped boundaries and \
+                        narrow before use; do not silence errors with `// @ts-ignore` or \
+                        `!` where narrowing would do",
+                    layout: "source and colocated `*.test.ts` under `src/`",
+                },
+                pkg,
             ),
             false,
             FileRole::Tooling,
@@ -675,23 +795,32 @@ jobs:
         ),
         f(
             "AGENTS.md",
-            String::from(
-                r#"# AGENTS.md
-
-Go project. One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It checks `gofmt` (no unformatted files), then
-runs `go vet ./...`, `golangci-lint run ./...` (staticcheck, errcheck, ineffassign, unused),
-and `go test ./...`. `golangci-lint` is a prerequisite, not part of the Go toolchain.
-Formatting is enforced by gofmt, do not hand-tune style. New functions ship with
-`*_test.go` tests. Work merges into `staging`, never `main`.
-
-Layout: package sources at the module root, tests as `*_test.go` beside them.
-"#,
+            constitution(
+                &ConstitutionParts {
+                    language: "Go",
+                    gate_runs: "`gofmt` (no unformatted files), then `go vet ./...`, \
+                        `golangci-lint run ./...` (staticcheck, errcheck, ineffassign, \
+                        unused), and `go test ./...`. `golangci-lint` is a prerequisite, \
+                        not part of the Go toolchain",
+                    tests_live: "`*_test.go` files beside the package they test",
+                    idioms: &[
+                        "Accept interfaces, return concrete types; let the consumer define \
+                            the interface it needs.",
+                        "Keep interfaces small and defined at the point of use.",
+                        "Use `defer` for cleanup immediately after acquiring a resource.",
+                        "Avoid naked returns in anything longer than a few lines.",
+                        "Write table-driven tests with subtests (`t.Run`).",
+                        "Pass `context.Context` as the first parameter for cancelable or \
+                            request-scoped work; do not store it in structs.",
+                    ],
+                    error_handling: "handle every error explicitly; wrap with \
+                        `fmt.Errorf(\"...: %w\", err)` and inspect with `errors.Is`/\
+                        `errors.As`; never string-match a message; do not discard an error \
+                        with `_` unless deliberate",
+                    layout: "package sources at the module root, tests as `*_test.go` \
+                        beside them",
+                },
+                pkg,
             ),
             false,
             FileRole::Tooling,
@@ -902,6 +1031,41 @@ mod tests {
                 "{id} AGENTS.md must state the staging convention"
             );
             by_path(".gitignore");
+        }
+    }
+
+    /// Each profile's AGENTS.md is the full constitution, not just the gate blurb: the
+    /// shared sections are present and at least one language-specific idiom made it
+    /// through, so the per-profile `ConstitutionParts` are actually wired to `constitution`.
+    #[test]
+    fn every_profile_agents_md_is_a_full_constitution() {
+        let idiom_needle = |id: &str| match id {
+            "python" => "pathlib",
+            "rust" => "newtypes",
+            "typescript" => "discriminated unions",
+            "go" => "Accept interfaces",
+            other => panic!("no idiom needle registered for profile {other}"),
+        };
+        for profile in available_stacks() {
+            let id = profile.id;
+            let files = (profile.files)(&ctx());
+            let agents = &files
+                .iter()
+                .find(|f| f.path == std::path::Path::new("AGENTS.md"))
+                .unwrap_or_else(|| panic!("{id} missing AGENTS.md"))
+                .contents;
+            for needle in ["## Testing", "## Prose", "do not relitigate it in review"] {
+                assert!(agents.contains(needle), "{id} AGENTS.md missing {needle}");
+            }
+            assert!(
+                agents.contains("No em dashes"),
+                "{id} AGENTS.md missing the em-dash rule"
+            );
+            let idiom = idiom_needle(id);
+            assert!(
+                agents.contains(idiom),
+                "{id} AGENTS.md missing its language idiom ({idiom})"
+            );
         }
     }
 
