@@ -251,7 +251,29 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+
+[lints.clippy]
+semicolon_if_nothing_returned = "deny"
+manual_let_else               = "deny"
+explicit_iter_loop            = "deny"
+map_unwrap_or                 = "deny"
+needless_pass_by_value        = "deny"
+inefficient_to_string         = "deny"
+implicit_clone                = "deny"
+dbg_macro    = "deny"
+unwrap_used  = "deny"
+expect_used  = "deny"
 "#
+            ),
+            false,
+            FileRole::Config,
+        ),
+        f(
+            "clippy.toml",
+            String::from(
+                r#"allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+"#,
             ),
             false,
             FileRole::Config,
@@ -830,9 +852,13 @@ mod tests {
                 .find(|f| f.path == std::path::Path::new(rel))
                 .unwrap_or_else(|| panic!("missing {rel}"))
         };
-        assert!(by_path("Cargo.toml")
+        let cargo_toml = &by_path("Cargo.toml").contents;
+        assert!(cargo_toml.contains("name = \"my_repo\""));
+        assert!(cargo_toml.contains("[lints.clippy]"));
+        assert!(cargo_toml.contains("unwrap_used  = \"deny\""));
+        assert!(by_path("clippy.toml")
             .contents
-            .contains("name = \"my_repo\""));
+            .contains("allow-unwrap-in-tests"));
         by_path("src/lib.rs");
         let check = &by_path("scripts/check.sh").contents;
         for needle in [
