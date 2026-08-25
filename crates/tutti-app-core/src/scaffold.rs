@@ -607,19 +607,29 @@ fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
             FileRole::Sample,
         ),
         f(
+            ".golangci.yml",
+            String::from(
+                r#"version: "2"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+"#,
+            ),
+            false,
+            FileRole::Config,
+        ),
+        f(
             "scripts/check.sh",
             String::from(
                 r#"#!/usr/bin/env bash
 # The one canonical gate. CI and the agent both run exactly this.
 set -euo pipefail
-unformatted="$(gofmt -l .)"
-if [ -n "$unformatted" ]; then
-  echo "gofmt needs to run on:" >&2
-  echo "$unformatted" >&2
-  exit 1
-fi
-go vet ./...
-go test ./...
+test -z "$(gofmt -l .)" && go vet ./... && golangci-lint run ./... && go test ./...
 "#,
             ),
             true,
@@ -641,6 +651,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.0.0
+          install-mode: binary
       - run: bash scripts/check.sh
 "#,
             ),
@@ -659,8 +673,10 @@ bash scripts/check.sh
 ```
 
 Run it before opening a PR; it must exit 0. It checks `gofmt` (no unformatted files), then
-runs `go vet ./...` and `go test ./...`. Formatting is enforced by gofmt, do not hand-tune
-style. New functions ship with `*_test.go` tests. Work merges into `staging`, never `main`.
+runs `go vet ./...`, `golangci-lint run ./...` (staticcheck, errcheck, ineffassign, unused),
+and `go test ./...`. `golangci-lint` is a prerequisite, not part of the Go toolchain.
+Formatting is enforced by gofmt, do not hand-tune style. New functions ship with
+`*_test.go` tests. Work merges into `staging`, never `main`.
 
 Layout: package sources at the module root, tests as `*_test.go` beside them.
 "#,
@@ -963,14 +979,30 @@ mod tests {
             "go source must be tab-indented"
         );
         assert!(src.contains("package my_repo"));
+        assert!(
+            src.contains("// Package my_repo"),
+            "go source must carry a package doc comment (staticcheck ST1000)"
+        );
         by_path("my_repo_test.go");
+        let golangci = &by_path(".golangci.yml").contents;
+        for needle in ["staticcheck", "errcheck"] {
+            assert!(golangci.contains(needle), "golangci.yml missing {needle}");
+        }
         let check = &by_path("scripts/check.sh").contents;
-        for needle in ["gofmt -l .", "go vet ./...", "go test ./..."] {
+        for needle in [
+            "gofmt -l .",
+            "go vet ./...",
+            "golangci-lint run",
+            "go test ./...",
+        ] {
             assert!(check.contains(needle), "go check.sh missing {needle}");
         }
         assert!(by_path(".github/workflows/ci.yml")
             .contents
             .contains("actions/setup-go"));
+        assert!(by_path(".github/workflows/ci.yml")
+            .contents
+            .contains("golangci-lint"));
     }
 
     #[test]
