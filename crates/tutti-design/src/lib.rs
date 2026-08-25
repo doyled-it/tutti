@@ -3,6 +3,7 @@
 //! core: the movement model, project-shape branching, the session state machine, and
 //! resumable on-disk state.
 
+pub mod error;
 pub mod movement;
 pub mod shape;
 
