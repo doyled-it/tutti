@@ -4,7 +4,11 @@
 //! resumable on-disk state. E1.5 adds the hermetic half of the skill system: loading
 //! and representing an Anthropic-style SKILL.md skill directory, a structural lint over
 //! the authoring rules, and an evaluation-record model with deterministic proxy scoring
-//! and a runner over a transcript-source seam.
+//! and a runner over a transcript-source seam. E6 adds the forge decomposer
+//! (`decompose`): a `BacklogPlan` model for the milestone/epic/issue tree a Score
+//! design proposes, a deterministic `render_plan` for the propose -> review step, and
+//! an idempotent `seed` that creates the tree through `tutti-core`'s `Forge` seam,
+//! re-runnable without duplicating work.
 
 pub mod decompose;
 pub mod error;
