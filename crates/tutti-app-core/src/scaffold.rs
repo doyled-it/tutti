@@ -1034,6 +1034,41 @@ mod tests {
         }
     }
 
+    /// Each profile's AGENTS.md is the full constitution, not just the gate blurb: the
+    /// shared sections are present and at least one language-specific idiom made it
+    /// through, so the per-profile `ConstitutionParts` are actually wired to `constitution`.
+    #[test]
+    fn every_profile_agents_md_is_a_full_constitution() {
+        let idiom_needle = |id: &str| match id {
+            "python" => "pathlib",
+            "rust" => "newtypes",
+            "typescript" => "discriminated unions",
+            "go" => "Accept interfaces",
+            other => panic!("no idiom needle registered for profile {other}"),
+        };
+        for profile in available_stacks() {
+            let id = profile.id;
+            let files = (profile.files)(&ctx());
+            let agents = &files
+                .iter()
+                .find(|f| f.path == std::path::Path::new("AGENTS.md"))
+                .unwrap_or_else(|| panic!("{id} missing AGENTS.md"))
+                .contents;
+            for needle in ["## Testing", "## Prose", "do not relitigate it in review"] {
+                assert!(agents.contains(needle), "{id} AGENTS.md missing {needle}");
+            }
+            assert!(
+                agents.contains("No em dashes"),
+                "{id} AGENTS.md missing the em-dash rule"
+            );
+            let idiom = idiom_needle(id);
+            assert!(
+                agents.contains(idiom),
+                "{id} AGENTS.md missing its language idiom ({idiom})"
+            );
+        }
+    }
+
     #[test]
     fn rust_profile_emits_the_opinionated_stack() {
         let files = (rust_profile().files)(&ctx());
