@@ -7,6 +7,7 @@ pub mod error;
 pub mod movement;
 pub mod session;
 pub mod shape;
+pub mod store;
 
 /// The crate's semantic version, surfaced in artifacts later.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
