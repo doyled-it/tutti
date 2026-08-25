@@ -63,15 +63,24 @@ impl BacklogPlan {
 }
 
 /// A stable idempotency marker for a proposed issue, embedded in the seeded body so a
-/// re-run can recognize an already-created issue. Derived deterministically from the title
-/// (lowercased, non-alphanumerics collapsed to single hyphens, trimmed).
+/// re-run can recognize an already-created issue. Built from two parts: a Unicode-aware
+/// human-readable slug of the title (lowercased via `to_lowercase`, every run of
+/// non-alphanumeric characters, by `char::is_alphanumeric`, collapsed to a single hyphen,
+/// leading/trailing hyphens trimmed), and an 8-hex-digit FNV-1a hash of the raw title
+/// bytes. The slug alone is not enough to be a safe marker: a non-Latin title (CJK,
+/// Cyrillic, ...) can slug down to empty, and two distinct titles can slug down to the
+/// same thing (punctuation- or accent-only differences). The hash suffix is what actually
+/// guarantees distinct titles never collide; the slug is kept only so the marker stays
+/// legible in a rendered issue body. The hash is hand-rolled (not `std`'s
+/// `DefaultHasher`/`RandomState`, whose output is not guaranteed stable across processes)
+/// because this marker is written into a GitHub issue body and must still match on a
+/// re-run months later. The same title always produces the same marker.
 pub fn issue_marker(title: &str) -> String {
     let mut slug = String::with_capacity(title.len());
     let mut last_was_hyphen = false;
-    for ch in title.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            slug.push(lower);
+    for ch in title.to_lowercase().chars() {
+        if ch.is_alphanumeric() {
+            slug.push(ch);
             last_was_hyphen = false;
         } else if !last_was_hyphen {
             slug.push('-');
@@ -79,7 +88,20 @@ pub fn issue_marker(title: &str) -> String {
         }
     }
     let trimmed = slug.trim_matches('-');
-    format!("score:{trimmed}")
+
+    // FNV-1a over the raw (unslugged) title bytes.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in title.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let hash8 = format!("{:08x}", h & 0xffff_ffff);
+
+    if trimmed.is_empty() {
+        format!("score:{hash8}")
+    } else {
+        format!("score:{trimmed}-{hash8}")
+    }
 }
 
 /// The HTML comment that carries the marker in a rendered issue body.
@@ -210,6 +232,10 @@ fn new_issue_for(issue: &ProposedIssue, ready_label: &str) -> NewIssue {
 /// checked against existing issue bodies (`Forge::list_issues`); an issue whose marker is
 /// already present is skipped, not recreated.
 ///
+/// Idempotency depends on `Forge::list_issues` still surfacing a previously-seeded issue:
+/// it is documented as "open and recently closed, bounded", so a very old closed issue that
+/// has aged out of that window could be recreated on a much later re-run.
+///
 /// Returns a `SeedReport`. Any `Forge` error is wrapped in `DesignError::Forge`.
 pub async fn seed(
     plan: &BacklogPlan,
@@ -230,11 +256,16 @@ pub async fn seed(
             .map_err(wrap)?;
     }
 
-    // Reuse a milestone with the same title, or create one.
+    // Reuse a milestone with the same title, or create one. Matched exact-after-trim: the
+    // planner owns canonical, case-consistent titles, so only accidental leading/trailing
+    // whitespace is normalized away, not case.
     let milestone_id = match &plan.milestone {
         Some(m) => {
             let existing = forge.list_milestones().await.map_err(wrap)?;
-            let id = match existing.into_iter().find(|x| x.title == m.title) {
+            let id = match existing
+                .into_iter()
+                .find(|x| x.title.trim() == m.title.trim())
+            {
                 Some(found) => found.id,
                 None => {
                     forge
@@ -259,17 +290,30 @@ pub async fn seed(
         .collect();
 
     let existing_epics = forge.list_epics().await.map_err(wrap)?;
+    // Epics created earlier in THIS run, keyed by title, so a plan with two epics of the
+    // same title reuses the first rather than creating a duplicate (existing_epics is a
+    // one-time snapshot from before the loop and never sees this run's own creations).
+    let mut epics_created_this_run: std::collections::HashMap<
+        String,
+        tutti_core::tracking::EpicId,
+    > = std::collections::HashMap::new();
 
     for epic in &plan.epics {
-        let epic_id = match existing_epics.iter().find(|e| e.title == epic.title) {
-            Some(found) => found.id,
-            None => {
-                forge
-                    .create_epic(&epic.title, &epic.body)
-                    .await
-                    .map_err(wrap)?
-                    .id
-            }
+        let epic_id = if let Some(found) = existing_epics
+            .iter()
+            .find(|e| e.title.trim() == epic.title.trim())
+        {
+            found.id
+        } else if let Some(id) = epics_created_this_run.get(epic.title.trim()) {
+            *id
+        } else {
+            let id = forge
+                .create_epic(&epic.title, &epic.body)
+                .await
+                .map_err(wrap)?
+                .id;
+            epics_created_this_run.insert(epic.title.trim().to_string(), id);
+            id
         };
 
         for issue in &epic.issues {
@@ -318,10 +362,36 @@ mod tests {
 
     #[test]
     fn issue_marker_is_stable_and_slugified() {
-        assert_eq!(
-            issue_marker("E6: Forge Decomposer!"),
-            "score:e6-forge-decomposer"
-        );
+        let marker = issue_marker("E6: Forge Decomposer!");
+        // The human-readable slug is still there...
+        assert!(marker.starts_with("score:e6-forge-decomposer-"));
+        // ...followed by an 8-hex-digit stable hash suffix.
+        let hash = marker.strip_prefix("score:e6-forge-decomposer-").unwrap();
+        assert_eq!(hash.len(), 8);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // Calling it again produces the identical marker.
+        assert_eq!(marker, issue_marker("E6: Forge Decomposer!"));
+    }
+
+    #[test]
+    fn issue_marker_distinguishes_titles_that_differ_only_by_punctuation() {
+        let a = issue_marker("Add OAuth2 support");
+        let b = issue_marker("Add OAuth2 support!");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn issue_marker_handles_non_ascii_titles_distinctly() {
+        let a = issue_marker("设计评审");
+        let b = issue_marker("修复缺陷");
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn issue_marker_is_identical_for_the_same_title_called_twice() {
+        assert_eq!(issue_marker("Some title"), issue_marker("Some title"));
     }
 
     #[test]
@@ -494,6 +564,34 @@ mod tests {
 
             let milestones = forge.list_milestones().await.unwrap();
             assert_eq!(milestones.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn seed_reuses_a_same_titled_epic_created_earlier_in_the_same_run() {
+            let forge = FakeForge::new(vec![], CiState::Pass);
+            let plan = BacklogPlan {
+                milestone: None,
+                epics: vec![
+                    ProposedEpic {
+                        title: "Shared epic".to_string(),
+                        body: String::new(),
+                        issues: vec![issue("From first entry")],
+                    },
+                    ProposedEpic {
+                        title: "Shared epic".to_string(),
+                        body: String::new(),
+                        issues: vec![issue("From second entry")],
+                    },
+                ],
+                loose_issues: vec![],
+            };
+
+            let report = seed(&plan, &forge, "status:ready").await.unwrap();
+
+            assert_eq!(report.created.len(), 2);
+            let epics = forge.list_epics().await.unwrap();
+            assert_eq!(epics.len(), 1, "the second entry must reuse the first epic");
+            assert_eq!(epics[0].children.len(), 2);
         }
     }
 }
