@@ -4,6 +4,7 @@
 //! resumable on-disk state.
 
 pub mod error;
+pub mod lint;
 pub mod movement;
 pub mod session;
 pub mod shape;
@@ -11,6 +12,7 @@ pub mod skill;
 pub mod store;
 
 pub use error::{DesignError, Result};
+pub use lint::{lint, Violation};
 pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
 pub use session::SessionState;
 pub use shape::ProjectShape;
