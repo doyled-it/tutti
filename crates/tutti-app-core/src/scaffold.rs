@@ -150,7 +150,10 @@ line-length = 88
 target-version = "py313"
 
 [tool.ruff.lint]
-extend-select = ["I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PIE", "PERF", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
 
 [tool.mypy]
 strict = true
@@ -748,7 +751,15 @@ mod tests {
         };
         // The pinned, agent-friendly tooling is present in pyproject.
         let pyproject = &by_path("pyproject.toml").contents;
-        for needle in ["[tool.ruff]", "strict = true", "pytest", "requires-python"] {
+        for needle in [
+            "[tool.ruff]",
+            "strict = true",
+            "pytest",
+            "requires-python",
+            "\"B\"",
+            "\"SIM\"",
+            "\"RUF\"",
+        ] {
             assert!(pyproject.contains(needle), "pyproject missing {needle}");
         }
         // The canonical gate runs every check and is executable.
