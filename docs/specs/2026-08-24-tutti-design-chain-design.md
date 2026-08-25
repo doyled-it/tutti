@@ -46,7 +46,7 @@ thinking chain" and "the backlog it feeds" is designed once, not twice.
   **branchable** (fork a session to explore an alternative decision).
 - **Placement: a new front stage of the funnel**, exposed on both the CLI (`tutti design`)
   and the Tauri app, covering **new and existing** repos.
-- **Station 7 seeds the forge via propose -> review/edit -> seed.** The chain proposes the
+- **Movement 7 seeds the forge via propose -> review/edit -> seed.** The chain proposes the
   full backlog as a reviewable plan; the human ratifies (cut, reorder, edit acceptance
   criteria); only then does Tutti create it on the forge. This matches the existing
   retrofit `plan -> y-confirm -> apply` pattern and guards against a decomposition that
@@ -121,7 +121,7 @@ It sits in front of the existing scaffold (new repo) and retrofit (existing repo
 
 ### Components
 
-1. **Rails model.** Stations are declarative data (same philosophy as `StackProfile`):
+1. **Rails model.** Movements are declarative data (same philosophy as `StackProfile`):
    each movement is `{ id, guiding questions, must-hit coverage checklist, output artifact
    section, applicable diagram skills, ratification gate }`. Branching is which movements are
    selected and at what depth, driven by `ProjectShape`. Adding or reshaping a movement is
