@@ -2,7 +2,7 @@
 
 Status: proposed
 Date: 2026-08-24
-Working name: **Score** (the full written score the agent-ensemble then performs; provisional)
+Working name: **Score** (the full written score the agent-ensemble then performs; provisional). The rail units are **movements**.
 
 ## Goal
 
@@ -30,10 +30,10 @@ thinking chain" and "the backlog it feeds" is designed once, not twice.
 ## Decisions (settled)
 
 - **Facilitation is hybrid: design on rails.** The engine owns a canonical sequence of
-  design **stations** (the rails), their gates, and the branching. Each station is a real
+  design **movements** (the rails), their gates, and the branching. Each movement is a real
   Socratic mini-conversation the agent facilitates, with freedom to linger and go deeper on
   the novel/complex/interesting parts rather than marching lockstep. Structure at the
-  station boundaries, freedom within a station.
+  movement boundaries, freedom within a movement.
 - **The artifact is a self-contained HTML/CSS/JS design page** in the Sotto house style,
   with **hand-authored inline-SVG diagrams**, not Mermaid. (Sotto's `docs/index.html` is a
   single self-contained file whose diagrams are inline SVG built from a small shared CSS
@@ -51,12 +51,12 @@ thinking chain" and "the backlog it feeds" is designed once, not twice.
   criteria); only then does Tutti create it on the forge. This matches the existing
   retrofit `plan -> y-confirm -> apply` pattern and guards against a decomposition that
   silently drops scope (a documented failure mode of PRD-to-tasks parsers).
-- **Artifacts are gates, not paperwork.** No station advances without the human ratifying
+- **Artifacts are gates, not paperwork.** No movement advances without the human ratifying
   its section. This is the universal insight across every design methodology surveyed.
 
 ## Research basis
 
-The station sequence is synthesized from established practice (sources are illustrative,
+The movement sequence is synthesized from established practice (sources are illustrative,
 not exhaustive):
 
 - **Amazon Working Backwards / PR-FAQ** (write the ending first; the strongest cheap
@@ -75,11 +75,11 @@ not exhaustive):
   criteria, each gated), GitHub spec-kit (specify/plan/tasks plus a standing
   `constitution.md`), PRD-to-tasks agents (dependency-aware task graphs, complexity flags).
 
-## The rails (stations)
+## The rails (movements)
 
-| # | Station | Guiding question | Produces | Diagram skills |
+| # | Movement | Guiding question | Produces | Diagram skills |
 |---|---------|------------------|----------|----------------|
-| 0 | **Constitution** | What must stay true no matter what? | Project principles / non-negotiables (carried in every later station's context; feeds `AGENTS.md`) | — |
+| 0 | **Constitution** | What must stay true no matter what? | Project principles / non-negotiables (carried in every later movement's context; feeds `AGENTS.md`) | — |
 | 1 | **Frame** | Who is this for, why do they care the day it ships, what is the budget, what is explicitly out? | PR-FAQ / pitch + appetite + non-goals | — |
 | 2 | **Impact** | What behavior change, in which actor, produces the goal? | Impact map (goal -> actors -> impacts -> deliverables) | flow |
 | 3 | **Domain** | What is the language and shape of this world, and where are the seams? | Glossary + entities/events -> bounded contexts (full event-storm only at large scope) | data/event flow |
@@ -106,15 +106,15 @@ Two axes:
    - **General rule:** size the ceremony to the reversibility and blast radius of the
      decisions, not to the line count. Small projects compress the middle and keep the ends;
      large projects invest in the middle where integration risk lives.
-2. **By decision:** a chosen alternative at a station opens or closes downstream questions,
+2. **By decision:** a chosen alternative at a movement opens or closes downstream questions,
    and can fork the session to explore an alternative in parallel.
 
 ## Architecture
 
 A new **`tutti-design`** crate, the rails engine, reusing Tutti's existing seams:
 
-- `AgentBackend` (drive `claude -p` for facilitation and per-station generative work),
-- `Forge` (station 7 seeding: milestones/epics/issues),
+- `AgentBackend` (drive `claude -p` for facilitation and per-movement generative work),
+- `Forge` (movement 7 seeding: milestones/epics/issues),
 - config and events.
 
 It sits in front of the existing scaffold (new repo) and retrofit (existing repo) paths.
@@ -122,25 +122,25 @@ It sits in front of the existing scaffold (new repo) and retrofit (existing repo
 ### Components
 
 1. **Rails model.** Stations are declarative data (same philosophy as `StackProfile`):
-   each station is `{ id, guiding questions, must-hit coverage checklist, output artifact
-   section, applicable diagram skills, ratification gate }`. Branching is which stations are
-   selected and at what depth, driven by `ProjectShape`. Adding or reshaping a station is
+   each movement is `{ id, guiding questions, must-hit coverage checklist, output artifact
+   section, applicable diagram skills, ratification gate }`. Branching is which movements are
+   selected and at what depth, driven by `ProjectShape`. Adding or reshaping a movement is
    editing data, unit-testable against golden output.
 2. **ProjectShape.** `small_cli | mobile | multi_service` (extensible). Declared during
-   Frame or detected for existing repos. Selects the rail subset and each station's depth.
-3. **Session state machine.** Drives station by station: for each station, run a
+   Frame or detected for existing repos. Selects the rail subset and each movement's depth.
+3. **Session state machine.** Drives movement by movement: for each movement, run a
    facilitated mini-conversation (checklist ensures coverage, agent has freedom for depth),
    then gate. State persists to `.tutti/design/` (`session.json` plus the accreting
    artifacts). Resumable and branchable.
-4. **Facilitation prompt library.** Tutti-native, self-contained per-station Socratic
+4. **Facilitation prompt library.** Tutti-native, self-contained per-movement Socratic
    prompts (the rails content): one question at a time, aware of when a diagram earns its
    place, carrying the constitution to prevent drift.
 5. **Diagram sub-skills.** Generate inline SVG in the ported Sotto house style
    (`svg-node`/`nodetext`/`nodesub`/`flowlbl`/edge vocabulary): architecture (C4-ish),
    flow, sequence/data-transport, user-story map, network/deployment. Each is a prompt plus
    the shared vocabulary plus a well-formedness/renders validator.
-6. **Artifact renderer.** Accretes station outputs into one self-contained `design.html`
-   (brand palette, a section per station, embedded SVG, appended ADRs, the story map, and
+6. **Artifact renderer.** Accretes movement outputs into one self-contained `design.html`
+   (brand palette, a section per movement, embedded SVG, appended ADRs, the story map, and
    the proposed backlog), plus a machine-readable sidecar backlog manifest.
 7. **Forge decomposer.** Story map + design -> milestones/epics/issues with EARS acceptance
    criteria (`WHEN [condition] THE SYSTEM SHALL [behavior]`) and dependency/complexity
@@ -148,7 +148,7 @@ It sits in front of the existing scaffold (new repo) and retrofit (existing repo
    seeds via the `Forge` seam with the right `status:*` labels. Idempotent re-runs (match
    existing issues by marker, as the GitHub forge already does for stale-PR recovery).
 8. **Surfaces.** CLI `tutti design [--repo owner/name | path] [--resume] [--branch <name>]`;
-   Tauri "Design" surface (a per-station chat pane, a live preview of the accreting design
+   Tauri "Design" surface (a per-movement chat pane, a live preview of the accreting design
    page, and the backlog review/confirm UI).
 
 ### Data flow
@@ -157,12 +157,12 @@ It sits in front of the existing scaffold (new repo) and retrofit (existing repo
 raw idea
   -> ProjectShape (declared or detected)
   -> select rails
-  -> for each station:
+  -> for each movement:
        facilitate (agent + human)
        -> capture artifact section (+ diagrams)
        -> ratify gate
   -> accrete into design.html + .tutti/design/ state
-  -> station 7 proposes backlog plan
+  -> movement 7 proposes backlog plan
   -> human review / edit
   -> seed forge (milestones / epics / issues, status labels)
   -> hand off: scaffold (new repo) or drain (existing repo)
@@ -171,17 +171,25 @@ raw idea
 ### Integration with existing Tutti
 
 - **New repo:** design runs first. Its `ProjectShape` and stack recommendation feed the
-  existing scaffold (`seed_stack` / `StackProfile`) and `InitParams`; then station 7 seeds
+  existing scaffold (`seed_stack` / `StackProfile`) and `InitParams`; then movement 7 seeds
   the backlog; then the drain engine runs.
 - **Existing repo:** design runs alongside or after retrofit, grounding itself in the
   repo via retrofit's language detection and codegraph, and seeds a "what should this
   become / what is next" backlog onto the hardened repo.
 
+  **This grounding warrants its own detailed spec** (tracked as **E7a**, a prerequisite of
+  E7). Reading an existing codebase well is not a thin extension of the greenfield chain:
+  it has to infer the current shape (from codegraph, existing docs, the retrofit's detected
+  stack, and git history), decide how much to present back for the human to confirm versus
+  ask fresh, reconcile the constitution and Frame against what the code already implies, and
+  avoid re-litigating decisions the code has already made. That deserves designing
+  deliberately rather than being folded into the CLI wiring issue.
+
 ## Error handling and gates
 
-- Every station ends on explicit human ratification before advancing.
-- Resumable at any station; a session can be forked to explore an alternative.
-- The constitution rides in every station's context to prevent drift over a long chain.
+- Every movement ends on explicit human ratification before advancing.
+- Resumable at any movement; a session can be forked to explore an alternative.
+- The constitution rides in every movement's context to prevent drift over a long chain.
 - Backlog seeding is pre-flighted (dry-run/diff) and idempotent, so a re-run reconciles
   against existing issues rather than duplicating them.
 
@@ -198,19 +206,23 @@ raw idea
 
 - **E1. Crate skeleton.** `tutti-design` with the rails model, `ProjectShape`, the session
   state machine, and in-memory fakes. Hermetic core.
-- **E2. Single-station facilitation loop.** Drive one station end to end over the fake
+- **E2. Single-movement facilitation loop.** Drive one movement end to end over the fake
   `AgentBackend`: checklist coverage plus free depth, ratification gate, state persist.
 - **E3. Design-page renderer + SVG vocabulary.** Port the Sotto inline-SVG diagram
   vocabulary into a reusable asset; render the accreting self-contained `design.html`.
 - **E4. Diagram sub-skills.** The five generators (architecture, flow, sequence/data-
   transport, user-story map, network/deployment) with validators.
-- **E5. Full rails + branching.** The eight-station prompt library and the branching rule
+- **E5. Full rails + branching.** The eight-movement prompt library and the branching rule
   set (small / mobile / multi-service), with golden tests.
 - **E6. Forge decomposer.** Story map -> milestones/epics/issues + EARS + dependency/
   complexity; plan/diff/confirm/seed via the `Forge` seam; idempotent.
+- **E7a. Existing-repo design grounding (own spec).** How the chain reads an existing
+  codebase (codegraph, existing docs, retrofit's detected stack, git history), how much it
+  infers versus asks, and how it reconciles the constitution/Frame against what the code
+  already implies. Prerequisite of E7's existing-repo path.
 - **E7. CLI `tutti design`.** New and existing repo, resume/branch, plus wiring into
   init/scaffold and retrofit.
-- **E8. Tauri Design surface.** Per-station chat, live design-page preview, backlog
+- **E8. Tauri Design surface.** Per-movement chat, live design-page preview, backlog
   review/confirm.
 - **E9. Live smokes + docs.** Live-tier tests and user-facing documentation.
 
@@ -226,7 +238,8 @@ raw idea
 
 ## Open questions
 
-- Final name ("Score" vs "Design" vs another musical term; stations as "movements"?).
+- Final top-level name ("Score" vs "Design" vs another musical term). The rail units are
+  settled as **movements**.
 - Whether the constitution should write through to `AGENTS.md` immediately or only on
   handoff to scaffold.
 - Exact `.tutti/design/` on-disk schema for a branched session (fork semantics).
