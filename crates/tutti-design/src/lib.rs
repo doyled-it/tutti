@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Tutti Score: the app-level design chain ("design on rails"). E1 is the hermetic
 //! core: the movement model, project-shape branching, the session state machine, and
-//! resumable on-disk state.
+//! resumable on-disk state. E1.5 adds the hermetic half of the skill system: loading
+//! and representing an Anthropic-style SKILL.md skill directory, a structural lint over
+//! the authoring rules, and an evaluation-record model with deterministic proxy scoring
+//! and a runner over a transcript-source seam.
 
 pub mod error;
 pub mod eval;
