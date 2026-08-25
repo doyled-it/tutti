@@ -202,9 +202,11 @@ Python project. One command gates every change:
 bash scripts/check.sh
 ```
 
-Run it before opening a PR; it must exit 0. It runs ruff (format + lint), mypy --strict,
-and pytest. Formatting is enforced, do not hand-tune style. New functions ship with tests
-in `tests/`. Work merges into `staging`, never `main`.
+Run it before opening a PR; it must exit 0. It runs ruff (format + an opinionated lint set:
+bugbear, simplify, comprehensions, perf, and ruff's own rules, on top of the pyflakes/
+pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest. Formatting is enforced,
+do not hand-tune style. New functions ship with tests in `tests/`. Work merges into
+`staging`, never `main`.
 
 Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
 "#), false, FileRole::Tooling),
@@ -354,8 +356,10 @@ bash scripts/check.sh
 ```
 
 Run it before opening a PR; it must exit 0. It runs `cargo fmt --check`, `cargo clippy
---all-targets -- -D warnings`, and `cargo test`. Formatting is enforced, do not hand-tune
-style, and clippy warnings are hard errors. New functions ship with tests. Work merges into
+--all-targets -- -D warnings` against the crate's opinionated `[lints.clippy]` table
+(`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, `dbg!` is denied
+everywhere), and `cargo test`. Formatting is enforced, do not hand-tune style, and clippy
+warnings are hard errors. New functions ship with tests. Work merges into
 `staging`, never `main`.
 
 Layout: library crate under `src/`, tests inline as `#[cfg(test)]` modules or under `tests/`.
