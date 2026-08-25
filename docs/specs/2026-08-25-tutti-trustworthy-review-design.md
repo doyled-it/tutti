@@ -55,8 +55,12 @@ Three gaps:
   `max_review_iterations` (default 3). On exhaustion with a surviving Blocking/Major finding,
   park the issue as `needs-human` (the existing block path). Every fix is re-reviewed.
 - **Severity gating.** The loop and the ship-gate key on **Blocking + Major** findings.
-  **Minor** findings are handed to the fix pass best-effort but never block the ship or
-  extend the loop. This guarantees termination (subjective minors are otherwise endless).
+  **Minor** findings are advisory notes: they never block the ship, never extend the loop,
+  and are NOT auto-fixed. A review clean of Blocking/Major ships the exact tree that was
+  reviewed, with no post-review mutation, so "reviewed state == shipped state" holds
+  unconditionally. Minors are eliminated by design (opinionated tooling + the conventions
+  doc, I2/I3), not patched at ship time. This guarantees termination (subjective minors are
+  otherwise endless) and keeps the ship-gate airtight (an unreviewed edit can never ship).
 - **The Reviewer is adversarial and correctness-scoped.** Its prompt is "assume the gate and
   CI are green; find the correctness bugs they cannot see," and it is explicitly told NOT to
   raise formatting, style, naming, or structure findings, those are settled by the opinionated
@@ -122,8 +126,8 @@ The existing engine tests already script `Reviewer`/`FixApplier` outcomes throug
   Reviewer ran TWICE (re-review happened).
 - A Reviewer that returns a Blocking finding on every pass parks the issue after
   `max_review_iterations` fix attempts (no ship).
-- A Reviewer whose only finding is Minor ships on the first pass (Minor does not gate) after
-  a best-effort fix.
+- A Reviewer whose only finding is Minor ships on the first pass with NO fix stage (Minor
+  does not gate and is not auto-fixed; the reviewed tree ships as-is).
 - A clean first review ships with no fix stage (unchanged happy path).
 
 ## Out of scope
@@ -138,6 +142,6 @@ The existing engine tests already script `Reviewer`/`FixApplier` outcomes throug
 
 ## Open questions
 
-- Whether a Minor-only finding should be dropped entirely rather than applied best-effort
-  (current decision: best-effort, non-blocking).
+- (Resolved) A Minor-only finding is not auto-fixed at all: the reviewed tree ships as-is,
+  so no unreviewed edit can ever ship. Minors are eliminated by design (I2/I3), not patched.
 - The exact per-language opinionated lint set for I2 (deferred to I2's own design).
