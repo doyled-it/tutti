@@ -72,7 +72,7 @@ mod tests {
         let mut s = SessionState::new(ProjectShape::SmallCli);
         let expected = movements_for(ProjectShape::SmallCli);
         let mut walked = Vec::new();
-        while let Some(_) = s.current() {
+        while s.current().is_some() {
             walked.push(s.ratify().unwrap());
         }
         assert_eq!(walked, expected);
@@ -94,7 +94,7 @@ mod tests {
         let mut s = SessionState::new(ProjectShape::MultiService);
         s.ratify().unwrap(); // Constitution
         s.ratify().unwrap(); // Frame
-        // Serialize and deserialize to prove state fully round-trips (persistence is Task 6).
+                             // Serialize and deserialize to prove state fully round-trips (persistence is Task 6).
         let json = serde_json::to_string(&s).unwrap();
         let resumed: SessionState = serde_json::from_str(&json).unwrap();
         assert_eq!(resumed.current(), Some(MovementId::Impact));

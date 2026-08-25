@@ -45,50 +45,81 @@ pub const RAILS: &[Movement] = &[
     Movement {
         id: MovementId::Frame,
         title: "Frame",
-        guiding_question: "Who is this for, why do they care the day it ships, what is the budget, what is out?",
-        checklist: &["customer named", "problem named", "appetite set", "non-goals listed"],
+        guiding_question:
+            "Who is this for, why do they care the day it ships, what is the budget, what is out?",
+        checklist: &[
+            "customer named",
+            "problem named",
+            "appetite set",
+            "non-goals listed",
+        ],
         diagram_skills: &[],
     },
     Movement {
         id: MovementId::Impact,
         title: "Impact",
         guiding_question: "What behavior change, in which actor, produces the goal?",
-        checklist: &["goal stated", "actors listed", "impacts mapped to deliverables"],
+        checklist: &[
+            "goal stated",
+            "actors listed",
+            "impacts mapped to deliverables",
+        ],
         diagram_skills: &["flow"],
     },
     Movement {
         id: MovementId::Domain,
         title: "Domain",
         guiding_question: "What is the language and shape of this world, and where are the seams?",
-        checklist: &["glossary drafted", "entities/events listed", "seams identified"],
+        checklist: &[
+            "glossary drafted",
+            "entities/events listed",
+            "seams identified",
+        ],
         diagram_skills: &["data_flow"],
     },
     Movement {
         id: MovementId::Decide,
         title: "Decide",
         guiding_question: "What are we building, and why this shape over the alternatives?",
-        checklist: &["alternatives considered", "choice made", "risks named", "open questions listed"],
+        checklist: &[
+            "alternatives considered",
+            "choice made",
+            "risks named",
+            "open questions listed",
+        ],
         diagram_skills: &["sequence"],
     },
     Movement {
         id: MovementId::Structure,
         title: "Structure",
         guiding_question: "How do the pieces fit at each zoom level?",
-        checklist: &["context drawn", "containers drawn", "irreversible choices recorded as ADRs"],
+        checklist: &[
+            "context drawn",
+            "containers drawn",
+            "irreversible choices recorded as ADRs",
+        ],
         diagram_skills: &["architecture", "network"],
     },
     Movement {
         id: MovementId::Slice,
         title: "Slice",
         guiding_question: "What is the thinnest end-to-end path, then the ribs?",
-        checklist: &["backbone mapped", "walking skeleton sliced", "ribs prioritized"],
+        checklist: &[
+            "backbone mapped",
+            "walking skeleton sliced",
+            "ribs prioritized",
+        ],
         diagram_skills: &["story_map"],
     },
     Movement {
         id: MovementId::Decompose,
         title: "Decompose",
         guiding_question: "What are the small, testable, dependency-ordered units?",
-        checklist: &["milestones/epics/issues drafted", "EARS acceptance criteria written", "dependencies ordered"],
+        checklist: &[
+            "milestones/epics/issues drafted",
+            "EARS acceptance criteria written",
+            "dependencies ordered",
+        ],
         diagram_skills: &[],
     },
 ];
@@ -111,9 +142,7 @@ pub fn movements_for(shape: ProjectShape) -> Vec<MovementId> {
         .iter()
         .map(|m| m.id)
         .filter(|id| match shape {
-            ProjectShape::SmallCli => {
-                !matches!(id, MovementId::Domain | MovementId::Structure)
-            }
+            ProjectShape::SmallCli => !matches!(id, MovementId::Domain | MovementId::Structure),
             ProjectShape::Mobile | ProjectShape::MultiService => true,
         })
         .collect()
