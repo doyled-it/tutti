@@ -19,6 +19,9 @@ pub enum DesignError {
     /// A SKILL.md skill could not be loaded or parsed (missing file, malformed frontmatter).
     #[error("skill: {0}")]
     Skill(String),
+    /// A forge operation failed while seeding the backlog.
+    #[error("forge: {0}")]
+    Forge(String),
 }
 
 /// Crate-local result alias.
