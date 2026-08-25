@@ -407,11 +407,12 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
   "type": "module",
   "private": true,
   "scripts": {{
-    "check": "tsc --noEmit && bun test"
+    "check": "tsc --noEmit && biome check . && bun test"
   }},
   "devDependencies": {{
     "typescript": "^5.7.0",
-    "bun-types": "^1.1.0"
+    "bun-types": "^1.1.0",
+    "@biomejs/biome": "^2.0.0"
   }}
 }}
 "#
@@ -426,6 +427,13 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
   "compilerOptions": {
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2023",
@@ -434,6 +442,19 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     "skipLibCheck": true
   },
   "include": ["src"]
+}
+"#,
+            ),
+            false,
+            FileRole::Config,
+        ),
+        f(
+            "biome.json",
+            String::from(
+                r#"{
+  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "linter": { "enabled": true, "rules": { "recommended": true } },
+  "formatter": { "enabled": true, "indentStyle": "space" }
 }
 "#,
             ),
@@ -476,6 +497,7 @@ set -euo pipefail
 # `bun install` was unavailable at scaffold time).
 bun install --frozen-lockfile 2>/dev/null || bun install
 bunx tsc --noEmit
+bunx @biomejs/biome check .
 bun test
 "#,
             ),
@@ -514,8 +536,9 @@ bash scripts/check.sh
 ```
 
 Run it before opening a PR; it must exit 0. It installs dependencies, then runs `tsc
---noEmit` (strict type-check) and `bun test`. Types are enforced under `strict` plus
-`noUncheckedIndexedAccess`; do not loosen them. New functions ship with tests in `src/`.
+--noEmit` (strict type-check, plus `noUncheckedIndexedAccess` and
+`exactOptionalPropertyTypes`), `biome check .` (lint and format), and `bun test`. Types
+and formatting are enforced; do not loosen them. New functions ship with tests in `src/`.
 Work merges into `staging`, never `main`.
 
 Layout: source and colocated `*.test.ts` under `src/`.
@@ -896,13 +919,24 @@ mod tests {
         assert!(by_path("package.json")
             .contents
             .contains("\"name\": \"my_repo\""));
-        assert!(by_path("tsconfig.json")
-            .contents
-            .contains("\"strict\": true"));
+        let tsconfig = &by_path("tsconfig.json").contents;
+        for needle in [
+            "\"strict\": true",
+            "\"noUncheckedIndexedAccess\": true",
+            "\"exactOptionalPropertyTypes\": true",
+        ] {
+            assert!(tsconfig.contains(needle), "tsconfig missing {needle}");
+        }
+        assert!(by_path("biome.json").contents.contains("\"linter\""));
         by_path("src/index.ts");
         by_path("src/index.test.ts");
         let check = &by_path("scripts/check.sh").contents;
-        for needle in ["bun install", "bunx tsc --noEmit", "bun test"] {
+        for needle in [
+            "bun install",
+            "bunx tsc --noEmit",
+            "biome check",
+            "bun test",
+        ] {
             assert!(check.contains(needle), "ts check.sh missing {needle}");
         }
         assert!(by_path(".github/workflows/ci.yml")
