@@ -7,12 +7,14 @@ pub mod error;
 pub mod movement;
 pub mod session;
 pub mod shape;
+pub mod skill;
 pub mod store;
 
 pub use error::{DesignError, Result};
 pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
 pub use session::SessionState;
 pub use shape::ProjectShape;
+pub use skill::{load as load_skill, Frontmatter, Skill};
 
 /// The crate's semantic version, surfaced in artifacts later.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
