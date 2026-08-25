@@ -13,6 +13,9 @@ pub enum DesignError {
     /// `ratify` was called on a session that has already reached its terminal movement.
     #[error("session already complete")]
     AlreadyComplete,
+    /// A loaded session failed its structural invariants (see `SessionState::validate`).
+    #[error("corrupt session: {0}")]
+    Corrupt(String),
 }
 
 /// Crate-local result alias.

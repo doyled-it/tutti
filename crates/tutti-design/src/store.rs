@@ -36,7 +36,11 @@ pub fn save(repo_root: &Path, state: &SessionState) -> Result<()> {
 pub fn load(repo_root: &Path) -> Result<Option<SessionState>> {
     let path = session_path(repo_root);
     match fs::read_to_string(&path) {
-        Ok(s) => Ok(Some(serde_json::from_str(&s)?)),
+        Ok(s) => {
+            let state: SessionState = serde_json::from_str(&s)?;
+            state.validate()?;
+            Ok(Some(state))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -45,6 +49,7 @@ pub fn load(repo_root: &Path) -> Result<Option<SessionState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::DesignError;
     use crate::movement::MovementId;
     use crate::shape::ProjectShape;
 
@@ -84,5 +89,31 @@ mod tests {
         save(repo.path(), &s).unwrap();
         let resumed = load(repo.path()).unwrap().unwrap();
         assert_eq!(resumed.ratified.len(), 1);
+    }
+
+    #[test]
+    fn load_on_garbage_bytes_errors_serde() {
+        let repo = tempfile::tempdir().unwrap();
+        let path = session_path(repo.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not json at all").unwrap();
+
+        assert!(matches!(load(repo.path()), Err(DesignError::Serde(_))));
+    }
+
+    #[test]
+    fn load_on_a_semantically_corrupt_session_errors_corrupt() {
+        let repo = tempfile::tempdir().unwrap();
+        let path = session_path(repo.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Valid JSON, but ratified is longer than movements: not a valid session.
+        let corrupt = serde_json::json!({
+            "shape": "small_cli",
+            "movements": ["constitution"],
+            "ratified": ["constitution", "frame"],
+        });
+        fs::write(&path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
+
+        assert!(matches!(load(repo.path()), Err(DesignError::Corrupt(_))));
     }
 }

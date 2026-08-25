@@ -54,6 +54,29 @@ impl SessionState {
     pub fn is_complete(&self) -> bool {
         self.ratified.len() == self.movements.len()
     }
+
+    /// Check the session's internal consistency: `ratified` must be no longer than
+    /// `movements`, and must be an in-order prefix of it.
+    ///
+    /// This deliberately does NOT re-derive `movements` from `shape` via
+    /// `movements_for`, so a session persisted under an older branching rule still
+    /// loads; it only checks that the two fields already on the struct agree with each
+    /// other, not that they agree with the current code's selection rule.
+    pub fn validate(&self) -> Result<()> {
+        if self.ratified.len() > self.movements.len() {
+            return Err(DesignError::Corrupt(format!(
+                "ratified has {} entries, more than movements' {}",
+                self.ratified.len(),
+                self.movements.len()
+            )));
+        }
+        if self.movements[..self.ratified.len()] != self.ratified[..] {
+            return Err(DesignError::Corrupt(
+                "ratified is not an in-order prefix of movements".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

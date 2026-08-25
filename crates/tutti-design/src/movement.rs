@@ -6,6 +6,9 @@ use crate::shape::ProjectShape;
 use serde::{Deserialize, Serialize};
 
 /// The identity of a design movement, in canonical chain order.
+///
+/// Adding or removing a variant here must be paired with an update to `RAILS` below;
+/// `definition` and `movements_for` both assume every variant has a `RAILS` entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MovementId {
