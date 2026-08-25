@@ -16,6 +16,9 @@ pub enum DesignError {
     /// A loaded session failed its structural invariants (see `SessionState::validate`).
     #[error("corrupt session: {0}")]
     Corrupt(String),
+    /// A SKILL.md skill could not be loaded or parsed (missing file, malformed frontmatter).
+    #[error("skill: {0}")]
+    Skill(String),
 }
 
 /// Crate-local result alias.
