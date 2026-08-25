@@ -70,6 +70,10 @@ pub struct Config {
     pub model: String,
     #[serde(default = "default_max_issues")]
     pub max_issues_per_run: u32,
+    /// How many fix -> re-review cycles the engine runs before parking a still-unclean
+    /// issue for a human. Each cycle is one FixApplier pass followed by a fresh review.
+    #[serde(default = "default_max_review_iterations")]
+    pub max_review_iterations: u32,
     /// How many times the executor polls CI before giving up.
     #[serde(default = "default_ci_max_polls")]
     pub ci_max_polls: u32,
@@ -102,6 +106,10 @@ pub struct Config {
 
 fn default_max_issues() -> u32 {
     25
+}
+
+fn default_max_review_iterations() -> u32 {
+    3
 }
 
 fn default_ci_max_polls() -> u32 {
@@ -371,6 +379,32 @@ working_dir = ""
     }
 
     #[test]
+    fn max_review_iterations_defaults_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("tutti.toml");
+        std::fs::write(
+            &p,
+            r#"
+trunk = "main"
+routing = "trunk"
+integration_branch = "version/v0.1"
+model = "claude-opus-4-8"
+
+[select]
+require_label = "status:ready"
+skip_labels = ["status:needs-human"]
+
+[gate]
+commands = ["cargo test"]
+working_dir = ""
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(&p).unwrap();
+        assert_eq!(cfg.max_review_iterations, 3);
+    }
+
+    #[test]
     fn parses_explicit_roles_table() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("tutti.toml");
@@ -499,6 +533,7 @@ working_dir = ""
             integration_branch: "version/v0.1".into(),
             model: "m".into(),
             max_issues_per_run: 25,
+            max_review_iterations: 3,
             ci_max_polls: 40,
             poll_delay_secs: 15,
             select: SelectFilter {
