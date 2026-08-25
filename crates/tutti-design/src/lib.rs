@@ -4,6 +4,7 @@
 //! resumable on-disk state.
 
 pub mod error;
+pub mod eval;
 pub mod lint;
 pub mod movement;
 pub mod session;
@@ -12,6 +13,7 @@ pub mod skill;
 pub mod store;
 
 pub use error::{DesignError, Result};
+pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTranscriptSource};
 pub use lint::{lint, Violation};
 pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
 pub use session::SessionState;
