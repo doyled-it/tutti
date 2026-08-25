@@ -299,33 +299,65 @@ impl<'a> Engine<'a> {
             ));
         };
 
-        // Stage: review (fresh agent).
-        let review_out = self
-            .run_role(Role::Reviewer, issue, None, wt, hooks)
-            .await?;
-        let report = review_out.review.unwrap_or(ReviewReport {
-            findings: vec![],
-            verdict: crate::message::Verdict::Approve,
-        });
-
-        // Stage: apply-fixes if the review demands it.
-        if report.needs_fixes() {
-            let fix_out = self
-                .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
+        // Stage: review + verify loop. Re-review every fix; a clean review (no
+        // Blocking/Major findings) is a hard precondition for the ship. Minor findings are
+        // cleared best-effort but never gate the ship or extend the loop. Park after
+        // `max_review_iterations` fix cycles if a Blocking/Major finding survives.
+        let mut iterations: u32 = 0;
+        loop {
+            let review_out = self
+                .run_role(Role::Reviewer, issue, None, wt, hooks)
                 .await?;
-            if fix_out.status != AgentStatus::ReadyToShip {
-                self.park_for_human(issue.id, hooks).await?;
-                return Ok(IterOutcome::Blocked(
-                    fix_out.blocked_reason.unwrap_or_default(),
-                ));
+            let report = review_out.review.unwrap_or(ReviewReport {
+                findings: vec![],
+                verdict: crate::message::Verdict::Approve,
+            });
+
+            if report.has_blocking_or_major() {
+                iterations += 1;
+                if iterations > self.cfg.max_review_iterations {
+                    self.park_for_human(issue.id, hooks).await?;
+                    return Ok(IterOutcome::Blocked(
+                        "review did not converge: a blocking or major finding survived the \
+                         fix budget"
+                            .into(),
+                    ));
+                }
+                let fix_out = self
+                    .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
+                    .await?;
+                if fix_out.status != AgentStatus::ReadyToShip {
+                    self.park_for_human(issue.id, hooks).await?;
+                    return Ok(IterOutcome::Blocked(
+                        fix_out.blocked_reason.unwrap_or_default(),
+                    ));
+                }
+                let Some(fix_handoff) = fix_out.handoff else {
+                    self.park_for_human(issue.id, hooks).await?;
+                    return Ok(IterOutcome::Blocked(
+                        "fix applier reported ReadyToShip but produced no handoff".into(),
+                    ));
+                };
+                handoff = fix_handoff;
+                continue; // re-review the fix
             }
-            let Some(fix_handoff) = fix_out.handoff else {
-                self.park_for_human(issue.id, hooks).await?;
-                return Ok(IterOutcome::Blocked(
-                    "fix applier reported ReadyToShip but produced no handoff".into(),
-                ));
-            };
-            handoff = fix_handoff;
+
+            // No Blocking/Major. Clear any Minor findings best-effort (one pass, not
+            // gated, not re-reviewed), then ship.
+            if !report.findings.is_empty() {
+                let fix_out = self
+                    .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
+                    .await?;
+                // Minor fixes are best-effort: adopt the new handoff if the pass shipped,
+                // otherwise proceed with the handoff we already have. A failed minor fix
+                // never blocks or parks.
+                if fix_out.status == AgentStatus::ReadyToShip {
+                    if let Some(h) = fix_out.handoff {
+                        handoff = h;
+                    }
+                }
+            }
+            break;
         }
 
         // The routing strategy decides the target; overwrite whatever the agent guessed.
@@ -791,9 +823,138 @@ mod tests {
             usage: Usage::default(),
             blocked_reason: None,
         };
+        // With the verify loop, a Blocking finding forces a fix and a re-review; only
+        // two scripted Reviewer outcomes are given, so a Shipped result here also proves
+        // the loop stopped after the second (clean) review rather than asking for a third.
         let backend = FakeBackend::new()
             .script(Role::Implementer, ship_outcome(1))
             .script(Role::Reviewer, dirty_review)
+            .script(Role::FixApplier, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+    }
+
+    #[tokio::test]
+    async fn review_reraises_until_clean_then_ships() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let dirty_review = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![Finding {
+                    severity: Severity::Major,
+                    file: "a.rs".into(),
+                    line: None,
+                    claim: "wrong condition".into(),
+                }],
+                verdict: Verdict::RequestChanges,
+            }),
+            plan: None,
+            summary: "changes".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        // Only two Reviewer outcomes are scripted: the dirty one and a trailing clean
+        // one. A Shipped result proves the fix was re-reviewed exactly once more and the
+        // loop stopped there, since a third Reviewer call with nothing scripted errors.
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, dirty_review)
+            .script(Role::FixApplier, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        assert_eq!(engine.run_one().await.unwrap(), IterOutcome::Shipped);
+    }
+
+    #[tokio::test]
+    async fn review_parks_after_max_iterations() {
+        let mut cfg = cfg();
+        cfg.max_review_iterations = 2;
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let dirty_review = || AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![Finding {
+                    severity: Severity::Major,
+                    file: "a.rs".into(),
+                    line: None,
+                    claim: "wrong condition".into(),
+                }],
+                verdict: Verdict::RequestChanges,
+            }),
+            plan: None,
+            summary: "still wrong".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        // A finding survives every fix cycle: 3 Major reviews against a cap of 2, with a
+        // ship fix after each of the first two, is enough to exhaust the budget and park.
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, dirty_review())
+            .script(Role::FixApplier, ship_outcome(1))
+            .script(Role::Reviewer, dirty_review())
+            .script(Role::FixApplier, ship_outcome(1))
+            .script(Role::Reviewer, dirty_review());
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let outcome = engine.run_one().await.unwrap();
+        assert!(
+            matches!(outcome, IterOutcome::Blocked(_)),
+            "got {outcome:?}"
+        );
+        assert!(!forge.is_done(IssueId(1)));
+        let labels = forge.labels_of(IssueId(1));
+        assert!(labels.contains(&"status:needs-human".to_string()));
+    }
+
+    #[tokio::test]
+    async fn minor_only_review_ships_without_gating() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let minor_review = AgentOutcome {
+            status: AgentStatus::ReadyToShip,
+            handoff: None,
+            review: Some(ReviewReport {
+                findings: vec![Finding {
+                    severity: Severity::Minor,
+                    file: "a.rs".into(),
+                    line: None,
+                    claim: "small coverage gap".into(),
+                }],
+                verdict: Verdict::Approve,
+            }),
+            plan: None,
+            summary: "minor note".into(),
+            usage: Usage::default(),
+            blocked_reason: None,
+        };
+        // Only one Reviewer outcome is scripted, so a Shipped result also proves the
+        // Minor-only report was never re-reviewed after the best-effort fix pass.
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, minor_review)
             .script(Role::FixApplier, ship_outcome(1));
         let engine = Engine::new(
             &cfg,
@@ -2298,6 +2459,7 @@ mod tests {
             .script(Role::Implementer, ship_outcome(1))
             .script(Role::Reviewer, dirty_review)
             .script(Role::FixApplier, ship_outcome(1))
+            .script(Role::Reviewer, clean_review())
             .script(
                 Role::Planner,
                 planned(PlanDecision {
