@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod movement;
+pub mod session;
 pub mod shape;
 
 /// The crate's semantic version, surfaced in artifacts later.
