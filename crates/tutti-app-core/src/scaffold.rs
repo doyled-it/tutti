@@ -92,6 +92,103 @@ pub fn package_name(repo: &str) -> String {
     out
 }
 
+/// The language-specific parts that feed the shared `constitution` template. The shared
+/// sections (gate framing, testing, simplicity, naming, prose conventions, git) live once
+/// in `constitution`, not duplicated per profile.
+struct ConstitutionParts {
+    /// The language name as it reads in prose (e.g. "Rust").
+    language: &'static str,
+    /// What the gate runs, as a clause completing "It runs {gate_runs}."
+    gate_runs: &'static str,
+    /// Where tests live, as a clause completing "Tests live in {tests_live}."
+    tests_live: &'static str,
+    /// The per-language idiom bullets, verbatim.
+    idioms: &'static [&'static str],
+    /// The one-line error-handling rule.
+    error_handling: &'static str,
+    /// The layout line. May contain the literal placeholder `{pkg}`, substituted with the
+    /// project's package name.
+    layout: &'static str,
+}
+
+/// Render an AGENTS.md body: the project's constitution. The shared sections (the gate
+/// framing, testing, simplicity, naming, prose conventions, git) are written once here;
+/// `parts` supplies only what differs per language.
+fn constitution(parts: &ConstitutionParts, pkg: &str) -> String {
+    let idioms_block = parts
+        .idioms
+        .iter()
+        .map(|idiom| format!("- {idiom}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let layout = parts.layout.replace("{pkg}", pkg);
+    format!(
+        r#"# AGENTS.md
+
+{language} project. This file is the project's constitution: the conventions below are
+settled. Follow them. The reviewer enforces them and does not raise style beyond them. To
+change a convention, edit this file in its own PR, do not relitigate it in review.
+
+## The gate
+
+One command gates every change:
+
+```
+bash scripts/check.sh
+```
+
+Run it before opening a PR; it must exit 0. It runs {gate_runs}. Formatting and lint are
+enforced mechanically, do not hand-tune style.
+
+## Testing
+
+New behavior ships with tests that assert real behavior, not tautologies or mock-only
+assertions. A bug fix ships with a regression test that fails before the fix. Tests live in
+{tests_live}.
+
+## {language} conventions
+
+{idioms_block}
+
+Error handling: {error_handling}
+
+## Simplicity
+
+The simplest thing that works. No speculative abstraction (YAGNI). Delete dead code rather
+than commenting it out.
+
+## Naming
+
+Names say what a thing does, not how. No `utils`, `helpers`, or `manager` grab-bag modules.
+
+## Prose (comments, commits, PRs, docs)
+
+Write plainly. Avoid the patterns that read as machine-generated and cost the writing its
+credibility:
+
+- No em dashes. Use a period, comma, or parentheses. (Hyphens and numeric en dashes are fine.)
+- No "not just X, but Y" or "not only ... but also" reframing. State the point directly.
+- Cut filler openers and closers ("In conclusion", "Overall", "It is important to note").
+- Avoid the inflated vocabulary (delve, leverage, robust, seamless, comprehensive, crucial,
+  pivotal, boasts, testament). Prefer the plain word.
+- Do not pad to three parallel items when one or two carry the meaning.
+- Prefer prose to bullet lists for a short connected argument. No emoji. Sentence-case headings.
+
+## Git
+
+Conventional Commits. Small, focused PRs. Work merges into `staging`, never `main`.
+
+Layout: {layout}.
+"#,
+        language = parts.language,
+        gate_runs = parts.gate_runs,
+        tests_live = parts.tests_live,
+        idioms_block = idioms_block,
+        error_handling = parts.error_handling,
+        layout = layout,
+    )
+}
+
 /// The built-in stacks, each an opinionated, agent-friendly per-language shape.
 pub fn available_stacks() -> Vec<StackProfile> {
     vec![
