@@ -34,6 +34,12 @@ pub trait GreenWorkspace: Send + Sync {
     async fn checkout(&self, branch: &str, base: &str, resume: bool) -> Result<GreenCheckout>;
     /// Stage and commit everything on the checkout's branch. Ok(true) if a commit was made.
     async fn commit_all(&self, co: &GreenCheckout, message: &str) -> Result<bool>;
+    /// True if the checkout's branch carries commits beyond `base`. The greener agent (with
+    /// the shipped TDD / subagent defaults) commits its own work, so `commit_all` can find a
+    /// clean tree while the branch is genuinely ahead of `base`; this lets the caller ship
+    /// that branch instead of mistaking it for "nothing changed" (mirrors the engine's
+    /// `Workspace::has_commits`, the #37 fix).
+    async fn has_commits(&self, co: &GreenCheckout, base: &str) -> Result<bool>;
     /// The diff (changed files + unified patch) of the checkout's branch vs `base`.
     async fn diff(&self, co: &GreenCheckout, base: &str) -> Result<GreenDiff>;
     /// Remove the worktree checkout (the branch persists). Best-effort.
@@ -381,9 +387,18 @@ async fn green_body(
         )
         .await
         .map_err(|e| e.to_string())?;
-    if !committed {
-        // Nothing staged (empty net diff): a `gh pr create` on an empty branch errors, so
-        // there is nothing left to push or open a PR for.
+    // Ship the branch if EITHER commit_all just committed the agent's uncommitted edits, OR
+    // the branch already carries commits beyond base. The greener agent (shipped TDD /
+    // subagent defaults) commits its own work, so `commit_all` routinely finds a clean tree
+    // even though the fix is real and the branch is ahead of base. Only a branch with no new
+    // commits at all is a true no-op worth skipping (a `gh pr create` on an empty branch
+    // errors). This mirrors the engine's #37 fix (`Workspace::has_commits`).
+    let has_work = committed
+        || workspace
+            .has_commits(co, &opts.base)
+            .await
+            .map_err(|e| e.to_string())?;
+    if !has_work {
         return Ok(GreenOutcome::AlreadyGreen);
     }
     forge.push_branch(branch).await.map_err(|e| e.to_string())?;
@@ -448,6 +463,9 @@ pub(crate) mod fakes {
         pub removed: Mutex<Vec<String>>,
         /// What `commit_all` returns; false simulates nothing-to-commit (empty net diff).
         pub commit_result: bool,
+        /// What `has_commits` returns; true simulates the agent having committed its own work
+        /// (branch ahead of base while `commit_all` finds a clean tree).
+        pub branch_ahead: bool,
     }
 
     impl FakeGreenWorkspace {
@@ -460,6 +478,7 @@ pub(crate) mod fakes {
                 resumed: Mutex::new(Vec::new()),
                 removed: Mutex::new(Vec::new()),
                 commit_result: true,
+                branch_ahead: false,
             }
         }
     }
@@ -481,6 +500,9 @@ pub(crate) mod fakes {
         async fn commit_all(&self, _co: &GreenCheckout, message: &str) -> Result<bool> {
             self.committed.lock().unwrap().push(message.to_string());
             Ok(self.commit_result)
+        }
+        async fn has_commits(&self, _co: &GreenCheckout, _base: &str) -> Result<bool> {
+            Ok(self.branch_ahead)
         }
         async fn diff(&self, _co: &GreenCheckout, _base: &str) -> Result<GreenDiff> {
             Ok(self.diff.lock().unwrap().clone())
@@ -528,6 +550,9 @@ pub(crate) mod fakes {
         }
         async fn commit_all(&self, _co: &GreenCheckout, _message: &str) -> Result<bool> {
             Ok(true)
+        }
+        async fn has_commits(&self, _co: &GreenCheckout, _base: &str) -> Result<bool> {
+            Ok(false)
         }
         async fn diff(&self, _co: &GreenCheckout, _base: &str) -> Result<GreenDiff> {
             Ok(GreenDiff::default())
@@ -821,9 +846,11 @@ mod tests {
 
     #[tokio::test]
     async fn green_target_skips_push_and_pr_when_nothing_was_committed() {
+        // A TRUE no-op: commit_all staged nothing AND the branch is not ahead of base.
         let d = tempfile::tempdir().unwrap();
         let ws = FakeGreenWorkspace {
             commit_result: false,
+            branch_ahead: false,
             ..FakeGreenWorkspace::new(d.path().to_path_buf())
         };
         let backend = MarkerBackend {
@@ -842,6 +869,40 @@ mod tests {
             r.outcome
         );
         assert_eq!(forge.pr_count(), 0, "an empty net diff must not open a PR");
+    }
+
+    #[tokio::test]
+    async fn green_target_ships_when_the_agent_committed_its_own_fix() {
+        // The greener agent (TDD / subagent defaults) commits its own work, so `commit_all`
+        // finds a clean tree (commit_result=false) even though the branch is genuinely ahead
+        // of base (branch_ahead=true). That branch must still be pushed and open a PR, not be
+        // mistaken for a no-op. Regression for the #37-class bug the live shakeout caught.
+        let d = tempfile::tempdir().unwrap();
+        let ws = FakeGreenWorkspace {
+            commit_result: false,
+            branch_ahead: true,
+            ..FakeGreenWorkspace::new(d.path().to_path_buf())
+        };
+        let backend = MarkerBackend {
+            green_on: 1,
+            calls: Arc::new(AtomicU32::new(0)),
+        };
+        let forge = FakeForge::new(vec![], crate::domain::CiState::Pass);
+        let target = GateTarget {
+            label: "python".into(),
+            gate: marker_gate(),
+        };
+        let r = green_target(&target, &gopts(), &backend, &ws, &forge).await;
+        assert!(
+            matches!(r.outcome, GreenOutcome::Greened { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert_eq!(
+            forge.pr_count(),
+            1,
+            "the agent's committed fix must open a PR"
+        );
     }
 
     #[tokio::test]

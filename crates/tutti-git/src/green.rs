@@ -124,6 +124,24 @@ impl GreenWorkspace for GitGreenWorkspace {
         Ok(out.status.success())
     }
 
+    async fn has_commits(&self, co: &GreenCheckout, base: &str) -> Result<bool> {
+        let wt = co.path.to_string_lossy().to_string();
+        // Count commits on the checkout's branch that are not reachable from base. Non-zero
+        // means the branch is ahead (e.g. the agent committed its own fix), so it is worth
+        // shipping even if `commit_all` found a clean tree.
+        let out = self
+            .git(&["-C", &wt, "rev-list", "--count", &format!("{base}..HEAD")])
+            .await?;
+        if !out.status.success() {
+            return Ok(false);
+        }
+        let n: u64 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        Ok(n > 0)
+    }
+
     async fn diff(&self, co: &GreenCheckout, base: &str) -> Result<GreenDiff> {
         let wt = co.path.to_string_lossy().to_string();
         let names = self.git(&["-C", &wt, "diff", "--name-only", base]).await?;
@@ -181,8 +199,16 @@ mod tests {
         assert!(!ws.branch_exists("green/x").await.unwrap());
         let co = ws.checkout("green/x", "staging", false).await.unwrap();
         assert!(ws.branch_exists("green/x").await.unwrap());
+        assert!(
+            !ws.has_commits(&co, "staging").await.unwrap(),
+            "fresh branch is not ahead"
+        );
         std::fs::write(co.path.join("f.txt"), "hi\n").unwrap();
         assert!(ws.commit_all(&co, "add f").await.unwrap());
+        assert!(
+            ws.has_commits(&co, "staging").await.unwrap(),
+            "branch is ahead after a commit"
+        );
         let diff = ws.diff(&co, "staging").await.unwrap();
         assert!(diff.changed_files.iter().any(|p| p.ends_with("f.txt")));
         ws.remove(&co).await.unwrap();
