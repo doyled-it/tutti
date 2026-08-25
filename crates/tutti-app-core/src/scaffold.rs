@@ -290,23 +290,30 @@ jobs:
           enable-cache: true
       - run: bash scripts/check.sh
 "#), false, FileRole::Tooling),
-        f("AGENTS.md", format!(
-r#"# AGENTS.md
-
-Python project. One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It runs ruff (format + an opinionated lint set:
-bugbear, simplify, comprehensions, perf, and ruff's own rules, on top of the pyflakes/
-pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest. Formatting is enforced,
-do not hand-tune style. New functions ship with tests in `tests/`. Work merges into
-`staging`, never `main`.
-
-Layout: package under `src/{pkg}/`, tests under `tests/` mirroring it.
-"#), false, FileRole::Tooling),
+        f("AGENTS.md", constitution(
+            &ConstitutionParts {
+                language: "Python",
+                gate_runs: "ruff (format + an opinionated lint set: bugbear, simplify, \
+                    comprehensions, perf, and ruff's own rules, on top of the pyflakes/ \
+                    pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest",
+                tests_live: "`tests/`",
+                idioms: &[
+                    "Use `pathlib.Path` over `os.path` string juggling.",
+                    "Use `dataclasses` for structured records rather than ad-hoc dicts or \
+                        tuples.",
+                    "Use f-strings for formatting.",
+                    "Manage resources (files, locks, sessions) with `with` context managers.",
+                    "Type-hint public function signatures (mypy strict makes these \
+                        load-bearing).",
+                    "Iterate directly and use comprehensions, `enumerate`, and `zip` rather \
+                        than C-style index loops.",
+                ],
+                error_handling: "prefer EAFP (try/except) over precondition-checking; do not \
+                    use a bare `except`",
+                layout: "package under `src/{pkg}/`, tests under `tests/` mirroring it",
+            },
+            pkg,
+        ), false, FileRole::Tooling),
         f(".python-version", String::from("3.13\n"), false, FileRole::Tooling),
         f(".gitignore", String::from(
 "__pycache__/\n.venv/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n"), false, FileRole::Tooling),
@@ -443,24 +450,33 @@ jobs:
         ),
         f(
             "AGENTS.md",
-            String::from(
-                r#"# AGENTS.md
-
-Rust project. One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It runs `cargo fmt --check`, `cargo clippy
---all-targets -- -D warnings` against the crate's opinionated `[lints.clippy]` table
-(`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, `dbg!` is denied
-everywhere), and `cargo test`. Formatting is enforced, do not hand-tune style, and clippy
-warnings are hard errors. New functions ship with tests. Work merges into
-`staging`, never `main`.
-
-Layout: library crate under `src/`, tests inline as `#[cfg(test)]` modules or under `tests/`.
-"#,
+            constitution(
+                &ConstitutionParts {
+                    language: "Rust",
+                    gate_runs: "`cargo fmt --check`, `cargo clippy --all-targets -- -D \
+                        warnings` against the crate's opinionated `[lints.clippy]` table \
+                        (`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, \
+                        `dbg!` is denied everywhere), and `cargo test`",
+                    tests_live: "inline `#[cfg(test)]` modules or under `tests/`",
+                    idioms: &[
+                        "Use newtypes over stringly-typed or primitive-obsessed APIs, so the \
+                            representation can change without breaking callers.",
+                        "Accept borrowed or generic arguments (`&str`, `&[T]`, \
+                            `impl AsRef<_>`) and return owned values (`String`, `Vec<T>`).",
+                        "Derive standard traits (`Debug`, `Clone`, `PartialEq`) rather than \
+                            hand-implementing; derive `Debug` on all public types.",
+                        "Make illegal states unrepresentable: model variants as `enum`s and \
+                            match them exhaustively.",
+                        "Take `self`/`&self`/`&mut self` to match the access the method \
+                            needs; do not borrow-and-clone when it needs ownership.",
+                    ],
+                    error_handling: "prefer `?`; reserve `unwrap`/`expect` for tests and \
+                        provable invariants, and give `expect` a message; do not panic \
+                        across a public API",
+                    layout: "library crate under `src/`, tests inline as `#[cfg(test)]` \
+                        modules or under `tests/`",
+                },
+                pkg,
             ),
             false,
             FileRole::Tooling,
@@ -626,26 +642,33 @@ jobs:
         ),
         f(
             "AGENTS.md",
-            String::from(
-                r#"# AGENTS.md
-
-TypeScript project (Bun). One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It installs dependencies, then runs `tsc
---noEmit` (strict type-check, plus `noUncheckedIndexedAccess` and
-`exactOptionalPropertyTypes`), `biome check .` (lint and format), and `bun test`. Types
-and formatting are enforced; do not loosen them. New functions ship with tests in `src/`.
-Work merges into `staging`, never `main`.
-
-Note `exactOptionalPropertyTypes` is strict: a third-party dependency whose type
-definitions were not authored to it can surface type errors that are not your code's fault.
-
-Layout: source and colocated `*.test.ts` under `src/`.
-"#,
+            constitution(
+                &ConstitutionParts {
+                    language: "TypeScript",
+                    gate_runs: "`tsc --noEmit` (strict type-check, plus \
+                        `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`), \
+                        `biome check .` (lint and format), and `bun test`. Note \
+                        `exactOptionalPropertyTypes` is strict: a third-party dependency \
+                        whose type definitions were not authored to it can surface type \
+                        errors that are not your code's fault",
+                    tests_live: "colocated `*.test.ts` files under `src/`",
+                    idioms: &[
+                        "Model variant data as discriminated unions (a shared literal \
+                            `kind` field) so the compiler narrows each case.",
+                        "Make exhaustive `switch`es provably complete with a `never`-typed \
+                            default, so a new variant fails compilation.",
+                        "Use `readonly` and `as const` for data that should not be mutated.",
+                        "Prefer `interface` or `type` aliases for public object shapes over \
+                            inline anonymous types.",
+                        "Prefer type guards over assertions (`as`); assert only when you \
+                            genuinely know more than the compiler.",
+                    ],
+                    error_handling: "avoid `any`; take `unknown` at untyped boundaries and \
+                        narrow before use; do not silence errors with `// @ts-ignore` or \
+                        `!` where narrowing would do",
+                    layout: "source and colocated `*.test.ts` under `src/`",
+                },
+                pkg,
             ),
             false,
             FileRole::Tooling,
@@ -772,23 +795,32 @@ jobs:
         ),
         f(
             "AGENTS.md",
-            String::from(
-                r#"# AGENTS.md
-
-Go project. One command gates every change:
-
-```
-bash scripts/check.sh
-```
-
-Run it before opening a PR; it must exit 0. It checks `gofmt` (no unformatted files), then
-runs `go vet ./...`, `golangci-lint run ./...` (staticcheck, errcheck, ineffassign, unused),
-and `go test ./...`. `golangci-lint` is a prerequisite, not part of the Go toolchain.
-Formatting is enforced by gofmt, do not hand-tune style. New functions ship with
-`*_test.go` tests. Work merges into `staging`, never `main`.
-
-Layout: package sources at the module root, tests as `*_test.go` beside them.
-"#,
+            constitution(
+                &ConstitutionParts {
+                    language: "Go",
+                    gate_runs: "`gofmt` (no unformatted files), then `go vet ./...`, \
+                        `golangci-lint run ./...` (staticcheck, errcheck, ineffassign, \
+                        unused), and `go test ./...`. `golangci-lint` is a prerequisite, \
+                        not part of the Go toolchain",
+                    tests_live: "`*_test.go` files beside the package they test",
+                    idioms: &[
+                        "Accept interfaces, return concrete types; let the consumer define \
+                            the interface it needs.",
+                        "Keep interfaces small and defined at the point of use.",
+                        "Use `defer` for cleanup immediately after acquiring a resource.",
+                        "Avoid naked returns in anything longer than a few lines.",
+                        "Write table-driven tests with subtests (`t.Run`).",
+                        "Pass `context.Context` as the first parameter for cancelable or \
+                            request-scoped work; do not store it in structs.",
+                    ],
+                    error_handling: "handle every error explicitly; wrap with \
+                        `fmt.Errorf(\"...: %w\", err)` and inspect with `errors.Is`/\
+                        `errors.As`; never string-match a message; do not discard an error \
+                        with `_` unless deliberate",
+                    layout: "package sources at the module root, tests as `*_test.go` \
+                        beside them",
+                },
+                pkg,
             ),
             false,
             FileRole::Tooling,
