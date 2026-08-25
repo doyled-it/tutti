@@ -624,6 +624,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-design"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "tutti-forge-gitea"
 version = "0.0.0"
 dependencies = [
