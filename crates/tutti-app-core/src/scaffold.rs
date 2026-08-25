@@ -150,7 +150,7 @@ assertions. A bug fix ships with a regression test that fails before the fix. Te
 
 {idioms_block}
 
-Error handling: {error_handling}
+Error handling: {error_handling}.
 
 ## Simplicity
 
