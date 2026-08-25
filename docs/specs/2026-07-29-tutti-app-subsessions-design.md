@@ -63,9 +63,10 @@ in hand, so the pane stays dumb:
 
 - Implementer / FixApplier: `ok = status == ReadyToShip`; `"ready to ship"` or
   `"blocked: {reason}"`.
-- Reviewer: keys on `ReviewReport::needs_fixes()` (verdict `RequestChanges`, or any finding
-  `Blocking`, forces fixes even on an `Approve` verdict), not on the verdict alone:
-  `needs_fixes() -> ("changes needed (N findings)", false)`, else `("approved", true)`.
+- Reviewer: keys on `ReviewReport::has_blocking_or_major()` (any finding `Blocking` or
+  `Major` gates, regardless of the verdict field), not on the verdict alone:
+  `has_blocking_or_major() -> ("changes needed (N findings)", false)` where N counts only
+  the Blocking/Major findings, else `("approved", true)`.
 - Planner: a decision -> `("plan: {label}", true)`, where `{label}` is a stable per-action
   string (`next issue` / `create issues` / `close milestone` / `stop`) rather than the raw
   `{:?}` of the action (which would dump the whole `CreateIssues` vector); no decision ->
