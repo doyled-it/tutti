@@ -70,7 +70,7 @@ pub enum FileRole {
     /// New additive files (the gate, CI, AGENTS.md, interpreter pin, .gitignore).
     Tooling,
     /// A config file retrofit merges into when it already exists (pyproject/tsconfig/
-    /// package.json). Config files with no registered merger (Cargo.toml, go.mod) are
+    /// package.json). Config files with no registered merger (go.mod, .golangci.yml) are
     /// left untouched by retrofit.
     Config,
 }
