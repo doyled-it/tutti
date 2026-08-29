@@ -6,6 +6,52 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::baseline;
+
+/// Render a list of strings as a TOML/JSON array literal: `["a", "b"]`.
+fn quoted_array(items: &[&str]) -> String {
+    let inner = items
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{inner}]")
+}
+
+/// Render the `[lints.clippy]` body: one `name = "deny"` line per lint.
+fn clippy_deny_lines(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|n| format!("{n} = \"deny\""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render clippy.toml: one `key = true` line per test-allow key.
+fn toml_true_lines(keys: &[&str]) -> String {
+    keys.iter()
+        .map(|k| format!("{k} = true"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render the strict-family compiler flags as indented JSON lines, each `"flag": true,`.
+fn json_true_flag_lines(flags: &[&str]) -> String {
+    flags
+        .iter()
+        .map(|f| format!("    \"{f}\": true,"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render the devDependencies entries, each `"name": "range"`, comma-joined and indented.
+fn json_dep_lines(deps: &[(&str, &str)]) -> String {
+    deps.iter()
+        .map(|(name, range)| format!("    \"{name}\": \"{range}\""))
+        .collect::<Vec<_>>()
+        .join(",\n")
+}
+
 /// Context threaded into a profile's file set so names flow into the emitted content.
 #[derive(Debug, Clone)]
 pub struct ScaffoldContext {
@@ -222,6 +268,9 @@ pub fn python_profile() -> StackProfile {
 
 fn python_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
+    let dev_group = quoted_array(baseline::PYTHON_DEV_GROUP);
+    let ruff_select = quoted_array(baseline::RUFF_LINT_SELECT);
+    let test_ignores = quoted_array(baseline::RUFF_TEST_IGNORES);
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -240,17 +289,17 @@ dependencies = []
 package = false
 
 [dependency-groups]
-dev = ["ruff", "mypy", "pytest"]
+dev = {dev_group}
 
 [tool.ruff]
 line-length = 88
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PIE", "PERF", "RUF"]
+select = {ruff_select}
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B011"]
+"tests/**" = {test_ignores}
 
 [tool.mypy]
 strict = true
@@ -344,6 +393,8 @@ pub fn rust_profile() -> StackProfile {
 
 fn rust_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
+    let clippy_denies = clippy_deny_lines(baseline::CLIPPY_DENIES);
+    let clippy_allows = toml_true_lines(baseline::CLIPPY_TEST_ALLOWS);
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -362,16 +413,7 @@ edition = "2021"
 [dependencies]
 
 [lints.clippy]
-semicolon_if_nothing_returned = "deny"
-manual_let_else               = "deny"
-explicit_iter_loop            = "deny"
-map_unwrap_or                 = "deny"
-needless_pass_by_value        = "deny"
-inefficient_to_string         = "deny"
-implicit_clone                = "deny"
-dbg_macro    = "deny"
-unwrap_used  = "deny"
-expect_used  = "deny"
+{clippy_denies}
 "#
             ),
             false,
@@ -379,10 +421,9 @@ expect_used  = "deny"
         ),
         f(
             "clippy.toml",
-            String::from(
-                r#"allow-unwrap-in-tests = true
-allow-expect-in-tests = true
-"#,
+            format!(
+                r#"{clippy_allows}
+"#
             ),
             false,
             FileRole::Config,
@@ -508,6 +549,9 @@ pub fn typescript_profile() -> StackProfile {
 
 fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
+    let ts_check = baseline::TS_CHECK_SCRIPT;
+    let ts_dev_deps = json_dep_lines(baseline::TS_DEV_DEPS);
+    let ts_strict_flags = json_true_flag_lines(baseline::TS_STRICT_FLAGS);
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -524,12 +568,10 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
   "type": "module",
   "private": true,
   "scripts": {{
-    "check": "tsc --noEmit && biome check . && bun test"
+    "check": "{ts_check}"
   }},
   "devDependencies": {{
-    "typescript": "^5.7.0",
-    "bun-types": "^1.1.0",
-    "@biomejs/biome": "^2.0.0"
+{ts_dev_deps}
   }}
 }}
 "#
@@ -539,27 +581,20 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
         ),
         f(
             "tsconfig.json",
-            String::from(
-                r#"{
-  "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitReturns": true,
-    "verbatimModuleSyntax": true,
-    "forceConsistentCasingInFileNames": true,
+            format!(
+                r#"{{
+  "compilerOptions": {{
+{ts_strict_flags}
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2023",
     "types": ["bun-types"],
     "noEmit": true,
     "skipLibCheck": true
-  },
+  }},
   "include": ["src"]
-}
-"#,
+}}
+"#
             ),
             false,
             FileRole::Config,
@@ -1081,7 +1116,7 @@ mod tests {
         let cargo_toml = &by_path("Cargo.toml").contents;
         assert!(cargo_toml.contains("name = \"my_repo\""));
         assert!(cargo_toml.contains("[lints.clippy]"));
-        assert!(cargo_toml.contains("unwrap_used  = \"deny\""));
+        assert!(cargo_toml.contains("unwrap_used = \"deny\""));
         assert!(by_path("clippy.toml")
             .contents
             .contains("allow-unwrap-in-tests"));
