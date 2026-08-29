@@ -2,6 +2,7 @@
 //! Hermetic logic behind the desktop app: the board model and its assembly from a Forge.
 //! No Tauri dependency, so it runs in the fast workspace gate.
 
+mod baseline;
 mod retrofit;
 mod scaffold;
 pub use retrofit::{

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
+use crate::baseline;
 use crate::scaffold::{FileRole, ScaffoldContext, ScaffoldFile, StackProfile};
 
 /// The stack ids retrofit can detect, in a stable order. Each maps to a `StackProfile`
@@ -78,9 +79,9 @@ fn set_if_absent(tbl: &mut Table, key: &str, val: toml_edit::Value) {
 /// missing ones, drops nothing). Only mutates when something is actually missing, so an
 /// already-complete array is left byte-identical (idempotency).
 ///
-/// Returns `None` if `key` is present but is NOT an array. Our array keys (`extend-select`,
-/// the dev group) are opinion-defining, so a wrong-shaped value means we cannot enforce our
-/// floor: the caller bails and leaves the whole file untouched rather than silently keeping
+/// Returns `None` if `key` is present but is NOT an array. Our array keys (the ruff `select`
+/// set, the dev group) are opinion-defining, so a wrong-shaped value means we cannot enforce
+/// our floor: the caller bails and leaves the whole file untouched rather than silently keeping
 /// the user's value while rewriting the rest (which would report a false "merged" state).
 fn ensure_str_array(tbl: &mut Table, key: &str, wanted: &[&str]) -> Option<()> {
     if tbl.contains_key(key) && tbl.get(key).and_then(|i| i.as_array()).is_none() {
@@ -108,15 +109,20 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
 
     // [dependency-groups] dev: union our tools in.
     let dg = ensure_table(&mut doc, &["dependency-groups"])?;
-    ensure_str_array(dg, "dev", &["ruff", "mypy", "pytest"])?;
+    ensure_str_array(dg, "dev", baseline::PYTHON_DEV_GROUP)?;
 
     // [tool.ruff]: line-length + target-version are additive (cosmetic).
     let ruff = ensure_table(&mut doc, &["tool", "ruff"])?;
     set_if_absent(ruff, "line-length", 88_i64.into());
     set_if_absent(ruff, "target-version", "py313".into());
-    // [tool.ruff.lint]: enforce our lint selection (union, so a floor not a cap).
+    // [tool.ruff.lint]: enforce our lint selection (union, so a floor not a cap). The key is
+    // `select`, matching the scaffold, so a bare retrofitted repo ends up identical to a
+    // scaffolded one and re-retrofitting a scaffolded repo is a no-op.
     let lint = ensure_table(&mut doc, &["tool", "ruff", "lint"])?;
-    ensure_str_array(lint, "extend-select", &["I", "UP", "B", "SIM", "RUF"])?;
+    ensure_str_array(lint, "select", baseline::RUFF_LINT_SELECT)?;
+    // [tool.ruff.lint.per-file-ignores]: the tests floor (B011) as a string array (additive).
+    let ignores = ensure_table(&mut doc, &["tool", "ruff", "lint", "per-file-ignores"])?;
+    ensure_str_array(ignores, "tests/**", baseline::RUFF_TEST_IGNORES)?;
 
     // [tool.mypy]: enforce strict = true (opinion-defining); python_version additive.
     let mypy = ensure_table(&mut doc, &["tool", "mypy"])?;
@@ -139,6 +145,53 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
         pytest.insert("testpaths", value(Array::from_iter(["tests"])));
     }
 
+    Some(doc.to_string())
+}
+
+/// The effective clippy level of a lint entry, reading either the bare-string form
+/// (`unwrap_used = "deny"`) or the structured form (`unwrap_used = { level = "deny", priority
+/// = -1 }`). `None` when neither shape carries a string level.
+fn clippy_level(item: &Item) -> Option<&str> {
+    item.as_str().or_else(|| {
+        item.as_table_like()
+            .and_then(|t| t.get("level"))
+            .and_then(|l| l.as_str())
+    })
+}
+
+/// Install the opinionated `[lints.clippy]` denials into an existing `Cargo.toml`. Every Rust
+/// repo has a Cargo.toml by definition, so without this merger the clippy denials never land
+/// on retrofit at all. Raises a lint to `"deny"` only when its effective level is weaker
+/// (absent, `allow`, or `warn`); a stronger `forbid` or an already-`deny` value, in either the
+/// bare-string or the structured `{ level, priority }` form, is left untouched. So an
+/// already-correct table is byte-identical (idempotency, and a scaffolded repo re-retrofits to
+/// a no-op), and a user's deliberately stronger or structured config is never clobbered.
+///
+/// Returns `None` if `existing` does not parse as TOML: the file is never fabricated over.
+pub fn merge_cargo_toml(existing: &str) -> Option<String> {
+    let mut doc: DocumentMut = existing.parse().ok()?;
+    let clippy = ensure_table(&mut doc, &["lints", "clippy"])?;
+    for &name in baseline::CLIPPY_DENIES {
+        let weak = match clippy.get(name) {
+            None => true,
+            Some(item) => matches!(clippy_level(item), None | Some("allow") | Some("warn")),
+        };
+        if weak {
+            clippy.insert(name, value("deny"));
+        }
+    }
+    Some(doc.to_string())
+}
+
+/// Install the test-only unwrap/expect allows into an existing `clippy.toml`. Additive: sets
+/// each key to `true` when absent, and leaves a present value alone. Returns `None` if
+/// `existing` does not parse as TOML.
+pub fn merge_clippy_toml(existing: &str) -> Option<String> {
+    let mut doc: DocumentMut = existing.parse().ok()?;
+    let root = doc.as_table_mut();
+    for &key in baseline::CLIPPY_TEST_ALLOWS {
+        set_if_absent(root, key, true.into());
+    }
     Some(doc.to_string())
 }
 
@@ -181,9 +234,10 @@ pub fn merge_tsconfig(existing: &str) -> Option<String> {
     let root = CstRootNode::parse(existing, &ParseOptions::default()).ok()?;
     let obj = root.object_value()?;
     let co = obj.object_value_or_create("compilerOptions")?;
-    // Opinion-defining strictness flags: enforced (set even over a weaker value).
-    cst_enforce_bool(&co, "strict", true);
-    cst_enforce_bool(&co, "noUncheckedIndexedAccess", true);
+    // Opinion-defining strict-family flags: enforced (set even over a weaker value).
+    for &flag in baseline::TS_STRICT_FLAGS {
+        cst_enforce_bool(&co, flag, true);
+    }
     // Additive defaults: only when the user has not set them.
     cst_add_if_absent(&co, "module", "esnext");
     cst_add_if_absent(&co, "moduleResolution", "bundler");
@@ -192,8 +246,9 @@ pub fn merge_tsconfig(existing: &str) -> Option<String> {
     Some(root.to_string())
 }
 
-/// Merge the `typescript` + `bun-types` dev dependencies and the `check` script into an
-/// existing `package.json`, preserving the user's formatting and key order (CST edit in
+/// Merge the TypeScript dev dependencies (`typescript`, `bun-types`, `@biomejs/biome`) and the
+/// `check` script into an existing `package.json`, preserving the user's formatting and key
+/// order (CST edit in
 /// place). Additive for every field; idempotent. Returns `None` (leave the file untouched)
 /// if the content is not a JSON object, or if `scripts`/`devDependencies` is present as a
 /// non-object.
@@ -201,10 +256,11 @@ pub fn merge_package_json(existing: &str) -> Option<String> {
     let root = CstRootNode::parse(existing, &ParseOptions::default()).ok()?;
     let obj = root.object_value()?;
     let scripts = obj.object_value_or_create("scripts")?;
-    cst_add_if_absent(&scripts, "check", "tsc --noEmit && bun test");
+    cst_add_if_absent(&scripts, "check", baseline::TS_CHECK_SCRIPT);
     let dev = obj.object_value_or_create("devDependencies")?;
-    cst_add_if_absent(&dev, "typescript", "^5.7.0");
-    cst_add_if_absent(&dev, "bun-types", "^1.1.0");
+    for &(name, range) in baseline::TS_DEV_DEPS {
+        cst_add_if_absent(&dev, name, range);
+    }
     Some(root.to_string())
 }
 
@@ -236,7 +292,7 @@ pub struct RetrofitPlan {
 
 /// The outcome of attempting to merge a `Config` file.
 enum MergeAttempt {
-    /// No registered merger for this file (Cargo.toml, go.mod): leave it untouched.
+    /// No registered merger for this file (go.mod, .golangci.yml): leave it untouched.
     NoMerger,
     /// The merger ran and produced this content.
     Merged(String),
@@ -249,6 +305,8 @@ enum MergeAttempt {
 fn merge_config(stack_id: &str, path: &Path, existing: &str) -> MergeAttempt {
     let merged = match (stack_id, path.file_name().and_then(|s| s.to_str())) {
         ("python", Some("pyproject.toml")) => merge_pyproject(existing),
+        ("rust", Some("Cargo.toml")) => merge_cargo_toml(existing),
+        ("rust", Some("clippy.toml")) => merge_clippy_toml(existing),
         ("typescript", Some("tsconfig.json")) => merge_tsconfig(existing),
         ("typescript", Some("package.json")) => merge_package_json(existing),
         _ => return MergeAttempt::NoMerger,
@@ -393,7 +451,7 @@ pub fn plan_retrofit(dir: &Path, profile: &StackProfile, ctx: &ScaffoldContext) 
                     }
                 };
                 match merge_config(profile.id, &file.path, &existing) {
-                    // Config with no merger (Cargo.toml/go.mod): intentionally untouched.
+                    // Config with no merger (go.mod/.golangci.yml): intentionally untouched.
                     MergeAttempt::NoMerger => plan.already.push(file.path.clone()),
                     MergeAttempt::Merged(new_contents) if new_contents != existing => {
                         let diff = line_diff(&existing, &new_contents);
@@ -605,17 +663,14 @@ mod tests {
 
     #[test]
     fn plan_leaves_a_config_with_no_merger_in_already() {
+        // go.mod has no registered merger (a Go-module round-trip is out of scope), so an
+        // existing one is reported as already, never merged.
         let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
-        let profile = stack_profile("rust").unwrap();
+        std::fs::write(d.path().join("go.mod"), "module example.com/x\n\ngo 1.23\n").unwrap();
+        let profile = stack_profile("go").unwrap();
         let plan = plan_retrofit(d.path(), &profile, &ctx());
-        assert!(plan
-            .already
-            .contains(&std::path::PathBuf::from("Cargo.toml")));
-        assert!(plan
-            .merges
-            .iter()
-            .all(|m| m.path != Path::new("Cargo.toml")));
+        assert!(plan.already.contains(&std::path::PathBuf::from("go.mod")));
+        assert!(plan.merges.iter().all(|m| m.path != Path::new("go.mod")));
     }
 
     fn dir_with(files: &[&str]) -> tempfile::TempDir {
@@ -890,10 +945,10 @@ mod tests {
     }
 
     #[test]
-    fn merge_pyproject_bails_when_extend_select_is_not_an_array() {
+    fn merge_pyproject_bails_when_select_is_not_an_array() {
         // A present-but-wrong-shaped opinion-defining value must NOT be silently ignored
         // while the rest of the file is rewritten: the whole merge bails (reported skipped).
-        assert!(merge_pyproject("[tool.ruff.lint]\nextend-select = \"I\"\n").is_none());
+        assert!(merge_pyproject("[tool.ruff.lint]\nselect = \"I\"\n").is_none());
     }
 
     #[test]
@@ -964,7 +1019,7 @@ mod tests {
     fn merge_tsconfig_leaves_an_already_configured_file_byte_identical() {
         // A tsconfig that already has every key we set must merge to itself (no churn), so
         // plan_retrofit reports it as already-done rather than a spurious merge.
-        let configured = "{\n  \"compilerOptions\": {\n    \"strict\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"module\": \"esnext\",\n    \"moduleResolution\": \"bundler\",\n    \"target\": \"es2023\",\n    \"skipLibCheck\": true\n  }\n}\n";
+        let configured = "{\n  \"compilerOptions\": {\n    \"strict\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n    \"noImplicitOverride\": true,\n    \"noFallthroughCasesInSwitch\": true,\n    \"noImplicitReturns\": true,\n    \"verbatimModuleSyntax\": true,\n    \"forceConsistentCasingInFileNames\": true,\n    \"module\": \"esnext\",\n    \"moduleResolution\": \"bundler\",\n    \"target\": \"es2023\",\n    \"skipLibCheck\": true\n  }\n}\n";
         assert_eq!(merge_tsconfig(configured).unwrap(), configured);
     }
 
@@ -1040,6 +1095,236 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn retrofit_of_a_scaffolded_repo_is_a_noop() {
+        // The load-bearing acceptance test: scaffold and retrofit derive from the same
+        // baseline, so retrofitting a freshly scaffolded repo finds nothing to add and
+        // nothing to merge (an over-installing retrofit breaks this). The bare-repo dispatch
+        // tests below cover the other direction (an under-installing retrofit), which this
+        // test alone cannot see: a config the merger under-fills still merges to identical
+        // here, and a dropped dispatch arm routes the config to `already` via `NoMerger`.
+        use crate::scaffold::FileRole;
+        for id in ["python", "rust", "typescript", "go"] {
+            let d = tempfile::tempdir().unwrap();
+            let profile = stack_profile(id).unwrap();
+            crate::scaffold::scaffold(d.path(), &profile, &ctx(), &|_| Ok(())).unwrap();
+            let plan = plan_retrofit(d.path(), &profile, &ctx());
+            let add_paths: Vec<_> = plan.adds.iter().map(|f| f.path.clone()).collect();
+            let merge_paths: Vec<_> = plan.merges.iter().map(|m| m.path.clone()).collect();
+            assert!(
+                plan.adds.is_empty(),
+                "{id}: scaffolded repo needs no adds: {add_paths:?}"
+            );
+            assert!(
+                plan.merges.is_empty(),
+                "{id}: scaffolded repo needs no merges: {merge_paths:?}"
+            );
+            assert!(
+                plan.gitignore_append.is_empty(),
+                "{id}: scaffolded repo needs no gitignore lines: {:?}",
+                plan.gitignore_append
+            );
+            // Every Config file the profile emits must land in `already` (parsed cleanly and
+            // matched), never in `skipped`. An invalid render (a stray comma, bad quoting)
+            // would fail its merger, route the file to `skipped`, and leave adds/merges empty,
+            // so the asserts above would pass vacuously; this catches that.
+            for file in (profile.files)(&ctx()) {
+                if file.role == FileRole::Config {
+                    assert!(
+                        plan.already.contains(&file.path),
+                        "{id}: {} should parse and match (be in `already`), not be skipped; \
+                         skipped={:?}",
+                        file.path.display(),
+                        plan.skipped
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_installs_the_baseline_into_a_bare_repo_through_the_dispatch() {
+        // The under-installation guard: a bare (non-scaffolded) repo must get the full
+        // baseline merged in THROUGH `plan_retrofit`/`merge_config`, not just through the
+        // merge functions called directly. A dropped or mis-keyed dispatch arm routes the
+        // config to `already` (via `NoMerger`) with no merge, which these `.expect`s catch.
+        let cargo_merge = |contents: &str, needle: &str| {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::write(d.path().join("Cargo.toml"), contents).unwrap();
+            let profile = stack_profile("rust").unwrap();
+            let plan = plan_retrofit(d.path(), &profile, &ctx());
+            let m = plan
+                .merges
+                .into_iter()
+                .find(|m| m.path == Path::new("Cargo.toml"))
+                .expect("Cargo.toml is merged through the dispatch");
+            assert!(
+                m.new_contents.contains(needle),
+                "Cargo.toml merge should install {needle}:\n{}",
+                m.new_contents
+            );
+        };
+        cargo_merge("[package]\nname='x'\n", "unwrap_used = \"deny\"");
+
+        // An existing clippy.toml missing our allows must merge through the ("rust",
+        // "clippy.toml") arm (a scaffolded repo emits it, so a bare repo with a partial one is
+        // the real merge case).
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        std::fs::write(
+            d.path().join("clippy.toml"),
+            "allow-unwrap-in-tests = true\n",
+        )
+        .unwrap();
+        let profile = stack_profile("rust").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        let clippy = plan
+            .merges
+            .iter()
+            .find(|m| m.path == Path::new("clippy.toml"))
+            .expect("clippy.toml is merged through the dispatch");
+        assert!(clippy.new_contents.contains("allow-expect-in-tests = true"));
+
+        // TypeScript package.json must merge biome in through the dispatch.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("package.json"),
+            "{ \"name\": \"x\", \"scripts\": {} }\n",
+        )
+        .unwrap();
+        let profile = stack_profile("typescript").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        let pkg = plan
+            .merges
+            .iter()
+            .find(|m| m.path == Path::new("package.json"))
+            .expect("package.json is merged through the dispatch");
+        assert!(
+            pkg.new_contents.contains("@biomejs/biome"),
+            "package.json merge should install biome:\n{}",
+            pkg.new_contents
+        );
+    }
+
+    #[test]
+    fn merge_pyproject_installs_the_full_select_set_and_test_ignores() {
+        let out = merge_pyproject("[project]\nname = \"x\"\n").unwrap();
+        assert!(out.contains("select = ["), "emits a select array:\n{out}");
+        assert!(
+            out.contains("\"PERF\""),
+            "the new PERF rule is present:\n{out}"
+        );
+        assert!(out.contains("\"C4\""), "the new C4 rule is present:\n{out}");
+        assert!(out.contains("[tool.ruff.lint.per-file-ignores]"));
+        assert!(out.contains("\"tests/**\""));
+        assert!(out.contains("\"B011\""));
+        assert!(
+            !out.contains("extend-select"),
+            "the legacy extend-select key is gone:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_cargo_toml_installs_the_clippy_table_preserving_the_package() {
+        let out = merge_cargo_toml("[package]\nname='x'\n").unwrap();
+        assert!(out.contains("[lints.clippy]"));
+        assert!(out.contains("unwrap_used = \"deny\""));
+        assert!(
+            out.contains("name='x'") || out.contains("name = 'x'"),
+            "the user's package is preserved:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_cargo_toml_is_idempotent() {
+        let once = merge_cargo_toml("[package]\nname='x'\n").unwrap();
+        let twice = merge_cargo_toml(&once).unwrap();
+        assert_eq!(once, twice, "a second merge must produce no further change");
+    }
+
+    #[test]
+    fn merge_cargo_toml_enforces_deny_over_a_weaker_value() {
+        let out = merge_cargo_toml("[lints.clippy]\nunwrap_used = \"warn\"\n").unwrap();
+        assert!(out.contains("unwrap_used = \"deny\""));
+        assert!(
+            !out.contains("\"warn\""),
+            "the weaker value is replaced:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_cargo_toml_preserves_a_stronger_forbid_level() {
+        // `forbid` is stronger than `deny` (it cannot be locally overridden by `#[allow]`).
+        // Rewriting it to `deny` would silently weaken a control the user set deliberately.
+        let out = merge_cargo_toml("[lints.clippy]\nunwrap_used = \"forbid\"\n").unwrap();
+        assert!(
+            out.contains("unwrap_used = \"forbid\""),
+            "a stronger forbid is preserved:\n{out}"
+        );
+        assert!(!out.contains("unwrap_used = \"deny\""));
+    }
+
+    #[test]
+    fn merge_cargo_toml_preserves_the_structured_level_priority_form() {
+        // The `{ level = "deny", priority = -1 }` form is the official Cargo shape for setting
+        // priority when combining a lint group with specific overrides. It must not be
+        // clobbered down to a bare `"deny"` (which would drop `priority`).
+        let src = "[lints.clippy]\nunwrap_used = { level = \"deny\", priority = -1 }\n";
+        let out = merge_cargo_toml(src).unwrap();
+        assert!(
+            out.contains("priority = -1"),
+            "the structured form and its priority survive:\n{out}"
+        );
+        assert_eq!(merge_cargo_toml(&out).unwrap(), out, "and it is idempotent");
+    }
+
+    #[test]
+    fn merge_cargo_toml_returns_none_on_unparseable_input() {
+        assert!(merge_cargo_toml("this is [[[ not = = toml").is_none());
+    }
+
+    #[test]
+    fn merge_clippy_toml_adds_the_test_allows_and_bails_on_garbage() {
+        let out = merge_clippy_toml("").unwrap();
+        assert!(out.contains("allow-unwrap-in-tests = true"));
+        assert!(out.contains("allow-expect-in-tests = true"));
+        assert!(merge_clippy_toml("this is [[[ not = = toml").is_none());
+    }
+
+    #[test]
+    fn merge_tsconfig_installs_every_strict_family_flag() {
+        let out = merge_tsconfig("{ \"compilerOptions\": {} }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        for flag in [
+            "exactOptionalPropertyTypes",
+            "verbatimModuleSyntax",
+            "forceConsistentCasingInFileNames",
+        ] {
+            assert_eq!(
+                v["compilerOptions"][flag],
+                serde_json::json!(true),
+                "missing strict flag {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_package_json_installs_biome_in_check_and_dev_deps() {
+        let out = merge_package_json("{ \"name\": \"x\" }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(
+            v["scripts"]["check"]
+                .as_str()
+                .unwrap()
+                .contains("biome check ."),
+            "the check script runs biome:\n{out}"
+        );
+        assert!(
+            v["devDependencies"]["@biomejs/biome"].is_string(),
+            "biome is a dev dependency:\n{out}"
+        );
     }
 
     /// Live: retrofit a clean Go fixture (valid, gofmt-clean, test-passing code, no tooling)
