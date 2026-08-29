@@ -1347,6 +1347,71 @@ mod tests {
         assert!(run_post_write(dir.path(), &step).is_err());
     }
 
+    /// Drift guard: every scaffold-emitted config block must contain every item of the
+    /// matching `baseline` const, so a const changed without re-rendering the scaffold (or
+    /// vice versa) is a test failure here rather than a silent divergence in the field.
+    #[test]
+    fn scaffold_blocks_stay_in_sync_with_the_baseline_consts() {
+        let content = |id: &str, rel: &str| -> String {
+            (stack_profile(id).unwrap().files)(&ctx())
+                .into_iter()
+                .find(|f| f.path == std::path::Path::new(rel))
+                .unwrap_or_else(|| panic!("{id} missing {rel}"))
+                .contents
+        };
+        // Python pyproject: every ruff select rule, the test ignores, the dev group.
+        let pyproject = content("python", "pyproject.toml");
+        for &rule in baseline::RUFF_LINT_SELECT {
+            assert!(
+                pyproject.contains(&format!("\"{rule}\"")),
+                "pyproject missing ruff rule {rule}"
+            );
+        }
+        for &ig in baseline::RUFF_TEST_IGNORES {
+            assert!(
+                pyproject.contains(&format!("\"{ig}\"")),
+                "pyproject missing test ignore {ig}"
+            );
+        }
+        for &dep in baseline::PYTHON_DEV_GROUP {
+            assert!(
+                pyproject.contains(&format!("\"{dep}\"")),
+                "pyproject missing dev dep {dep}"
+            );
+        }
+        // Rust Cargo.toml: every clippy deny; clippy.toml: every test allow.
+        let cargo = content("rust", "Cargo.toml");
+        for &deny in baseline::CLIPPY_DENIES {
+            assert!(
+                cargo.contains(deny),
+                "Cargo.toml missing clippy deny {deny}"
+            );
+        }
+        let clippy = content("rust", "clippy.toml");
+        for &allow in baseline::CLIPPY_TEST_ALLOWS {
+            assert!(clippy.contains(allow), "clippy.toml missing {allow}");
+        }
+        // TypeScript tsconfig: every strict flag; package.json: the check script + dev deps.
+        let tsconfig = content("typescript", "tsconfig.json");
+        for &flag in baseline::TS_STRICT_FLAGS {
+            assert!(
+                tsconfig.contains(&format!("\"{flag}\"")),
+                "tsconfig missing strict flag {flag}"
+            );
+        }
+        let pkg_json = content("typescript", "package.json");
+        assert!(
+            pkg_json.contains(baseline::TS_CHECK_SCRIPT),
+            "package.json missing the check script"
+        );
+        for &(name, _) in baseline::TS_DEV_DEPS {
+            assert!(
+                pkg_json.contains(&format!("\"{name}\"")),
+                "package.json missing dev dep {name}"
+            );
+        }
+    }
+
     /// Live check: emit the Python profile and run its real gate (uv sync, ruff, mypy,
     /// pytest). Ignored by default so the hermetic gate needs no toolchain; run on demand
     /// with `env -C <repo> cargo test -p tutti-app-core -- --ignored`. This is the one

@@ -1080,6 +1080,127 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retrofit_of_a_scaffolded_repo_is_a_noop() {
+        // The load-bearing acceptance test: scaffold and retrofit derive from the same
+        // baseline, so retrofitting a freshly scaffolded repo finds nothing to add and
+        // nothing to merge. A gate that scaffold installs but retrofit misses breaks this.
+        for id in ["python", "rust", "typescript", "go"] {
+            let d = tempfile::tempdir().unwrap();
+            let profile = stack_profile(id).unwrap();
+            crate::scaffold::scaffold(d.path(), &profile, &ctx(), &|_| Ok(())).unwrap();
+            let plan = plan_retrofit(d.path(), &profile, &ctx());
+            let add_paths: Vec<_> = plan.adds.iter().map(|f| f.path.clone()).collect();
+            let merge_paths: Vec<_> = plan.merges.iter().map(|m| m.path.clone()).collect();
+            assert!(
+                plan.adds.is_empty(),
+                "{id}: scaffolded repo needs no adds: {add_paths:?}"
+            );
+            assert!(
+                plan.merges.is_empty(),
+                "{id}: scaffolded repo needs no merges: {merge_paths:?}"
+            );
+            assert!(
+                plan.gitignore_append.is_empty(),
+                "{id}: scaffolded repo needs no gitignore lines: {:?}",
+                plan.gitignore_append
+            );
+        }
+    }
+
+    #[test]
+    fn merge_pyproject_installs_the_full_select_set_and_test_ignores() {
+        let out = merge_pyproject("[project]\nname = \"x\"\n").unwrap();
+        assert!(out.contains("select = ["), "emits a select array:\n{out}");
+        assert!(
+            out.contains("\"PERF\""),
+            "the new PERF rule is present:\n{out}"
+        );
+        assert!(out.contains("\"C4\""), "the new C4 rule is present:\n{out}");
+        assert!(out.contains("[tool.ruff.lint.per-file-ignores]"));
+        assert!(out.contains("\"tests/**\""));
+        assert!(out.contains("\"B011\""));
+        assert!(
+            !out.contains("extend-select"),
+            "the legacy extend-select key is gone:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_cargo_toml_installs_the_clippy_table_preserving_the_package() {
+        let out = merge_cargo_toml("[package]\nname='x'\n").unwrap();
+        assert!(out.contains("[lints.clippy]"));
+        assert!(out.contains("unwrap_used = \"deny\""));
+        assert!(
+            out.contains("name='x'") || out.contains("name = 'x'"),
+            "the user's package is preserved:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_cargo_toml_is_idempotent() {
+        let once = merge_cargo_toml("[package]\nname='x'\n").unwrap();
+        let twice = merge_cargo_toml(&once).unwrap();
+        assert_eq!(once, twice, "a second merge must produce no further change");
+    }
+
+    #[test]
+    fn merge_cargo_toml_enforces_deny_over_a_weaker_value() {
+        let out = merge_cargo_toml("[lints.clippy]\nunwrap_used = \"warn\"\n").unwrap();
+        assert!(out.contains("unwrap_used = \"deny\""));
+        assert!(
+            !out.contains("\"warn\""),
+            "the weaker value is replaced:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_cargo_toml_returns_none_on_unparseable_input() {
+        assert!(merge_cargo_toml("this is [[[ not = = toml").is_none());
+    }
+
+    #[test]
+    fn merge_clippy_toml_adds_the_test_allows_and_bails_on_garbage() {
+        let out = merge_clippy_toml("").unwrap();
+        assert!(out.contains("allow-unwrap-in-tests = true"));
+        assert!(out.contains("allow-expect-in-tests = true"));
+        assert!(merge_clippy_toml("this is [[[ not = = toml").is_none());
+    }
+
+    #[test]
+    fn merge_tsconfig_installs_every_strict_family_flag() {
+        let out = merge_tsconfig("{ \"compilerOptions\": {} }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        for flag in [
+            "exactOptionalPropertyTypes",
+            "verbatimModuleSyntax",
+            "forceConsistentCasingInFileNames",
+        ] {
+            assert_eq!(
+                v["compilerOptions"][flag],
+                serde_json::json!(true),
+                "missing strict flag {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_package_json_installs_biome_in_check_and_dev_deps() {
+        let out = merge_package_json("{ \"name\": \"x\" }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(
+            v["scripts"]["check"]
+                .as_str()
+                .unwrap()
+                .contains("biome check ."),
+            "the check script runs biome:\n{out}"
+        );
+        assert!(
+            v["devDependencies"]["@biomejs/biome"].is_string(),
+            "biome is a dev dependency:\n{out}"
+        );
+    }
+
     /// Live: retrofit a clean Go fixture (valid, gofmt-clean, test-passing code, no tooling)
     /// and run the emitted gate. It should be green because there is nothing to fix. Ignored
     /// by default; run with `env -C <repo> cargo test -p tutti-app-core -- --ignored`.
