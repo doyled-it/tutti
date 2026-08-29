@@ -148,18 +148,35 @@ pub fn merge_pyproject(existing: &str) -> Option<String> {
     Some(doc.to_string())
 }
 
+/// The effective clippy level of a lint entry, reading either the bare-string form
+/// (`unwrap_used = "deny"`) or the structured form (`unwrap_used = { level = "deny", priority
+/// = -1 }`). `None` when neither shape carries a string level.
+fn clippy_level(item: &Item) -> Option<&str> {
+    item.as_str().or_else(|| {
+        item.as_table_like()
+            .and_then(|t| t.get("level"))
+            .and_then(|l| l.as_str())
+    })
+}
+
 /// Install the opinionated `[lints.clippy]` denials into an existing `Cargo.toml`. Every Rust
 /// repo has a Cargo.toml by definition, so without this merger the clippy denials never land
-/// on retrofit at all. Enforces each lint to `"deny"` (set even over a weaker value like
-/// `"warn"`), but only rewrites a key whose current value differs, so an already-correct table
-/// is left byte-identical (idempotency, and a scaffolded repo re-retrofits to a no-op).
+/// on retrofit at all. Raises a lint to `"deny"` only when its effective level is weaker
+/// (absent, `allow`, or `warn`); a stronger `forbid` or an already-`deny` value, in either the
+/// bare-string or the structured `{ level, priority }` form, is left untouched. So an
+/// already-correct table is byte-identical (idempotency, and a scaffolded repo re-retrofits to
+/// a no-op), and a user's deliberately stronger or structured config is never clobbered.
 ///
 /// Returns `None` if `existing` does not parse as TOML: the file is never fabricated over.
 pub fn merge_cargo_toml(existing: &str) -> Option<String> {
     let mut doc: DocumentMut = existing.parse().ok()?;
     let clippy = ensure_table(&mut doc, &["lints", "clippy"])?;
     for &name in baseline::CLIPPY_DENIES {
-        if clippy.get(name).and_then(|i| i.as_str()) != Some("deny") {
+        let weak = match clippy.get(name) {
+            None => true,
+            Some(item) => matches!(clippy_level(item), None | Some("allow") | Some("warn")),
+        };
+        if weak {
             clippy.insert(name, value("deny"));
         }
     }
@@ -1084,7 +1101,11 @@ mod tests {
     fn retrofit_of_a_scaffolded_repo_is_a_noop() {
         // The load-bearing acceptance test: scaffold and retrofit derive from the same
         // baseline, so retrofitting a freshly scaffolded repo finds nothing to add and
-        // nothing to merge. A gate that scaffold installs but retrofit misses breaks this.
+        // nothing to merge (an over-installing retrofit breaks this). The bare-repo dispatch
+        // tests below cover the other direction (an under-installing retrofit), which this
+        // test alone cannot see: a config the merger under-fills still merges to identical
+        // here, and a dropped dispatch arm routes the config to `already` via `NoMerger`.
+        use crate::scaffold::FileRole;
         for id in ["python", "rust", "typescript", "go"] {
             let d = tempfile::tempdir().unwrap();
             let profile = stack_profile(id).unwrap();
@@ -1105,7 +1126,86 @@ mod tests {
                 "{id}: scaffolded repo needs no gitignore lines: {:?}",
                 plan.gitignore_append
             );
+            // Every Config file the profile emits must land in `already` (parsed cleanly and
+            // matched), never in `skipped`. An invalid render (a stray comma, bad quoting)
+            // would fail its merger, route the file to `skipped`, and leave adds/merges empty,
+            // so the asserts above would pass vacuously; this catches that.
+            for file in (profile.files)(&ctx()) {
+                if file.role == FileRole::Config {
+                    assert!(
+                        plan.already.contains(&file.path),
+                        "{id}: {} should parse and match (be in `already`), not be skipped; \
+                         skipped={:?}",
+                        file.path.display(),
+                        plan.skipped
+                    );
+                }
+            }
         }
+    }
+
+    #[test]
+    fn plan_installs_the_baseline_into_a_bare_repo_through_the_dispatch() {
+        // The under-installation guard: a bare (non-scaffolded) repo must get the full
+        // baseline merged in THROUGH `plan_retrofit`/`merge_config`, not just through the
+        // merge functions called directly. A dropped or mis-keyed dispatch arm routes the
+        // config to `already` (via `NoMerger`) with no merge, which these `.expect`s catch.
+        let cargo_merge = |contents: &str, needle: &str| {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::write(d.path().join("Cargo.toml"), contents).unwrap();
+            let profile = stack_profile("rust").unwrap();
+            let plan = plan_retrofit(d.path(), &profile, &ctx());
+            let m = plan
+                .merges
+                .into_iter()
+                .find(|m| m.path == Path::new("Cargo.toml"))
+                .expect("Cargo.toml is merged through the dispatch");
+            assert!(
+                m.new_contents.contains(needle),
+                "Cargo.toml merge should install {needle}:\n{}",
+                m.new_contents
+            );
+        };
+        cargo_merge("[package]\nname='x'\n", "unwrap_used = \"deny\"");
+
+        // An existing clippy.toml missing our allows must merge through the ("rust",
+        // "clippy.toml") arm (a scaffolded repo emits it, so a bare repo with a partial one is
+        // the real merge case).
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        std::fs::write(
+            d.path().join("clippy.toml"),
+            "allow-unwrap-in-tests = true\n",
+        )
+        .unwrap();
+        let profile = stack_profile("rust").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        let clippy = plan
+            .merges
+            .iter()
+            .find(|m| m.path == Path::new("clippy.toml"))
+            .expect("clippy.toml is merged through the dispatch");
+        assert!(clippy.new_contents.contains("allow-expect-in-tests = true"));
+
+        // TypeScript package.json must merge biome in through the dispatch.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("package.json"),
+            "{ \"name\": \"x\", \"scripts\": {} }\n",
+        )
+        .unwrap();
+        let profile = stack_profile("typescript").unwrap();
+        let plan = plan_retrofit(d.path(), &profile, &ctx());
+        let pkg = plan
+            .merges
+            .iter()
+            .find(|m| m.path == Path::new("package.json"))
+            .expect("package.json is merged through the dispatch");
+        assert!(
+            pkg.new_contents.contains("@biomejs/biome"),
+            "package.json merge should install biome:\n{}",
+            pkg.new_contents
+        );
     }
 
     #[test]
@@ -1152,6 +1252,32 @@ mod tests {
             !out.contains("\"warn\""),
             "the weaker value is replaced:\n{out}"
         );
+    }
+
+    #[test]
+    fn merge_cargo_toml_preserves_a_stronger_forbid_level() {
+        // `forbid` is stronger than `deny` (it cannot be locally overridden by `#[allow]`).
+        // Rewriting it to `deny` would silently weaken a control the user set deliberately.
+        let out = merge_cargo_toml("[lints.clippy]\nunwrap_used = \"forbid\"\n").unwrap();
+        assert!(
+            out.contains("unwrap_used = \"forbid\""),
+            "a stronger forbid is preserved:\n{out}"
+        );
+        assert!(!out.contains("unwrap_used = \"deny\""));
+    }
+
+    #[test]
+    fn merge_cargo_toml_preserves_the_structured_level_priority_form() {
+        // The `{ level = "deny", priority = -1 }` form is the official Cargo shape for setting
+        // priority when combining a lint group with specific overrides. It must not be
+        // clobbered down to a bare `"deny"` (which would drop `priority`).
+        let src = "[lints.clippy]\nunwrap_used = { level = \"deny\", priority = -1 }\n";
+        let out = merge_cargo_toml(src).unwrap();
+        assert!(
+            out.contains("priority = -1"),
+            "the structured form and its priority survive:\n{out}"
+        );
+        assert_eq!(merge_cargo_toml(&out).unwrap(), out, "and it is idempotent");
     }
 
     #[test]
