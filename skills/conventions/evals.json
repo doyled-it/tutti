@@ -27,5 +27,24 @@
       "reports no convention violations",
       "does not invent findings outside the convention list"
     ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Python function that swallows everything with a bare except.",
+    "inputs": ["def load(p):\n    try:\n        return read(p)\n    except:\n        return None"],
+    "expected_behavior": [
+      "flags the bare except as a correctness violation",
+      "assigns Major severity",
+      "ties it to the EAFP convention and suggests catching a specific exception"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this idiomatic Python using pathlib, a dataclass, and an f-string; is anything wrong?",
+    "inputs": ["from dataclasses import dataclass\nfrom pathlib import Path\n\n@dataclass\nclass Cfg:\n    root: Path\n\ndef banner(c: Cfg) -> str:\n    return f\"root={c.root / 'data'}\""],
+    "expected_behavior": [
+      "reports no convention violations",
+      "does not invent findings outside the convention list"
+    ]
   }
 ]

@@ -271,6 +271,12 @@ fn python_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let dev_group = quoted_array(baseline::PYTHON_DEV_GROUP);
     let ruff_select = quoted_array(baseline::RUFF_LINT_SELECT);
     let test_ignores = quoted_array(baseline::RUFF_TEST_IGNORES);
+    // The AGENTS.md idioms come from the convention spine, so the constitution and the
+    // conventions skill cannot state a different set (the drift-guard test enforces this).
+    let python_idioms: Vec<&'static str> = crate::conventions::PYTHON_CONVENTIONS
+        .iter()
+        .map(|c| c.idiom)
+        .collect();
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -346,19 +352,12 @@ jobs:
                     comprehensions, perf, and ruff's own rules, on top of the pyflakes/ \
                     pycodestyle/isort/pyupgrade baseline), mypy --strict, and pytest",
                 tests_live: "`tests/`",
-                idioms: &[
-                    "Use `pathlib.Path` over `os.path` string juggling.",
-                    "Use `dataclasses` for structured records rather than ad-hoc dicts or \
-                        tuples.",
-                    "Use f-strings for formatting.",
-                    "Manage resources (files, locks, sessions) with `with` context managers.",
-                    "Type-hint public function signatures (mypy strict makes these \
-                        load-bearing).",
-                    "Iterate directly and use comprehensions, `enumerate`, and `zip` rather \
-                        than C-style index loops.",
-                ],
-                error_handling: "prefer EAFP (try/except) over precondition-checking; do not \
-                    use a bare `except`",
+                idioms: &python_idioms,
+                // A condensed summary of the EAFP spine idiom (a Correctness convention), so
+                // the constitution does not restate the same rule as both a bullet and this
+                // line. Same relationship the Rust profile's error_handling has to its spine.
+                error_handling: "use EAFP (`try`/`except`), not precondition checks, and \
+                    never a bare `except`",
                 layout: "package under `src/{pkg}/`, tests under `tests/` mirroring it",
             },
             pkg,
@@ -1114,6 +1113,35 @@ mod tests {
                 c.idiom
             );
         }
+    }
+
+    /// Assert `profile`'s AGENTS.md carries every idiom of `conventions` verbatim, so the
+    /// constitution and the conventions skill cannot drift from the spine.
+    fn assert_agents_md_idioms_come_from_the_spine(
+        profile: &StackProfile,
+        conventions: &[crate::conventions::Convention],
+    ) {
+        let files = (profile.files)(&ctx());
+        let agents = &files
+            .iter()
+            .find(|f| f.path == std::path::Path::new("AGENTS.md"))
+            .expect("AGENTS.md")
+            .contents;
+        for c in conventions {
+            assert!(
+                agents.contains(c.idiom),
+                "AGENTS.md must contain the spine idiom:\n{}",
+                c.idiom
+            );
+        }
+    }
+
+    #[test]
+    fn python_agents_md_idioms_come_from_the_spine() {
+        assert_agents_md_idioms_come_from_the_spine(
+            &python_profile(),
+            crate::conventions::PYTHON_CONVENTIONS,
+        );
     }
 
     #[test]
