@@ -84,6 +84,26 @@ pub fn conventions_preamble(languages: &[String]) -> Option<String> {
     Some(out)
 }
 
+/// The conventions skill wired as a `ConventionsProvider`: it detects the worktree's
+/// language(s) and injects the matching reference(s) for the coding roles.
+pub struct ConventionsSkill;
+
+impl tutti_core::conventions::ConventionsProvider for ConventionsSkill {
+    fn preamble_for(
+        &self,
+        role: tutti_core::message::Role,
+        worktree: &std::path::Path,
+    ) -> Option<String> {
+        use tutti_core::message::Role;
+        // Only the roles that write or review code get conventions.
+        if !matches!(role, Role::Implementer | Role::FixApplier | Role::Reviewer) {
+            return None;
+        }
+        let languages = crate::retrofit::detect_languages(worktree);
+        conventions_preamble(&languages)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +171,25 @@ mod tests {
     #[test]
     fn preamble_is_none_for_an_unknown_language() {
         assert!(conventions_preamble(&["cobol".to_string()]).is_none());
+    }
+
+    #[test]
+    fn provider_injects_for_coding_roles_in_a_rust_worktree() {
+        use tutti_core::conventions::ConventionsProvider;
+        use tutti_core::message::Role;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        let p = ConventionsSkill;
+        let out = p.preamble_for(Role::Implementer, d.path());
+        assert!(out.is_some(), "rust worktree, implementer gets a preamble");
+        assert!(out.unwrap().contains("Rust conventions"));
+        assert!(
+            p.preamble_for(Role::Planner, d.path()).is_none(),
+            "planner gets nothing"
+        );
+        // A directory with no known language markers gets nothing.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(p.preamble_for(Role::Reviewer, empty.path()).is_none());
     }
 
     #[test]
