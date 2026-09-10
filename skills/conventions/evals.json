@@ -1,0 +1,31 @@
+[
+  {
+    "skills": ["conventions"],
+    "query": "Review this Rust function that calls .unwrap() on a caller-supplied Option in a public fn.",
+    "inputs": ["pub fn first(v: &[i32]) -> i32 { *v.first().unwrap() }"],
+    "expected_behavior": [
+      "flags the unwrap on caller input as a correctness violation",
+      "assigns Major severity",
+      "suggests returning a Result or Option instead of panicking"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Rust code that matches an enum with a catch-all _ arm.",
+    "inputs": ["match e { E::A => 1, _ => 0 }"],
+    "expected_behavior": [
+      "notes the non-exhaustive match hides new variants",
+      "ties it to the make-illegal-states-unrepresentable convention",
+      "assigns Major severity"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this idiomatic Rust that uses ? and derives Debug; is anything wrong?",
+    "inputs": ["#[derive(Debug)] pub struct P(String); pub fn f() -> Result<(), E> { g()?; Ok(()) }"],
+    "expected_behavior": [
+      "reports no convention violations",
+      "does not invent findings outside the convention list"
+    ]
+  }
+]
