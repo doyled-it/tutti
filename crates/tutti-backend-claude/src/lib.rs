@@ -348,6 +348,7 @@ mod outcome_tests {
             model: "m".into(),
             review: None,
             mcp_servers: vec![],
+            skill_preamble: None,
         }
     }
 

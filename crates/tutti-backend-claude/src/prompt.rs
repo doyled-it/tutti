@@ -41,12 +41,14 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
              lint, types) and CI are already green: your job is to find the real bugs they \
              cannot see. Hunt for wrong conditions, off-by-one and boundary errors, \
              unhandled inputs, panics and overflow, broken invariants, incorrect error \
-             handling, and missing test coverage of real behavior. Do NOT raise formatting, \
-             style, naming, or structural findings: those are settled by the opinionated \
-             gate and the conventions in AGENTS.md; enforce those, do not add taste beyond \
-             them. Report only substantive findings, each with an honest severity (blocking \
-             or major means it must be fixed before shipping; minor is a small correctness \
-             or coverage note)."
+             handling, and missing test coverage of real behavior. Formatting, lint, and \
+             type errors are the mechanical gate's job, not yours. Convention issues are \
+             governed by the conventions reference above: raise a violation tagged \
+             correctness as a Major finding (it must be fixed before shipping), and note one \
+             tagged advisory as Minor (it does not gate). Do not invent findings beyond that \
+             reference and the correctness bugs the gate cannot see. Report only substantive \
+             findings, each with an honest severity (blocking or major means it must be fixed \
+             before shipping; minor is a small correctness or coverage note)."
         }
         Role::FixApplier => {
             "Apply the review findings below to the current work. Follow \
@@ -93,6 +95,12 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
         })
         .unwrap_or_default();
 
+    let preamble = task
+        .skill_preamble
+        .as_deref()
+        .map(|p| format!("{p}\n\n"))
+        .unwrap_or_default();
+
     let codegraph_hint = if task.mcp_servers.iter().any(|s| s.name == "codegraph") {
         "\n\nA `codegraph_explore` MCP tool is available. Prefer it over reading files to \
          map structure, callers, and change impact; it answers structural questions from a \
@@ -102,10 +110,11 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
     };
 
     format!(
-        "{skills}\n\n{role_line}\n\nIssue #{num}: {title}\n\n{body}{review_ctx}{codegraph_hint}\n\n\
+        "{skills}\n\n{preamble}{role_line}\n\nIssue #{num}: {title}\n\n{body}{review_ctx}{codegraph_hint}\n\n\
          When you are done, write your result as JSON matching this schema to the file \
          `{out}` (create the `.tutti` directory if needed). Write ONLY that file for the \
          result; do not print the JSON.\nSchema: {schema}",
+        preamble = preamble,
         num = task.issue.id.0,
         title = task.issue.title,
         body = task.issue.body,
@@ -134,7 +143,24 @@ mod tests {
             model: "m".into(),
             review: None,
             mcp_servers: vec![],
+            skill_preamble: None,
         }
+    }
+
+    #[test]
+    fn prompt_includes_the_skill_preamble_when_present() {
+        let mut task = task(Role::Implementer, vec![]);
+        task.skill_preamble = Some("CONVENTION CONTRACT TEXT".to_string());
+        let out = build_prompt(&task, std::path::Path::new("/tmp/out.json"));
+        assert!(out.contains("CONVENTION CONTRACT TEXT"));
+    }
+
+    #[test]
+    fn reviewer_prompt_points_at_the_conventions_severity_tags() {
+        let task = task(Role::Reviewer, vec![]);
+        let out = build_prompt(&task, std::path::Path::new("/tmp/out.json"));
+        assert!(out.contains("correctness"));
+        assert!(out.contains("advisory"));
     }
 
     #[test]
@@ -158,18 +184,20 @@ mod tests {
             Path::new("/wt/.tutti/review.json"),
         );
         assert!(p.contains("Adversarially review"));
-        assert!(p.contains("Do NOT raise formatting"));
+        assert!(p.contains("the mechanical gate's job"));
 
         let implementer_p = build_prompt(
             &task(Role::Implementer, vec![]),
             Path::new("/wt/.tutti/handoff.json"),
         );
         assert!(!implementer_p.contains("Adversarially review"));
-        assert!(!implementer_p.contains("Do NOT raise formatting"));
+        assert!(!implementer_p.contains("the mechanical gate's job"));
     }
 
     #[test]
-    fn implementer_and_reviewer_prompts_name_the_constitution_file() {
+    fn implementer_names_the_constitution_and_reviewer_points_at_the_conventions_reference() {
+        // The implementer is grounded in AGENTS.md; the reviewer is now governed by the
+        // injected conventions reference and its severity tags rather than by AGENTS.md.
         let implementer_p = build_prompt(
             &task(Role::Implementer, vec![]),
             Path::new("/wt/.tutti/handoff.json"),
@@ -180,7 +208,7 @@ mod tests {
             &task(Role::Reviewer, vec![]),
             Path::new("/wt/.tutti/review.json"),
         );
-        assert!(reviewer_p.contains("AGENTS.md"));
+        assert!(reviewer_p.contains("conventions reference"));
     }
 
     #[test]
