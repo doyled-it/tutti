@@ -157,15 +157,24 @@ mod tests {
         let disk_skill = std::fs::read_to_string(skill_dir().join("SKILL.md")).unwrap();
         let disk_rust = std::fs::read_to_string(skill_dir().join("references/rust.md")).unwrap();
         assert_eq!(SKILL_MD, disk_skill, "embedded SKILL.md drifted from disk");
-        assert_eq!(RUST_REFERENCE, disk_rust, "embedded rust.md drifted from disk");
+        assert_eq!(
+            RUST_REFERENCE, disk_rust,
+            "embedded rust.md drifted from disk"
+        );
     }
 
     #[test]
     fn preamble_for_rust_includes_the_contract_and_a_rust_idiom() {
         let p = conventions_preamble(&["rust".to_string()]).expect("rust preamble");
-        assert!(p.contains("If you are reviewing"), "carries the SKILL.md contract");
+        assert!(
+            p.contains("If you are reviewing"),
+            "carries the SKILL.md contract"
+        );
         assert!(p.contains("Rust conventions"), "carries the rust reference");
-        assert!(p.contains(RUST_CONVENTIONS[0].idiom), "carries a spine idiom");
+        assert!(
+            p.contains(RUST_CONVENTIONS[0].idiom),
+            "carries a spine idiom"
+        );
     }
 
     #[test]
@@ -204,7 +213,11 @@ mod tests {
         // Idioms are non-empty one-liners (no newlines): they double as reference headings.
         for c in RUST_CONVENTIONS {
             assert!(!c.idiom.trim().is_empty());
-            assert!(!c.idiom.contains('\n'), "idiom must be one line: {}", c.idiom);
+            assert!(
+                !c.idiom.contains('\n'),
+                "idiom must be one line: {}",
+                c.idiom
+            );
         }
     }
 }

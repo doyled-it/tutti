@@ -2327,9 +2327,7 @@ mod tests {
 
         let recorded = seen.lock().unwrap();
         assert!(
-            recorded
-                .iter()
-                .any(|p| p.as_deref() == Some("PREAMBLE")),
+            recorded.iter().any(|p| p.as_deref() == Some("PREAMBLE")),
             "the backend should have received the conventions preamble"
         );
     }
