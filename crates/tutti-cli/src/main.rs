@@ -230,13 +230,17 @@ async fn run(
     use tutti_core::workspace::Workspace;
     let _ = adapters.workspace.prune().await;
 
+    // The conventions provider injects the per-language convention skill into the coding
+    // roles. Declared before the engine so the binding outlives it, as the context does.
+    let conventions = tutti_app_core::ConventionsSkill;
     let engine = Engine::new(
         &cfg,
         adapters.forge.as_ref(),
         &adapters.backend,
         Box::new(adapters.workspace),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .with_conventions(&conventions);
     // codegraph context, gated by config and binary presence. `detect` returns None when
     // the binary is absent, so this is a full no-op on machines without codegraph.
     let codegraph = if cfg.codegraph_enabled() {
