@@ -108,6 +108,7 @@ impl<'a> Engine<'a> {
             model: self.cfg.model.clone(),
             review,
             mcp_servers,
+            skill_preamble: None,
         };
 
         let issue_id = issue.id.0;

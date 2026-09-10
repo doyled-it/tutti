@@ -120,6 +120,7 @@ mod tests {
             model: "fake".into(),
             review: None,
             mcp_servers: vec![],
+            skill_preamble: None,
         };
         let got = backend.run(task, Path::new("."), tx).await.unwrap();
         assert_eq!(got.status, AgentStatus::ReadyToShip);

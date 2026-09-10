@@ -36,6 +36,11 @@ pub struct AgentTask {
     /// the default and preserves prior behavior.
     #[serde(default)]
     pub mcp_servers: Vec<crate::mcp::McpServer>,
+    /// A convention preamble injected into the prompt for this role (from the
+    /// ConventionsProvider), or None. Default None preserves prior behavior and keeps
+    /// existing serialized tasks loading.
+    #[serde(default)]
+    pub skill_preamble: Option<String>,
 }
 
 /// Streamed progress from a running agent. Drives logs now, the UI later.
