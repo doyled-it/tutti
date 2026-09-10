@@ -53,6 +53,50 @@ pub const RUST_CONVENTIONS: &[Convention] = &[
 mod tests {
     use super::*;
 
+    fn skill_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/conventions")
+    }
+
+    #[test]
+    fn rust_reference_headings_match_the_spine_verbatim() {
+        let rust_md =
+            std::fs::read_to_string(skill_dir().join("references/rust.md")).expect("rust.md");
+        for c in RUST_CONVENTIONS {
+            let heading = format!("## {}", c.idiom);
+            assert!(
+                rust_md.contains(&heading),
+                "rust.md is missing the spine idiom as a heading:\n{heading}"
+            );
+            // The tag line follows the heading; assert the correct tag is present near it.
+            let after = rust_md.split(&heading).nth(1).expect("heading present");
+            let tag = match c.severity {
+                ConventionSeverity::Correctness => "Tag: correctness",
+                ConventionSeverity::Advisory => "Tag: advisory",
+            };
+            let window = &after[..after.len().min(200)];
+            assert!(
+                window.contains(tag),
+                "wrong or missing tag for idiom:\n{}\nexpected {tag}",
+                c.idiom
+            );
+        }
+    }
+
+    #[test]
+    fn conventions_skill_passes_the_e15_harness() {
+        let skill = tutti_design::skill::load(&skill_dir()).expect("skill loads");
+        assert!(
+            tutti_design::lint::lint(&skill).is_empty(),
+            "skill lint violations: {:?}",
+            tutti_design::lint::lint(&skill)
+        );
+        let evals = tutti_design::eval::load_evals(&skill_dir()).expect("evals load");
+        assert!(
+            tutti_design::eval::has_minimum_evals(&evals),
+            "need at least the minimum eval records"
+        );
+    }
+
     #[test]
     fn rust_spine_is_nonempty_and_carries_both_severities() {
         assert!(!RUST_CONVENTIONS.is_empty());
