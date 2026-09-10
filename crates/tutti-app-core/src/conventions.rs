@@ -122,15 +122,18 @@ mod tests {
                 rust_md.contains(&heading),
                 "rust.md is missing the spine idiom as a heading:\n{heading}"
             );
-            // The tag line follows the heading; assert the correct tag is present near it.
+            // The tag line lives in this convention's own section: the text after its
+            // heading, up to the next `## ` heading. Bounding to the section (rather than a
+            // fixed byte window) means a wrong tag cannot be satisfied by a sibling section's
+            // tag, and there is no risk of slicing a multibyte char mid-boundary.
             let after = rust_md.split(&heading).nth(1).expect("heading present");
+            let section = after.split("\n## ").next().unwrap_or(after);
             let tag = match c.severity {
                 ConventionSeverity::Correctness => "Tag: correctness",
                 ConventionSeverity::Advisory => "Tag: advisory",
             };
-            let window = &after[..after.len().min(200)];
             assert!(
-                window.contains(tag),
+                section.contains(tag),
                 "wrong or missing tag for idiom:\n{}\nexpected {tag}",
                 c.idiom
             );

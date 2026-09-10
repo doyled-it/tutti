@@ -31,36 +31,45 @@ pub fn build_prompt(task: &AgentTask, out_path: &Path) -> String {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let role_line = match task.playbook.role {
-        Role::Implementer => {
-            "Implement the issue below, test-first. Follow the project's \
+    let role_line: String = match task.playbook.role {
+        Role::Implementer => "Implement the issue below, test-first. Follow the project's \
              conventions in AGENTS.md."
-        }
+            .to_string(),
         Role::Reviewer => {
-            "Adversarially review the current work for correctness. Assume the gate (format, \
-             lint, types) and CI are already green: your job is to find the real bugs they \
-             cannot see. Hunt for wrong conditions, off-by-one and boundary errors, \
-             unhandled inputs, panics and overflow, broken invariants, incorrect error \
-             handling, and missing test coverage of real behavior. Formatting, lint, and \
-             type errors are the mechanical gate's job, not yours. Convention issues are \
-             governed by the conventions reference above: raise a violation tagged \
-             correctness as a Major finding (it must be fixed before shipping), and note one \
-             tagged advisory as Minor (it does not gate). Do not invent findings beyond that \
-             reference and the correctness bugs the gate cannot see. Report only substantive \
-             findings, each with an honest severity (blocking or major means it must be fixed \
-             before shipping; minor is a small correctness or coverage note)."
+            let base = "Adversarially review the current work for correctness. Assume the \
+             gate (format, lint, types) and CI are already green: your job is to find the \
+             real bugs they cannot see. Hunt for wrong conditions, off-by-one and boundary \
+             errors, unhandled inputs, panics and overflow, broken invariants, incorrect \
+             error handling, and missing test coverage of real behavior. Formatting, lint, \
+             and type errors are the mechanical gate's job, not yours.";
+            // The convention clause is only coherent when a conventions reference was
+            // actually injected (a detected language with a reference). Without one, tell the
+            // reviewer to stay correctness-only rather than dangle a pointer at a block that
+            // is not there.
+            let conventions = if task.skill_preamble.is_some() {
+                " Convention issues are governed by the conventions reference above: raise a \
+                 violation tagged correctness as a Major finding (it must be fixed before \
+                 shipping), and note one tagged advisory as Minor (it does not gate). Do not \
+                 invent findings beyond that reference and the correctness bugs the gate \
+                 cannot see."
+            } else {
+                " Do not raise style, naming, or structural taste: report only the \
+                 correctness bugs the gate cannot see."
+            };
+            let tail = " Report only substantive findings, each with an honest severity \
+             (blocking or major means it must be fixed before shipping; minor is a small \
+             correctness or coverage note).";
+            format!("{base}{conventions}{tail}")
         }
-        Role::FixApplier => {
-            "Apply the review findings below to the current work. Follow \
+        Role::FixApplier => "Apply the review findings below to the current work. Follow \
              the project's conventions in AGENTS.md."
-        }
-        Role::Planner => "Decide the next action for this project.",
-        Role::Greener => {
-            "Make the repository's gate pass by fixing the underlying code. Do NOT suppress \
-             errors (`# type: ignore`, `# noqa`, `#[allow(...)]`, `eslint-disable`), weaken \
-             the gate configuration, or delete tests to make it pass. Fix the root cause. The \
-             current gate failure is in the issue body."
-        }
+            .to_string(),
+        Role::Planner => "Decide the next action for this project.".to_string(),
+        Role::Greener => "Make the repository's gate pass by fixing the underlying code. Do \
+             NOT suppress errors (`# type: ignore`, `# noqa`, `#[allow(...)]`, \
+             `eslint-disable`), weaken the gate configuration, or delete tests to make it \
+             pass. Fix the root cause. The current gate failure is in the issue body."
+            .to_string(),
     };
 
     let schema = match task.playbook.role {
@@ -156,11 +165,22 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_prompt_points_at_the_conventions_severity_tags() {
+    fn reviewer_prompt_points_at_the_conventions_severity_tags_when_a_reference_is_injected() {
+        let mut task = task(Role::Reviewer, vec![]);
+        task.skill_preamble = Some("## a convention\nTag: correctness".to_string());
+        let out = build_prompt(&task, std::path::Path::new("/tmp/out.json"));
+        assert!(out.contains("conventions reference above"));
+        assert!(out.contains("tagged advisory as Minor"));
+    }
+
+    #[test]
+    fn reviewer_prompt_does_not_dangle_a_reference_when_none_is_injected() {
+        // No skill_preamble (e.g. a language with no reference, or no provider wired): the
+        // reviewer must not be told to consult a "conventions reference above" that is absent.
         let task = task(Role::Reviewer, vec![]);
         let out = build_prompt(&task, std::path::Path::new("/tmp/out.json"));
-        assert!(out.contains("correctness"));
-        assert!(out.contains("advisory"));
+        assert!(!out.contains("conventions reference above"));
+        assert!(out.contains("correctness bugs the gate cannot see"));
     }
 
     #[test]
@@ -204,10 +224,9 @@ mod tests {
         );
         assert!(implementer_p.contains("AGENTS.md"));
 
-        let reviewer_p = build_prompt(
-            &task(Role::Reviewer, vec![]),
-            Path::new("/wt/.tutti/review.json"),
-        );
+        let mut reviewer_task = task(Role::Reviewer, vec![]);
+        reviewer_task.skill_preamble = Some("## a convention\nTag: correctness".to_string());
+        let reviewer_p = build_prompt(&reviewer_task, Path::new("/wt/.tutti/review.json"));
         assert!(reviewer_p.contains("conventions reference"));
     }
 
