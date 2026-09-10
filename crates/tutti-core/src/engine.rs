@@ -51,6 +51,8 @@ pub struct Engine<'a> {
     pub workspace: Box<dyn Workspace>,
     /// Optional context provider (codegraph). `None` = no MCP wiring, prior behavior.
     pub context: Option<&'a dyn crate::context::ContextProvider>,
+    /// Optional conventions provider. `None` = no preamble injected, prior behavior.
+    pub conventions: Option<&'a dyn crate::conventions::ConventionsProvider>,
 }
 
 impl<'a> Engine<'a> {
@@ -69,6 +71,7 @@ impl<'a> Engine<'a> {
             routing,
             workspace,
             context: None,
+            conventions: None,
         })
     }
 
@@ -76,6 +79,16 @@ impl<'a> Engine<'a> {
     /// do not wire context stay unchanged.
     pub fn with_context(mut self, provider: &'a dyn crate::context::ContextProvider) -> Self {
         self.context = Some(provider);
+        self
+    }
+
+    /// Attach a conventions provider. Builder-style so existing callers that do not wire
+    /// conventions stay unchanged.
+    pub fn with_conventions(
+        mut self,
+        provider: &'a dyn crate::conventions::ConventionsProvider,
+    ) -> Self {
+        self.conventions = Some(provider);
         self
     }
 
@@ -101,6 +114,9 @@ impl<'a> Engine<'a> {
         } else {
             Vec::new()
         };
+        let skill_preamble = self
+            .conventions
+            .and_then(|c| c.preamble_for(role, worktree));
         let task = AgentTask {
             playbook: self.playbook(role),
             issue: issue.clone(),
@@ -108,6 +124,7 @@ impl<'a> Engine<'a> {
             model: self.cfg.model.clone(),
             review,
             mcp_servers,
+            skill_preamble,
         };
 
         let issue_id = issue.id.0;
@@ -2272,6 +2289,71 @@ mod tests {
                 .iter()
                 .any(|m| m.iter().any(|s| s.name == "codegraph")),
             "the backend should have received codegraph in mcp_servers"
+        );
+    }
+
+    struct FakeConventions;
+    impl crate::conventions::ConventionsProvider for FakeConventions {
+        fn preamble_for(&self, role: Role, _worktree: &Path) -> Option<String> {
+            match role {
+                Role::Implementer | Role::Reviewer | Role::FixApplier => {
+                    Some("PREAMBLE".to_string())
+                }
+                _ => None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_injects_the_conventions_preamble_for_the_implementer() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let seen = backend.seen_preamble();
+        let conventions = FakeConventions;
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap()
+        .with_conventions(&conventions);
+
+        let outcome = engine.run_one().await.unwrap();
+        assert_eq!(outcome, IterOutcome::Shipped);
+
+        let recorded = seen.lock().unwrap();
+        assert!(
+            recorded.iter().any(|p| p.as_deref() == Some("PREAMBLE")),
+            "the backend should have received the conventions preamble"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_without_conventions_leaves_the_preamble_none() {
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let backend = FakeBackend::new()
+            .script(Role::Implementer, ship_outcome(1))
+            .script(Role::Reviewer, clean_review());
+        let seen = backend.seen_preamble();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        engine.run_one().await.unwrap();
+
+        let recorded = seen.lock().unwrap();
+        assert!(
+            recorded.iter().all(|p| p.is_none()),
+            "no provider means no preamble is ever injected"
         );
     }
 

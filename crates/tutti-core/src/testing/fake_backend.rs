@@ -13,6 +13,7 @@ use tokio::sync::mpsc::Sender;
 pub struct FakeBackend {
     scripted: Mutex<HashMap<Role, Vec<AgentOutcome>>>,
     seen_mcp: Arc<Mutex<Vec<Vec<crate::mcp::McpServer>>>>,
+    seen_preamble: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl FakeBackend {
@@ -20,12 +21,18 @@ impl FakeBackend {
         Self {
             scripted: Mutex::new(HashMap::new()),
             seen_mcp: Arc::new(Mutex::new(Vec::new())),
+            seen_preamble: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Returns the `mcp_servers` of every task the backend has received, in order.
     pub fn seen_mcp(&self) -> Arc<Mutex<Vec<Vec<crate::mcp::McpServer>>>> {
         self.seen_mcp.clone()
+    }
+
+    /// Returns the `skill_preamble` of every task the backend has received, in order.
+    pub fn seen_preamble(&self) -> Arc<Mutex<Vec<Option<String>>>> {
+        self.seen_preamble.clone()
     }
 
     /// Queue `outcome` to be returned on the next run of `role` (FIFO). For a
@@ -56,6 +63,10 @@ impl AgentBackend for FakeBackend {
         events: Sender<AgentEvent>,
     ) -> Result<AgentOutcome> {
         self.seen_mcp.lock().unwrap().push(task.mcp_servers.clone());
+        self.seen_preamble
+            .lock()
+            .unwrap()
+            .push(task.skill_preamble.clone());
         let _ = events
             .send(AgentEvent::Line(format!("fake {:?}", task.playbook.role)))
             .await;
@@ -120,6 +131,7 @@ mod tests {
             model: "fake".into(),
             review: None,
             mcp_servers: vec![],
+            skill_preamble: None,
         };
         let got = backend.run(task, Path::new("."), tx).await.unwrap();
         assert_eq!(got.status, AgentStatus::ReadyToShip);

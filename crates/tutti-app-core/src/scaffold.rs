@@ -141,7 +141,7 @@ pub fn package_name(repo: &str) -> String {
 /// The language-specific parts that feed the shared `constitution` template. The shared
 /// sections (gate framing, testing, simplicity, naming, prose conventions, git) live once
 /// in `constitution`, not duplicated per profile.
-struct ConstitutionParts {
+struct ConstitutionParts<'a> {
     /// The language name as it reads in prose (e.g. "Rust").
     language: &'static str,
     /// What the gate runs, as a clause completing "It runs {gate_runs}."
@@ -149,7 +149,7 @@ struct ConstitutionParts {
     /// Where tests live, as a clause completing "Tests live in {tests_live}."
     tests_live: &'static str,
     /// The per-language idiom bullets, verbatim.
-    idioms: &'static [&'static str],
+    idioms: &'a [&'static str],
     /// The one-line error-handling rule.
     error_handling: &'static str,
     /// The layout line. May contain the literal placeholder `{pkg}`, substituted with the
@@ -160,7 +160,7 @@ struct ConstitutionParts {
 /// Render an AGENTS.md body: the project's constitution. The shared sections (the gate
 /// framing, testing, simplicity, naming, prose conventions, git) are written once here;
 /// `parts` supplies only what differs per language.
-fn constitution(parts: &ConstitutionParts, pkg: &str) -> String {
+fn constitution(parts: &ConstitutionParts<'_>, pkg: &str) -> String {
     let idioms_block = parts
         .idioms
         .iter()
@@ -395,6 +395,12 @@ fn rust_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
     let clippy_denies = clippy_deny_lines(baseline::CLIPPY_DENIES);
     let clippy_allows = toml_true_lines(baseline::CLIPPY_TEST_ALLOWS);
+    // The AGENTS.md idioms come from the convention spine, so the constitution and the
+    // conventions skill cannot state a different set (the drift-guard test enforces this).
+    let rust_idioms: Vec<&'static str> = crate::conventions::RUST_CONVENTIONS
+        .iter()
+        .map(|c| c.idiom)
+        .collect();
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -499,18 +505,7 @@ jobs:
                         (`unwrap_used` and `expect_used` are denied outside `#[cfg(test)]`, \
                         `dbg!` is denied everywhere), and `cargo test`",
                     tests_live: "inline `#[cfg(test)]` modules or under `tests/`",
-                    idioms: &[
-                        "Use newtypes over stringly-typed or primitive-obsessed APIs, so the \
-                            representation can change without breaking callers.",
-                        "Accept borrowed or generic arguments (`&str`, `&[T]`, \
-                            `impl AsRef<_>`) and return owned values (`String`, `Vec<T>`).",
-                        "Derive standard traits (`Debug`, `Clone`, `PartialEq`) rather than \
-                            hand-implementing; derive `Debug` on all public types.",
-                        "Make illegal states unrepresentable: model variants as `enum`s and \
-                            match them exhaustively.",
-                        "Take `self`/`&self`/`&mut self` to match the access the method \
-                            needs; do not borrow-and-clone when it needs ownership.",
-                    ],
+                    idioms: &rust_idioms,
                     error_handling: "prefer `?`; reserve `unwrap`/`expect` for tests and \
                         provable invariants, and give `expect` a message; do not panic \
                         across a public API",
@@ -1100,6 +1095,23 @@ mod tests {
             assert!(
                 agents.contains(idiom),
                 "{id} AGENTS.md missing its language idiom ({idiom})"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_agents_md_idioms_come_from_the_spine() {
+        let files = (rust_profile().files)(&ctx());
+        let agents = &files
+            .iter()
+            .find(|f| f.path == std::path::Path::new("AGENTS.md"))
+            .expect("rust AGENTS.md")
+            .contents;
+        for c in crate::conventions::RUST_CONVENTIONS {
+            assert!(
+                agents.contains(c.idiom),
+                "AGENTS.md must contain the spine idiom:\n{}",
+                c.idiom
             );
         }
     }

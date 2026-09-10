@@ -282,6 +282,7 @@ fn greener_task(target: &GateTarget, gate_log: &str, model: &str) -> AgentTask {
         model: model.to_string(),
         review: None,
         mcp_servers: Vec::new(),
+        skill_preamble: None,
     }
 }
 

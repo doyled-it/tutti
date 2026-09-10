@@ -3,8 +3,10 @@
 //! No Tauri dependency, so it runs in the fast workspace gate.
 
 mod baseline;
+mod conventions;
 mod retrofit;
 mod scaffold;
+pub use conventions::{Convention, ConventionSeverity, ConventionsSkill, RUST_CONVENTIONS};
 pub use retrofit::{
     apply_retrofit, detect_languages, plan_retrofit, run_baseline_gate, ConfigMerge, RetrofitPlan,
     RetrofitReport, SkipReason,
