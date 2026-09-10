@@ -84,15 +84,47 @@ pub const PYTHON_CONVENTIONS: &[Convention] = &[
     },
 ];
 
+/// The TypeScript conventions. Idioms match `skills/conventions/references/typescript.md`
+/// headings verbatim (enforced by the drift-guard test).
+pub const TYPESCRIPT_CONVENTIONS: &[Convention] = &[
+    Convention {
+        idiom: "Model variant data as discriminated unions (a shared literal `kind` field) so the compiler narrows each case.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Make exhaustive `switch`es provably complete with a `never`-typed default, so a new variant fails compilation.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Use `readonly` and `as const` for data that should not be mutated.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Prefer `interface` or `type` aliases for public object shapes over inline anonymous types.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Prefer type guards over assertions (`as`); assert only when you genuinely know more than the compiler.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Avoid `any`; take `unknown` at untyped boundaries and narrow before use; do not silence errors with `// @ts-ignore` or `!` where narrowing would do.",
+        severity: ConventionSeverity::Correctness,
+    },
+];
+
 const SKILL_MD: &str = include_str!("../../../skills/conventions/SKILL.md");
 const RUST_REFERENCE: &str = include_str!("../../../skills/conventions/references/rust.md");
 const PYTHON_REFERENCE: &str = include_str!("../../../skills/conventions/references/python.md");
+const TYPESCRIPT_REFERENCE: &str =
+    include_str!("../../../skills/conventions/references/typescript.md");
 
 /// The reference markdown for a language id (`retrofit::detect_languages` ids), if we have one.
 fn reference_for(language: &str) -> Option<&'static str> {
     match language {
         "rust" => Some(RUST_REFERENCE),
         "python" => Some(PYTHON_REFERENCE),
+        "typescript" => Some(TYPESCRIPT_REFERENCE),
         _ => None,
     }
 }
@@ -228,14 +260,30 @@ mod tests {
     }
 
     #[test]
+    fn typescript_reference_headings_match_the_spine_verbatim() {
+        assert_reference_headings_match_the_spine("typescript.md", TYPESCRIPT_CONVENTIONS);
+    }
+
+    #[test]
     fn python_spine_is_nonempty_and_carries_both_severities() {
         assert_spine_is_wellformed(PYTHON_CONVENTIONS);
     }
 
     #[test]
+    fn typescript_spine_is_nonempty_and_carries_both_severities() {
+        assert_spine_is_wellformed(TYPESCRIPT_CONVENTIONS);
+    }
+
+    #[test]
     fn preamble_for_each_language_includes_the_contract_and_an_idiom() {
-        for (lang, needle, first) in [("python", "Python conventions", PYTHON_CONVENTIONS[0].idiom)]
-        {
+        for (lang, needle, first) in [
+            ("python", "Python conventions", PYTHON_CONVENTIONS[0].idiom),
+            (
+                "typescript",
+                "TypeScript conventions",
+                TYPESCRIPT_CONVENTIONS[0].idiom,
+            ),
+        ] {
             let p = conventions_preamble(&[lang.to_string()])
                 .unwrap_or_else(|| panic!("{lang} preamble"));
             assert!(
@@ -268,6 +316,8 @@ mod tests {
         let disk_rust = std::fs::read_to_string(skill_dir().join("references/rust.md")).unwrap();
         let disk_python =
             std::fs::read_to_string(skill_dir().join("references/python.md")).unwrap();
+        let disk_typescript =
+            std::fs::read_to_string(skill_dir().join("references/typescript.md")).unwrap();
         assert_eq!(SKILL_MD, disk_skill, "embedded SKILL.md drifted from disk");
         assert_eq!(
             RUST_REFERENCE, disk_rust,
@@ -276,6 +326,10 @@ mod tests {
         assert_eq!(
             PYTHON_REFERENCE, disk_python,
             "embedded python.md drifted from disk"
+        );
+        assert_eq!(
+            TYPESCRIPT_REFERENCE, disk_typescript,
+            "embedded typescript.md drifted from disk"
         );
     }
 

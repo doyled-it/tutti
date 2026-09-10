@@ -546,6 +546,12 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let ts_check = baseline::TS_CHECK_SCRIPT;
     let ts_dev_deps = json_dep_lines(baseline::TS_DEV_DEPS);
     let ts_strict_flags = json_true_flag_lines(baseline::TS_STRICT_FLAGS);
+    // The AGENTS.md idioms come from the convention spine, so the constitution and the
+    // conventions skill cannot state a different set (the drift-guard test enforces this).
+    let typescript_idioms: Vec<&'static str> = crate::conventions::TYPESCRIPT_CONVENTIONS
+        .iter()
+        .map(|c| c.idiom)
+        .collect();
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -681,20 +687,14 @@ jobs:
                         whose type definitions were not authored to it can surface type \
                         errors that are not your code's fault",
                     tests_live: "colocated `*.test.ts` files under `src/`",
-                    idioms: &[
-                        "Model variant data as discriminated unions (a shared literal \
-                            `kind` field) so the compiler narrows each case.",
-                        "Make exhaustive `switch`es provably complete with a `never`-typed \
-                            default, so a new variant fails compilation.",
-                        "Use `readonly` and `as const` for data that should not be mutated.",
-                        "Prefer `interface` or `type` aliases for public object shapes over \
-                            inline anonymous types.",
-                        "Prefer type guards over assertions (`as`); assert only when you \
-                            genuinely know more than the compiler.",
-                    ],
-                    error_handling: "avoid `any`; take `unknown` at untyped boundaries and \
-                        narrow before use; do not silence errors with `// @ts-ignore` or \
-                        `!` where narrowing would do",
+                    idioms: &typescript_idioms,
+                    // A condensed summary of the `any`/`unknown` spine idiom (a Correctness
+                    // convention), so the constitution does not restate the same rule as both
+                    // a bullet and this line. Same relationship the Rust profile's
+                    // error_handling has to its spine.
+                    error_handling: "take `unknown`, not `any`, at untyped boundaries and \
+                        narrow before use; do not silence a type error with `// @ts-ignore` \
+                        or `!`",
                     layout: "source and colocated `*.test.ts` under `src/`",
                 },
                 pkg,
@@ -1141,6 +1141,14 @@ mod tests {
         assert_agents_md_idioms_come_from_the_spine(
             &python_profile(),
             crate::conventions::PYTHON_CONVENTIONS,
+        );
+    }
+
+    #[test]
+    fn typescript_agents_md_idioms_come_from_the_spine() {
+        assert_agents_md_idioms_come_from_the_spine(
+            &typescript_profile(),
+            crate::conventions::TYPESCRIPT_CONVENTIONS,
         );
     }
 
