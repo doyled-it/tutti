@@ -3,6 +3,8 @@
 //! (which emits the AGENTS.md idiom bullets from it) and by the conventions skill provider
 //! (which injects it), so the skill, the constitution, and this spine cannot drift.
 
+use tutti_design::skill::parse_frontmatter;
+
 /// Whether violating a convention is a real defect the mechanical gate cannot catch
 /// (`Correctness`, which the reviewer raises as a gating Major finding) or a subjective
 /// preference (`Advisory`, a Minor note that never gates and is never auto-fixed).
@@ -48,6 +50,39 @@ pub const RUST_CONVENTIONS: &[Convention] = &[
         severity: ConventionSeverity::Advisory,
     },
 ];
+
+const SKILL_MD: &str = include_str!("../../../skills/conventions/SKILL.md");
+const RUST_REFERENCE: &str = include_str!("../../../skills/conventions/references/rust.md");
+
+/// The reference markdown for a language id (`retrofit::detect_languages` ids), if we have one.
+fn reference_for(language: &str) -> Option<&'static str> {
+    match language {
+        "rust" => Some(RUST_REFERENCE),
+        _ => None,
+    }
+}
+
+/// Build the conventions preamble for the given detected languages: the SKILL.md body (the
+/// shared implementer/reviewer contract) followed by each matching language reference.
+/// `None` when no detected language has a reference (nothing to inject).
+pub fn conventions_preamble(languages: &[String]) -> Option<String> {
+    let refs: Vec<&str> = languages.iter().filter_map(|l| reference_for(l)).collect();
+    if refs.is_empty() {
+        return None;
+    }
+    // parse_frontmatter returns (Frontmatter, body); fall back to the whole file if it ever
+    // fails to parse, so a malformed edit degrades to injecting the raw text rather than
+    // silently injecting nothing.
+    let body = parse_frontmatter(SKILL_MD)
+        .map(|(_, body)| body)
+        .unwrap_or_else(|_| SKILL_MD.to_string());
+    let mut out = body.trim_end().to_string();
+    for r in refs {
+        out.push_str("\n\n");
+        out.push_str(r.trim_end());
+    }
+    Some(out)
+}
 
 #[cfg(test)]
 mod tests {
@@ -95,6 +130,27 @@ mod tests {
             tutti_design::eval::has_minimum_evals(&evals),
             "need at least the minimum eval records"
         );
+    }
+
+    #[test]
+    fn embedded_skill_matches_disk() {
+        let disk_skill = std::fs::read_to_string(skill_dir().join("SKILL.md")).unwrap();
+        let disk_rust = std::fs::read_to_string(skill_dir().join("references/rust.md")).unwrap();
+        assert_eq!(SKILL_MD, disk_skill, "embedded SKILL.md drifted from disk");
+        assert_eq!(RUST_REFERENCE, disk_rust, "embedded rust.md drifted from disk");
+    }
+
+    #[test]
+    fn preamble_for_rust_includes_the_contract_and_a_rust_idiom() {
+        let p = conventions_preamble(&["rust".to_string()]).expect("rust preamble");
+        assert!(p.contains("If you are reviewing"), "carries the SKILL.md contract");
+        assert!(p.contains("Rust conventions"), "carries the rust reference");
+        assert!(p.contains(RUST_CONVENTIONS[0].idiom), "carries a spine idiom");
+    }
+
+    #[test]
+    fn preamble_is_none_for_an_unknown_language() {
+        assert!(conventions_preamble(&["cobol".to_string()]).is_none());
     }
 
     #[test]
