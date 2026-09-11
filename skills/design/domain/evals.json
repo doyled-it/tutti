@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-domain"],
+    "query": "Begin the Domain movement for a design session.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question about the vocabulary or the key nouns of the world",
+      "does not jump ahead to a database schema or a chosen architecture"
+    ]
+  },
+  {
+    "skills": ["design-domain"],
+    "query": "The human used the word 'session' for two different things. Continue.",
+    "inputs": ["a session is the login, but also the whole design conversation"],
+    "expected_behavior": [
+      "flags the term that carries two meanings and asks the human to split it",
+      "keeps the glossary to one meaning per word"
+    ]
+  },
+  {
+    "skills": ["design-domain"],
+    "query": "The glossary, entities and events, and the seams are all clear. Wrap up.",
+    "inputs": ["glossary agreed; entities and events listed; two bounded contexts identified"],
+    "expected_behavior": [
+      "emits a complete reply with a Domain artifact section",
+      "the section holds the glossary, the entities and events, and the seams",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]
