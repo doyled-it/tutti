@@ -91,6 +91,32 @@ enum Cmd {
         #[arg(long)]
         gate: Option<String>,
     },
+    /// Drive the interactive design chain to a ratified design, then decompose it into a
+    /// backlog and hand off (new repo: scaffold + seed; existing repo: seed). Resumable from
+    /// `.tutti/design/`.
+    Design {
+        /// Repo root on disk. An existing repo is grounded first; `.tutti/design/` lives here.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Resume the saved session at `.tutti/design/` instead of starting a new one.
+        #[arg(long)]
+        resume: bool,
+        /// Snapshot the current session under this branch name before running.
+        #[arg(long)]
+        branch: Option<String>,
+        /// The forge target to seed the backlog onto ("owner/name" etc, see `Run`). Omit to
+        /// skip seeding onto a forge.
+        #[arg(long)]
+        target: Option<String>,
+        /// Forge kind: github (default) | gitea | gitlab. Overrides [forge].kind in config.
+        #[arg(long)]
+        forge: Option<String>,
+        /// Forge login (the `tea` login for gitea). Overrides [forge].login in config.
+        #[arg(long)]
+        login: Option<String>,
+        #[arg(long, default_value = "tutti.toml")]
+        config: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -171,6 +197,21 @@ async fn main() -> std::process::ExitCode {
             base,
             gate,
         } => match green::run(path, repo, forge, login, max_iters, fresh, base, gate).await {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tutti: {e}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+        Cmd::Design {
+            repo,
+            resume,
+            branch,
+            target,
+            forge,
+            login,
+            config,
+        } => match design::run(repo, resume, branch, config, target, forge, login).await {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("tutti: {e}");
