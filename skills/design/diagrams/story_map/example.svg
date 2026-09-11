@@ -1,0 +1,16 @@
+<svg viewBox="0 0 560 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="User story map">
+  <rect class="svg-node" x="40" y="20" width="200" height="46" rx="10" fill="rgba(255,180,84,.10)" stroke="#ffb454" stroke-width="1.4"/>
+  <text class="nodetext" x="140" y="48" text-anchor="middle" fill="#ffd9a0">Capture a note</text>
+  <rect class="svg-node" x="300" y="20" width="200" height="46" rx="10" fill="rgba(255,180,84,.10)" stroke="#ffb454" stroke-width="1.4"/>
+  <text class="nodetext" x="400" y="48" text-anchor="middle" fill="#ffd9a0">Find a note</text>
+  <rect class="svg-node" x="40" y="88" width="200" height="44" rx="10" fill="rgba(95,211,196,.10)" stroke="#5fd3c4" stroke-width="1.4"/>
+  <text class="nodetext" x="140" y="115" text-anchor="middle" fill="#5fd3c4">Dictate text</text>
+  <rect class="svg-node" x="300" y="88" width="200" height="44" rx="10" fill="rgba(95,211,196,.10)" stroke="#5fd3c4" stroke-width="1.4"/>
+  <text class="nodetext" x="400" y="115" text-anchor="middle" fill="#5fd3c4">Keyword search</text>
+  <line x1="24" y1="150" x2="516" y2="150" stroke="#97a0ab" stroke-width="1.4" stroke-dasharray="6 5"/>
+  <text class="flowlbl" x="24" y="166" fill="#97a0ab">walking skeleton</text>
+  <rect class="svg-node" x="40" y="180" width="200" height="44" rx="10" fill="rgba(151,160,171,.10)" stroke="#97a0ab" stroke-width="1.4"/>
+  <text class="nodetext" x="140" y="207" text-anchor="middle" fill="#e9e5d9">Attach a photo</text>
+  <rect class="svg-node" x="300" y="180" width="200" height="44" rx="10" fill="rgba(151,160,171,.10)" stroke="#97a0ab" stroke-width="1.4"/>
+  <text class="nodetext" x="400" y="207" text-anchor="middle" fill="#e9e5d9">Filter by tag</text>
+</svg>

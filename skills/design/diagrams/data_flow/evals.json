@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-diagram-data-flow"],
+    "query": "Draw how voice data moves from the mic to the chat store.",
+    "inputs": ["mic -> transcriber -> chat store"],
+    "expected_behavior": [
+      "emits a single well-formed svg using the svg-node vocabulary",
+      "labels each edge with the concrete data that moves (audio frames, transcript)",
+      "does not emit Mermaid or a code fence, just the svg"
+    ]
+  },
+  {
+    "skills": ["design-diagram-data-flow"],
+    "query": "Show the sync change log and its two readers as a data flow.",
+    "inputs": ["writer -> change log -> phone mirror"],
+    "expected_behavior": [
+      "groups the bounded context inside an svg-zone",
+      "names the moving data (change record) on the edge, not just an arrow"
+    ]
+  },
+  {
+    "skills": ["design-diagram-data-flow"],
+    "query": "The schema has twenty tables; draw the data flow.",
+    "inputs": ["twenty tables"],
+    "expected_behavior": [
+      "draws only the stores that carry the argument rather than every table",
+      "keeps the diagram legible"
+    ]
+  }
+]

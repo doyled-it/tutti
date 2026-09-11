@@ -17,6 +17,8 @@
 //! given.
 
 pub mod decompose;
+#[cfg(test)]
+mod diagrams;
 pub mod error;
 pub mod eval;
 pub mod facilitate;

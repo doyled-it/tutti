@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-diagram-story-map"],
+    "query": "Map a note app: capture a note and find a note, with two stories each.",
+    "inputs": ["activities: capture, find; stories under each"],
+    "expected_behavior": [
+      "emits a single well-formed svg using the svg-node vocabulary",
+      "puts the activities across the top and the stories in columns beneath",
+      "marks the walking-skeleton slice with a dashed line"
+    ]
+  },
+  {
+    "skills": ["design-diagram-story-map"],
+    "query": "Show which stories are in the first release versus later.",
+    "inputs": ["first slice: dictate text, keyword search; later: attach photo, filter by tag"],
+    "expected_behavior": [
+      "highlights the first-slice stories with a distinct accent",
+      "orders each column by priority with the essential story on top"
+    ]
+  },
+  {
+    "skills": ["design-diagram-story-map"],
+    "query": "The backlog has fifty stories; draw the story map.",
+    "inputs": ["fifty stories"],
+    "expected_behavior": [
+      "maps the activities that carry the argument rather than the whole backlog",
+      "keeps the diagram legible"
+    ]
+  }
+]

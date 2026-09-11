@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-diagram-flow"],
+    "query": "Draw the flow of a voice turn: capture, transcribe, reason, speak.",
+    "inputs": ["capture audio -> transcribe -> reason with the model -> stream speech back"],
+    "expected_behavior": [
+      "emits a single well-formed svg in the svg-node/nodetext/flowlbl vocabulary",
+      "shows the four steps left to right with labelled directional edges",
+      "does not emit Mermaid or a code fence, just the svg"
+    ]
+  },
+  {
+    "skills": ["design-diagram-flow"],
+    "query": "Draw a decision flow with a happy path and an error branch.",
+    "inputs": ["submit -> valid? yes: save; no: show error"],
+    "expected_behavior": [
+      "uses an accent to distinguish the error branch (coral) from the happy path",
+      "labels the branch edges with the condition"
+    ]
+  },
+  {
+    "skills": ["design-diagram-flow"],
+    "query": "The idea has a dozen micro-steps; draw the flow.",
+    "inputs": ["twelve tiny steps"],
+    "expected_behavior": [
+      "collapses to the few steps that carry the argument rather than drawing all twelve",
+      "keeps the diagram legible"
+    ]
+  }
+]

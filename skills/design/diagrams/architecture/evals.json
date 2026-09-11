@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-diagram-architecture"],
+    "query": "Draw the Mac brain: an orchestrator that calls the model engine, inside one system context.",
+    "inputs": ["Mac brain context -> orchestrator -> model engine"],
+    "expected_behavior": [
+      "emits a single well-formed svg using the svg-zone and svg-node vocabulary",
+      "wraps the containers in an outer context zone with an uppercase label",
+      "draws a labelled relation between the two containers"
+    ]
+  },
+  {
+    "skills": ["design-diagram-architecture"],
+    "query": "Show a container that holds two components as nested boundaries.",
+    "inputs": ["container holds an agent loop and a store"],
+    "expected_behavior": [
+      "nests a smaller zone inside the larger container zone",
+      "places the components inside the inner boundary"
+    ]
+  },
+  {
+    "skills": ["design-diagram-architecture"],
+    "query": "The system has forty classes; draw the architecture.",
+    "inputs": ["forty classes"],
+    "expected_behavior": [
+      "nests at most two levels and shows containers rather than every class",
+      "keeps the diagram legible"
+    ]
+  }
+]
