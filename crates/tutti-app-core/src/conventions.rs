@@ -430,7 +430,10 @@ mod tests {
         let out = ConventionsSkill
             .preamble_for(Role::Reviewer, d.path())
             .expect("a polyglot worktree gets a preamble");
-        assert!(out.contains("Rust conventions"), "carries the rust reference");
+        assert!(
+            out.contains("Rust conventions"),
+            "carries the rust reference"
+        );
         assert!(out.contains("Go conventions"), "carries the go reference");
         // The shared contract body appears exactly once (not once per language).
         assert_eq!(

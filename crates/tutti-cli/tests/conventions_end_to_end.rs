@@ -46,7 +46,10 @@ fn reviewer_prompt_carries_the_conventions_for_a_rust_worktree() {
     // (which is conditional on an injected reference) is active.
     let task = task_with(Role::Reviewer, preamble);
     let prompt = build_prompt(&task, std::path::Path::new("/wt/.tutti/review.json"));
-    assert!(prompt.contains("Rust conventions"), "prompt carries the reference");
+    assert!(
+        prompt.contains("Rust conventions"),
+        "prompt carries the reference"
+    );
     assert!(
         prompt.contains("conventions reference above"),
         "the reviewer is pointed at the injected reference"
