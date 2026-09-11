@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-decide"],
+    "query": "Begin the Decide movement for the transport approach.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question that draws out the alternatives being weighed",
+      "does not accept a single option as a decision"
+    ]
+  },
+  {
+    "skills": ["design-decide"],
+    "query": "The human picked one option but skipped the downsides. Continue.",
+    "inputs": ["we will use a peer-to-peer link, it is clearly best"],
+    "expected_behavior": [
+      "presses for the risks the chosen shape carries",
+      "asks what open questions remain rather than closing the movement early"
+    ]
+  },
+  {
+    "skills": ["design-decide"],
+    "query": "Alternatives, choice, risks, and open questions are all clear. Wrap up.",
+    "inputs": ["two alternatives weighed; choice and rationale set; risks and open questions listed"],
+    "expected_behavior": [
+      "emits a complete reply with a Decide artifact section",
+      "the section holds the alternatives, the choice and why, the risks, and the open questions",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]

@@ -405,6 +405,30 @@ mod tests {
     }
 
     #[test]
+    fn every_movement_has_a_lint_clean_facilitation_skill_with_evals() {
+        use crate::movement::{skill_dir_name, RAILS};
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/design");
+        for m in RAILS {
+            let dir = base.join(skill_dir_name(m.id));
+            let skill = crate::skill::load(&dir)
+                .unwrap_or_else(|e| panic!("{} skill load ({}): {e:?}", m.title, dir.display()));
+            let violations = crate::lint::lint(&skill);
+            assert!(
+                violations.is_empty(),
+                "{} skill lint: {violations:?}",
+                m.title
+            );
+            let evals = crate::eval::load_evals(&dir)
+                .unwrap_or_else(|e| panic!("{} evals: {e:?}", m.title));
+            assert!(
+                crate::eval::has_minimum_evals(&evals),
+                "{} needs >=3 evals",
+                m.title
+            );
+        }
+    }
+
+    #[test]
     fn constitution_skill_loads_and_passes_the_structural_lint() {
         let skill = crate::skill::load(&constitution_skill_dir()).expect("skill loads");
         assert_eq!(skill.name, "design-constitution");

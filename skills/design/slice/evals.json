@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-slice"],
+    "query": "Begin the Slice movement for the design.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question that maps the backbone of the user journey",
+      "does not start from a detailed feature list"
+    ]
+  },
+  {
+    "skills": ["design-slice"],
+    "query": "The human proposed one big feature as the first slice. Continue.",
+    "inputs": ["let us build the full voice pipeline first"],
+    "expected_behavior": [
+      "steers toward the thinnest slice that still runs end to end",
+      "keeps asking one question at a time"
+    ]
+  },
+  {
+    "skills": ["design-slice"],
+    "query": "Backbone, walking skeleton, and prioritized ribs are all clear. Wrap up.",
+    "inputs": ["backbone mapped; a thin end-to-end slice chosen; ribs ordered by value"],
+    "expected_behavior": [
+      "emits a complete reply with a Slice artifact section",
+      "the section holds the backbone, the walking-skeleton slice, and the prioritized ribs",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]

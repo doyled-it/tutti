@@ -135,6 +135,24 @@ pub fn definition(id: MovementId) -> &'static Movement {
         .expect("every MovementId has a RAILS entry")
 }
 
+/// The directory name (under `skills/design/`) holding a movement's facilitation skill.
+///
+/// Each movement authored as a `SKILL.md` skill lives in `skills/design/<name>/`, with a
+/// frontmatter `name: design-<name>`. This maps the movement identity onto that directory so
+/// the loop can load the right guidance.
+pub fn skill_dir_name(id: MovementId) -> &'static str {
+    match id {
+        MovementId::Constitution => "constitution",
+        MovementId::Frame => "frame",
+        MovementId::Impact => "impact",
+        MovementId::Domain => "domain",
+        MovementId::Decide => "decide",
+        MovementId::Structure => "structure",
+        MovementId::Slice => "slice",
+        MovementId::Decompose => "decompose",
+    }
+}
+
 /// The movements a given project shape runs, in canonical order.
 ///
 /// Branching by shape (spec's branching table): a small CLI/library collapses the middle
@@ -195,5 +213,51 @@ mod tests {
         for m in RAILS {
             assert_eq!(definition(m.id).id, m.id);
         }
+    }
+
+    #[test]
+    fn every_movement_maps_to_a_lowercase_skill_dir() {
+        for m in RAILS {
+            let dir = skill_dir_name(m.id);
+            assert!(!dir.is_empty());
+            assert!(
+                dir.chars().all(|c| c.is_ascii_lowercase()),
+                "{dir} must be lowercase"
+            );
+        }
+        assert_eq!(skill_dir_name(MovementId::Constitution), "constitution");
+        assert_eq!(skill_dir_name(MovementId::Decompose), "decompose");
+    }
+
+    #[test]
+    fn small_cli_golden_sequence() {
+        assert_eq!(
+            movements_for(ProjectShape::SmallCli),
+            vec![
+                MovementId::Constitution,
+                MovementId::Frame,
+                MovementId::Impact,
+                MovementId::Decide,
+                MovementId::Slice,
+                MovementId::Decompose,
+            ],
+            "small CLI keeps the ends and drops Domain + Structure"
+        );
+    }
+
+    #[test]
+    fn mobile_and_multiservice_run_the_full_chain() {
+        let full = vec![
+            MovementId::Constitution,
+            MovementId::Frame,
+            MovementId::Impact,
+            MovementId::Domain,
+            MovementId::Decide,
+            MovementId::Structure,
+            MovementId::Slice,
+            MovementId::Decompose,
+        ];
+        assert_eq!(movements_for(ProjectShape::Mobile), full);
+        assert_eq!(movements_for(ProjectShape::MultiService), full);
     }
 }
