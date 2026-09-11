@@ -1,0 +1,16 @@
+<svg viewBox="0 0 620 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Capture to reply flow">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#97a0ab"/>
+    </marker>
+  </defs>
+  <rect class="svg-node" x="16" y="36" width="150" height="48" rx="10" fill="rgba(255,180,84,.10)" stroke="#ffb454" stroke-width="1.4"/>
+  <text class="nodetext" x="91" y="65" text-anchor="middle" fill="#ffd9a0">Capture</text>
+  <line x1="166" y1="60" x2="250" y2="60" stroke="#97a0ab" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text class="flowlbl" x="208" y="52" text-anchor="middle" fill="#97a0ab">on silence</text>
+  <rect class="svg-node" x="250" y="36" width="150" height="48" rx="10" fill="rgba(95,211,196,.10)" stroke="#5fd3c4" stroke-width="1.4"/>
+  <text class="nodetext" x="325" y="65" text-anchor="middle" fill="#5fd3c4">Transcribe</text>
+  <line x1="400" y1="60" x2="484" y2="60" stroke="#97a0ab" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <rect class="svg-node" x="484" y="36" width="120" height="48" rx="10" fill="rgba(255,180,84,.10)" stroke="#ffb454" stroke-width="1.4"/>
+  <text class="nodetext" x="544" y="65" text-anchor="middle" fill="#ffd9a0">Reply</text>
+</svg>
