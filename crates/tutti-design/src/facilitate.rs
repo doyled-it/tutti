@@ -53,20 +53,47 @@ struct ReplyWire {
     complete: Option<CompleteBody>,
 }
 
-/// Parse a tagged reply from the agent's raw output. Extracts the first balanced JSON object
-/// (the reply may be wrapped in prose or a fenced code block), then requires exactly one of
-/// `ask` / `complete`. A reply carrying neither is an error, never a silent pass.
+/// Parse a tagged reply from the agent's raw output. A `claude -p` reply may wrap the object
+/// in prose or a fenced code block, and the prose may itself contain balanced braces, so this
+/// tries each top-level balanced `{...}` object in order and returns the first that is a valid
+/// tagged reply. A reply carrying neither tag, both tags, or an empty `ask`/`artifact_section`
+/// is rejected, never a silent pass.
 pub fn parse_reply(output: &str) -> Result<MovementReply> {
-    let json = extract_json_object(output)
-        .ok_or_else(|| DesignError::Facilitation("no JSON object in the agent reply".into()))?;
-    let wire: ReplyWire = serde_json::from_str(json)
-        .map_err(|e| DesignError::Facilitation(format!("reply is not valid reply JSON: {e}")))?;
+    let mut last_err: Option<DesignError> = None;
+    for candidate in balanced_objects(output) {
+        let Ok(wire) = serde_json::from_str::<ReplyWire>(candidate) else {
+            continue; // not a reply object (e.g. balanced prose braces); try the next one
+        };
+        match interpret(wire) {
+            Ok(reply) => return Ok(reply),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        DesignError::Facilitation("no valid reply JSON object in the agent reply".into())
+    }))
+}
+
+/// Turn a parsed `ReplyWire` into a `MovementReply`, enforcing exactly one non-empty tag.
+fn interpret(wire: ReplyWire) -> Result<MovementReply> {
     match (wire.ask, wire.complete) {
-        (Some(question), None) => Ok(MovementReply::Ask { question }),
-        (None, Some(body)) => Ok(MovementReply::Complete {
-            artifact_section: body.artifact_section,
-            diagrams: body.diagrams,
-        }),
+        (Some(question), None) => {
+            if question.trim().is_empty() {
+                return Err(DesignError::Facilitation("`ask` was empty".into()));
+            }
+            Ok(MovementReply::Ask { question })
+        }
+        (None, Some(body)) => {
+            if body.artifact_section.trim().is_empty() {
+                return Err(DesignError::Facilitation(
+                    "`complete.artifact_section` was empty".into(),
+                ));
+            }
+            Ok(MovementReply::Complete {
+                artifact_section: body.artifact_section,
+                diagrams: body.diagrams,
+            })
+        }
         (Some(_), Some(_)) => Err(DesignError::Facilitation(
             "reply carried both `ask` and `complete`".into(),
         )),
@@ -76,33 +103,51 @@ pub fn parse_reply(output: &str) -> Result<MovementReply> {
     }
 }
 
-/// Find the first balanced `{...}` object in `s`, respecting string literals and escapes, so
-/// a brace inside a JSON string does not throw off the balance. Returns the slice or None.
-fn extract_json_object(s: &str) -> Option<&str> {
-    let start = s.find('{')?;
+/// Every top-level balanced `{...}` object in `s`, in order, respecting string literals and
+/// escapes (so a brace inside a JSON string does not throw off the balance). Nested objects
+/// are not yielded separately; each returned slice is a complete top-level object. Slices
+/// start and end on `{`/`}` (both ASCII), so they are always valid char boundaries.
+fn balanced_objects(s: &str) -> Vec<&str> {
     let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some(end) = balanced_end(bytes, i) {
+                out.push(&s[i..=end]);
+                i = end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The index of the `}` that closes the `{` at `start`, or None if unbalanced.
+fn balanced_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0i32;
     let mut in_str = false;
     let mut escaped = false;
     let mut i = start;
     while i < bytes.len() {
-        let c = bytes[i] as char;
+        let c = bytes[i];
         if in_str {
             if escaped {
                 escaped = false;
-            } else if c == '\\' {
+            } else if c == b'\\' {
                 escaped = true;
-            } else if c == '"' {
+            } else if c == b'"' {
                 in_str = false;
             }
         } else {
             match c {
-                '"' => in_str = true,
-                '{' => depth += 1,
-                '}' => {
+                b'"' => in_str = true,
+                b'{' => depth += 1,
+                b'}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return Some(&s[start..=i]);
+                        return Some(i);
                     }
                 }
                 _ => {}
@@ -175,6 +220,21 @@ pub async fn advance(
     repo_root: &Path,
     input: FacilitationInput,
 ) -> Result<FacilitationState> {
+    // `movement` must be the session's current (next-unratified) movement, so a stale or
+    // desynced caller cannot ratify or facilitate a movement other than the one in flight.
+    if session.current() != Some(movement) {
+        return Err(DesignError::Facilitation(
+            "movement is not the session's current movement".into(),
+        ));
+    }
+    // If a conversation is already in flight, it must be for this same movement.
+    if let Some(p) = session.active.as_ref() {
+        if p.movement != movement {
+            return Err(DesignError::Facilitation(
+                "the active conversation is for a different movement".into(),
+            ));
+        }
+    }
     match input {
         FacilitationInput::Accept => {
             let progress = session
@@ -201,35 +261,31 @@ pub async fn advance(
                 FacilitationInput::Reply(t) | FacilitationInput::Revise(t) => t.clone(),
                 _ => String::new(),
             };
-            // Ensure an active progress record exists for this movement.
-            if session.active.is_none() {
-                session.active = Some(MovementProgress {
-                    movement,
-                    agent_session_id: None,
-                    transcript: vec![],
-                    pending_artifact: None,
-                });
-            }
+            // Resume the in-flight conversation if one exists (None on the first turn).
             let resume = session
                 .active
                 .as_ref()
                 .and_then(|p| p.agent_session_id.clone());
-            if !human_input.is_empty() {
-                if let Some(p) = session.active.as_mut() {
-                    p.transcript.push(Turn {
-                        speaker: Speaker::Human,
-                        text: human_input.clone(),
-                    });
-                }
-            }
+            // Run the turn BEFORE mutating any state, so a backend error or an unparseable
+            // reply leaves `session` untouched (no half-written transcript, no desynced
+            // resume id) and a retry with the same session is clean.
             let prompt = build_turn_prompt(skill, movement, &human_input);
             let raw = fac.turn(&prompt, resume.as_deref()).await?;
             let reply = parse_reply(&raw.output)?;
-            let progress = session
-                .active
-                .as_mut()
-                .ok_or_else(|| DesignError::Facilitation("active movement vanished".into()))?;
+            // Success: now mutate. Create the progress record on the first turn.
+            let progress = session.active.get_or_insert_with(|| MovementProgress {
+                movement,
+                agent_session_id: None,
+                transcript: vec![],
+                pending_artifact: None,
+            });
             progress.agent_session_id = Some(raw.session_id);
+            if !human_input.is_empty() {
+                progress.transcript.push(Turn {
+                    speaker: Speaker::Human,
+                    text: human_input,
+                });
+            }
             match reply {
                 MovementReply::Ask { question } => {
                     progress.transcript.push(Turn {
@@ -322,9 +378,20 @@ mod tests {
 
     struct ScriptedFacilitator {
         replies: std::cell::RefCell<Vec<String>>,
+        /// The `resume` argument each `turn` call received, in order (for threading tests).
+        resumes: std::cell::RefCell<Vec<Option<String>>>,
+    }
+    impl ScriptedFacilitator {
+        fn new(replies: Vec<&str>) -> Self {
+            Self {
+                replies: std::cell::RefCell::new(replies.into_iter().map(String::from).collect()),
+                resumes: std::cell::RefCell::new(vec![]),
+            }
+        }
     }
     impl Facilitator for ScriptedFacilitator {
-        async fn turn(&self, _prompt: &str, _resume: Option<&str>) -> Result<RawTurn> {
+        async fn turn(&self, _prompt: &str, resume: Option<&str>) -> Result<RawTurn> {
+            self.resumes.borrow_mut().push(resume.map(String::from));
             let out = self.replies.borrow_mut().remove(0);
             Ok(RawTurn {
                 session_id: "sid".into(),
@@ -366,12 +433,10 @@ mod tests {
     #[tokio::test]
     async fn begin_then_answer_then_complete_then_ratify_advances_the_movement() {
         let d = tempfile::tempdir().unwrap();
-        let fac = ScriptedFacilitator {
-            replies: std::cell::RefCell::new(vec![
-                r#"{"ask": "What must stay true?"}"#.into(),
-                r###"{"complete": {"artifact_section": "## Constitution\nprivacy first", "diagrams": []}}"###.into(),
-            ]),
-        };
+        let fac = ScriptedFacilitator::new(vec![
+            r#"{"ask": "What must stay true?"}"#,
+            r###"{"complete": {"artifact_section": "## Constitution\nprivacy first", "diagrams": []}}"###,
+        ]);
         let mut s = SessionState::new(crate::shape::ProjectShape::SmallCli);
         let m = MovementId::Constitution;
 
@@ -439,9 +504,7 @@ mod tests {
     #[tokio::test]
     async fn accept_without_a_pending_artifact_is_an_error() {
         let d = tempfile::tempdir().unwrap();
-        let fac = ScriptedFacilitator {
-            replies: std::cell::RefCell::new(vec![r#"{"ask":"q"}"#.into()]),
-        };
+        let fac = ScriptedFacilitator::new(vec![r#"{"ask":"q"}"#]);
         let mut s = SessionState::new(crate::shape::ProjectShape::SmallCli);
         advance(
             &fac,
@@ -469,12 +532,10 @@ mod tests {
     #[tokio::test]
     async fn revise_after_complete_runs_another_turn() {
         let d = tempfile::tempdir().unwrap();
-        let fac = ScriptedFacilitator {
-            replies: std::cell::RefCell::new(vec![
-                r#"{"complete": {"artifact_section": "v1"}}"#.into(),
-                r#"{"complete": {"artifact_section": "v2 revised"}}"#.into(),
-            ]),
-        };
+        let fac = ScriptedFacilitator::new(vec![
+            r#"{"complete": {"artifact_section": "v1"}}"#,
+            r#"{"complete": {"artifact_section": "v2 revised"}}"#,
+        ]);
         let mut s = SessionState::new(crate::shape::ProjectShape::SmallCli);
         let m = MovementId::Constitution;
         advance(
@@ -503,5 +564,84 @@ mod tests {
             }
             _ => panic!("expected AwaitingRatification after revise"),
         }
+    }
+
+    // Regression tests for the adversarial review findings.
+
+    #[test]
+    fn empty_ask_and_empty_artifact_are_rejected() {
+        assert!(parse_reply(r#"{"ask": ""}"#).is_err());
+        assert!(parse_reply(r#"{"ask": "   "}"#).is_err());
+        assert!(parse_reply(r#"{"complete": {"artifact_section": ""}}"#).is_err());
+    }
+
+    #[test]
+    fn parse_reply_skips_balanced_prose_braces_before_the_real_object() {
+        let r = parse_reply("see {details here} then: {\"ask\": \"go?\"}").unwrap();
+        assert_eq!(
+            r,
+            MovementReply::Ask {
+                question: "go?".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_second_turn_resumes_with_the_first_turns_session_id() {
+        let d = tempfile::tempdir().unwrap();
+        let fac = ScriptedFacilitator::new(vec![
+            r#"{"ask": "q1?"}"#,
+            r#"{"complete": {"artifact_section": "done"}}"#,
+        ]);
+        let mut s = SessionState::new(crate::shape::ProjectShape::SmallCli);
+        let m = MovementId::Constitution;
+        advance(
+            &fac,
+            &constitution_skill(),
+            m,
+            &mut s,
+            d.path(),
+            FacilitationInput::Begin,
+        )
+        .await
+        .unwrap();
+        advance(
+            &fac,
+            &constitution_skill(),
+            m,
+            &mut s,
+            d.path(),
+            FacilitationInput::Reply("a1".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *fac.resumes.borrow(),
+            vec![None, Some("sid".to_string())],
+            "first turn has no resume; the second resumes the first turn's session id"
+        );
+    }
+
+    #[tokio::test]
+    async fn advancing_a_movement_that_is_not_current_is_rejected() {
+        let d = tempfile::tempdir().unwrap();
+        let fac = ScriptedFacilitator::new(vec![r#"{"ask":"q"}"#]);
+        let mut s = SessionState::new(crate::shape::ProjectShape::SmallCli);
+        // Constitution is current, not Frame: advancing Frame must error, not silently
+        // facilitate or ratify the wrong movement.
+        let out = advance(
+            &fac,
+            &constitution_skill(),
+            MovementId::Frame,
+            &mut s,
+            d.path(),
+            FacilitationInput::Begin,
+        )
+        .await;
+        assert!(out.is_err());
+        assert!(
+            s.active.is_none(),
+            "no state was mutated for the wrong movement"
+        );
     }
 }
