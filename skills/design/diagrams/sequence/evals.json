@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-diagram-sequence"],
+    "query": "Show the client, sidecar, and orchestrator exchanging messages for one voice turn.",
+    "inputs": ["client dials -> sidecar opens tunnel -> orchestrator streams reply -> spoken audio back"],
+    "expected_behavior": [
+      "emits a single well-formed svg using the svg-node vocabulary",
+      "draws each actor as a column with a vertical lifeline",
+      "orders the messages top to bottom with a flowlbl on each"
+    ]
+  },
+  {
+    "skills": ["design-diagram-sequence"],
+    "query": "Draw the pairing handshake between two sidecars, including the failure reply.",
+    "inputs": ["dial -> hello -> confirm -> ack"],
+    "expected_behavior": [
+      "uses a distinct accent for a failure or abort message (coral)",
+      "keeps the messages in their real order"
+    ]
+  },
+  {
+    "skills": ["design-diagram-sequence"],
+    "query": "The protocol has twenty frames; draw the sequence.",
+    "inputs": ["twenty frames"],
+    "expected_behavior": [
+      "shows only the handful of messages that make the decision rather than the full trace",
+      "keeps the diagram legible"
+    ]
+  }
+]
