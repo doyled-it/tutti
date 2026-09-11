@@ -329,6 +329,23 @@ mod tests {
         }
     }
 
+    fn constitution_skill_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/design/constitution")
+    }
+
+    #[test]
+    fn constitution_skill_loads_and_passes_the_structural_lint() {
+        let skill = crate::skill::load(&constitution_skill_dir()).expect("skill loads");
+        assert_eq!(skill.name, "design-constitution");
+        assert!(
+            crate::lint::lint(&skill).is_empty(),
+            "lint: {:?}",
+            crate::lint::lint(&skill)
+        );
+        let evals = crate::eval::load_evals(&constitution_skill_dir()).expect("evals load");
+        assert!(crate::eval::has_minimum_evals(&evals));
+    }
+
     fn constitution_skill() -> Skill {
         // A minimal in-memory Skill is enough for the loop; the body is injected into the prompt.
         Skill {
