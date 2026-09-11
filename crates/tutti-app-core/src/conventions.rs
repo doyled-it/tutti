@@ -420,6 +420,30 @@ mod tests {
     }
 
     #[test]
+    fn provider_injects_every_detected_language_in_a_polyglot_worktree() {
+        use tutti_core::conventions::ConventionsProvider;
+        use tutti_core::message::Role;
+        // A worktree that trips two language markers gets both references, once each.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        std::fs::write(d.path().join("go.mod"), "module example.com/x\n\ngo 1.23\n").unwrap();
+        let out = ConventionsSkill
+            .preamble_for(Role::Reviewer, d.path())
+            .expect("a polyglot worktree gets a preamble");
+        assert!(
+            out.contains("Rust conventions"),
+            "carries the rust reference"
+        );
+        assert!(out.contains("Go conventions"), "carries the go reference");
+        // The shared contract body appears exactly once (not once per language).
+        assert_eq!(
+            out.matches("If you are reviewing").count(),
+            1,
+            "the SKILL.md contract is injected once, not per language"
+        );
+    }
+
+    #[test]
     fn rust_spine_is_nonempty_and_carries_both_severities() {
         assert!(!RUST_CONVENTIONS.is_empty());
         assert!(RUST_CONVENTIONS
