@@ -40,7 +40,7 @@ pub use facilitate::{
     advance, parse_reply, FacilitationInput, FacilitationState, Facilitator, MovementReply, RawTurn,
 };
 pub use lint::{lint, Violation};
-pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
+pub use movement::{definition, movements_for, skill_dir_name, Movement, MovementId, RAILS};
 pub use page::{render_page, DesignPage, Section};
 pub use session::SessionState;
 pub use shape::ProjectShape;
