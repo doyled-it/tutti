@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-impact"],
+    "query": "Begin the Impact movement now that the frame is set.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question about the goal or the actors who can move it",
+      "does not list features before a behavior change is named"
+    ]
+  },
+  {
+    "skills": ["design-impact"],
+    "query": "The human named the goal and one actor. Continue.",
+    "inputs": ["goal is daily active use; the owner is the main actor"],
+    "expected_behavior": [
+      "asks for the behavior change wanted in that actor before proposing a deliverable",
+      "ties any deliverable back to a behavior change rather than listing loose features"
+    ]
+  },
+  {
+    "skills": ["design-impact"],
+    "query": "Goal, actors, and the impact-to-deliverable mapping are all clear. Wrap up.",
+    "inputs": ["goal, actors, and deliverables per actor are agreed"],
+    "expected_behavior": [
+      "emits a complete reply with an Impact artifact section",
+      "the section states the goal, lists the actors, and maps behavior changes to deliverables",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]
