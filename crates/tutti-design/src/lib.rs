@@ -19,6 +19,7 @@
 pub mod decompose;
 pub mod error;
 pub mod eval;
+pub mod facilitate;
 pub mod lint;
 pub mod movement;
 pub mod page;
@@ -33,6 +34,9 @@ pub use decompose::{
 };
 pub use error::{DesignError, Result};
 pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTranscriptSource};
+pub use facilitate::{
+    advance, parse_reply, FacilitationInput, FacilitationState, Facilitator, MovementReply, RawTurn,
+};
 pub use lint::{lint, Violation};
 pub use movement::{definition, movements_for, Movement, MovementId, RAILS};
 pub use page::{render_page, DesignPage, Section};

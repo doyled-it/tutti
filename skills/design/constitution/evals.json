@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-constitution"],
+    "query": "Begin the Constitution movement for a private self-hosted voice assistant.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question about what must stay true, not a multi-part questionnaire",
+      "does not jump ahead to features or architecture"
+    ]
+  },
+  {
+    "skills": ["design-constitution"],
+    "query": "The human said 'it should be private and it must run on a Mac mini'. Continue.",
+    "inputs": ["it should be private and it must run on a Mac mini"],
+    "expected_behavior": [
+      "separates the principle (private by default) from the non-negotiable (runs on the Mac mini)",
+      "probes the vague principle rather than accepting the slogan"
+    ]
+  },
+  {
+    "skills": ["design-constitution"],
+    "query": "Principles and non-negotiables are both clearly established. Wrap up.",
+    "inputs": ["privacy first; no third-party AI; must run offline on the phone"],
+    "expected_behavior": [
+      "emits a complete reply with a Constitution artifact section",
+      "the section lists both principles and non-negotiables",
+      "does not keep asking questions once coverage is met"
+    ]
+  }
+]
