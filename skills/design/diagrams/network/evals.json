@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-diagram-network"],
+    "query": "Draw the phone and Mac linked directly with a relay fallback.",
+    "inputs": ["phone <-> Mac direct p2p, relay fallback when no direct path"],
+    "expected_behavior": [
+      "emits a single well-formed svg using the svg-node vocabulary",
+      "shows a solid direct link and a dashed relay fallback as distinct edges",
+      "marks the relay boundary as a zone"
+    ]
+  },
+  {
+    "skills": ["design-diagram-network"],
+    "query": "Show a trusted home LAN host and one public hop.",
+    "inputs": ["home Mac (trusted) and a public relay (untrusted)"],
+    "expected_behavior": [
+      "uses teal for the trusted link and coral for the untrusted or public hop",
+      "labels each link with what it carries"
+    ]
+  },
+  {
+    "skills": ["design-diagram-network"],
+    "query": "The deployment has a dozen subnets and switches; draw the network.",
+    "inputs": ["many subnets and switches"],
+    "expected_behavior": [
+      "shows only the hosts and links that carry the argument, not every switch",
+      "keeps the diagram legible"
+    ]
+  }
+]
