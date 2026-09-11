@@ -22,6 +22,10 @@ pub enum DesignError {
     /// A forge operation failed while seeding the backlog.
     #[error("forge: {0}")]
     Forge(String),
+    /// A movement's facilitation loop could not proceed (a malformed agent reply, or an
+    /// invalid step such as ratifying before an artifact was proposed).
+    #[error("facilitation: {0}")]
+    Facilitation(String),
 }
 
 /// Crate-local result alias.
