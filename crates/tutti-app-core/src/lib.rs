@@ -4,12 +4,14 @@
 
 mod baseline;
 mod conventions;
+mod grounding;
 mod retrofit;
 mod scaffold;
 pub use conventions::{
     Convention, ConventionSeverity, ConventionsSkill, GO_CONVENTIONS, PYTHON_CONVENTIONS,
     RUST_CONVENTIONS, TYPESCRIPT_CONVENTIONS,
 };
+pub use grounding::RepoGroundingReader;
 pub use retrofit::{
     apply_retrofit, detect_languages, plan_retrofit, run_baseline_gate, ConfigMerge, RetrofitPlan,
     RetrofitReport, SkipReason,
