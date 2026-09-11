@@ -4,6 +4,7 @@
 //! ratification.
 
 use crate::error::{DesignError, Result};
+use crate::grounding::RepoGrounding;
 use crate::movement::{definition, MovementId};
 use crate::session::{MovementArtifact, MovementProgress, SessionState, Speaker, Turn};
 use crate::skill::Skill;
@@ -185,9 +186,62 @@ pub enum FacilitationState {
     },
 }
 
+/// Build the per-movement grounding context block appended to the turn prompt. Empty when
+/// the session is not grounded in an existing repo. The block is additive context: it never
+/// tells the agent to assert a fact, only to confirm or correct one, so a wrong inference
+/// costs a correction rather than a bad session.
+///
+/// The split follows the spec's hybrid: the intent movements (Frame, Constitution) still ask
+/// fresh, merely primed by what the repo suggests; the code-derivable movements (Domain,
+/// Decide, Structure) propose what the code already shows and forbid relitigating a decision
+/// the code has already made unless the human flags a change.
+fn grounding_block(movement: MovementId, g: &RepoGrounding) -> String {
+    let list = |items: &[String]| items.join(", ");
+    match movement {
+        MovementId::Frame => format!(
+            "\n\nGrounding: this is an existing {stack} project; its shape looks like \
+             {shape:?}. Confirm or correct the shape first, then ask the framing questions. \
+             Its docs suggest: {docs}. Ask the intent (customer, problem, appetite, non-goals) \
+             fresh, do not assume it from the code.",
+            stack = list(&g.stack),
+            shape = g.inferred_shape,
+            docs = g.docs_digest,
+        ),
+        MovementId::Constitution => format!(
+            "\n\nGrounding: the repo's docs suggest these principles already in force; confirm \
+             or revise them, and still ask what must stay true. Docs: {docs}.",
+            docs = g.docs_digest,
+        ),
+        MovementId::Domain => format!(
+            "\n\nGrounding: the code suggests these entities; confirm or correct them: \
+             {entities}. Candidate seams: {seams}.",
+            entities = list(&g.domain.entities),
+            seams = list(&g.domain.seams),
+        ),
+        MovementId::Decide => format!(
+            "\n\nGrounding: these are already settled by the code; do not relitigate them \
+             unless the human flags a change: {decided}.",
+            decided = list(&g.already_decided),
+        ),
+        MovementId::Structure => format!(
+            "\n\nGrounding: these are already settled by the code; do not relitigate them \
+             unless the human flags a change: {decided}. The existing structure: {structure}.",
+            decided = list(&g.already_decided),
+            structure = list(&g.structure),
+        ),
+        MovementId::Impact | MovementId::Slice | MovementId::Decompose => String::new(),
+    }
+}
+
 /// Build the prompt for one turn: the movement skill body, the guiding question, the coverage
-/// checklist, the reply-format contract, and the human's latest input.
-fn build_turn_prompt(skill: &Skill, movement: MovementId, human_input: &str) -> String {
+/// checklist, an optional repo-grounding context block, the reply-format contract, and the
+/// human's latest input.
+fn build_turn_prompt(
+    skill: &Skill,
+    movement: MovementId,
+    human_input: &str,
+    grounding: Option<&RepoGrounding>,
+) -> String {
     let def = definition(movement);
     let checklist = def
         .checklist
@@ -195,10 +249,14 @@ fn build_turn_prompt(skill: &Skill, movement: MovementId, human_input: &str) -> 
         .map(|c| format!("- {c}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let grounding_block = grounding
+        .map(|g| grounding_block(movement, g))
+        .unwrap_or_default();
     format!(
         "{skill_body}\n\n\
          You are facilitating the \"{title}\" movement. Guiding question: {question}\n\n\
-         Cover these points, going deeper where the answer is novel or complex:\n{checklist}\n\n\
+         Cover these points, going deeper where the answer is novel or complex:\n{checklist}\
+         {grounding_block}\n\n\
          Ask ONE question at a time. Reply with a single JSON object and nothing else: \
          either {{\"ask\": \"<your next question>\"}} while you still need input, or \
          {{\"complete\": {{\"artifact_section\": \"<the movement's section as markdown>\", \
@@ -269,7 +327,8 @@ pub async fn advance(
             // Run the turn BEFORE mutating any state, so a backend error or an unparseable
             // reply leaves `session` untouched (no half-written transcript, no desynced
             // resume id) and a retry with the same session is clean.
-            let prompt = build_turn_prompt(skill, movement, &human_input);
+            let prompt =
+                build_turn_prompt(skill, movement, &human_input, session.grounding.as_ref());
             let raw = fac.turn(&prompt, resume.as_deref()).await?;
             let reply = parse_reply(&raw.output)?;
             // Success: now mutate. Create the progress record on the first turn.
@@ -316,6 +375,77 @@ pub async fn advance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grounding::{DomainSignal, RepoGrounding};
+
+    fn sample_grounding() -> RepoGrounding {
+        RepoGrounding {
+            stack: vec!["rust".into()],
+            inferred_shape: crate::shape::ProjectShape::SmallCli,
+            docs_digest: "existing README: a private assistant".into(),
+            domain: DomainSignal {
+                entities: vec!["Session".into(), "Movement".into()],
+                seams: vec![],
+            },
+            structure: vec!["crates/core".into()],
+            already_decided: vec!["transport is iroh".into()],
+        }
+    }
+
+    #[test]
+    fn frame_prompt_offers_the_inferred_shape_but_still_asks() {
+        let p = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Frame,
+            "",
+            Some(&sample_grounding()),
+        );
+        assert!(
+            p.contains("small_cli") || p.contains("SmallCli") || p.contains("shape"),
+            "offers the inferred shape"
+        );
+        assert!(
+            p.contains("confirm") || p.contains("correct"),
+            "asks to confirm the shape, not assert it"
+        );
+    }
+
+    #[test]
+    fn domain_prompt_proposes_the_inferred_entities() {
+        let p = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Domain,
+            "",
+            Some(&sample_grounding()),
+        );
+        assert!(
+            p.contains("Session") && p.contains("Movement"),
+            "proposes the code's entities to confirm"
+        );
+    }
+
+    #[test]
+    fn decide_prompt_carries_already_decided_and_the_no_relitigate_rule() {
+        let p = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Decide,
+            "",
+            Some(&sample_grounding()),
+        );
+        assert!(
+            p.contains("transport is iroh"),
+            "injects the settled decision"
+        );
+        assert!(
+            p.to_lowercase().contains("do not") || p.to_lowercase().contains("already"),
+            "tells the agent not to relitigate"
+        );
+    }
+
+    #[test]
+    fn no_grounding_leaves_the_prompt_ungrounded() {
+        let with_none = build_turn_prompt(&constitution_skill(), MovementId::Domain, "", None);
+        assert!(!with_none.contains("propose") || !with_none.contains("Session"));
+    }
 
     #[test]
     fn parses_an_ask_reply() {
