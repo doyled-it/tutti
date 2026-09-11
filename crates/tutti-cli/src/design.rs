@@ -338,10 +338,22 @@ pub async fn run(
             .map_err(|e| e.to_string())?;
     }
 
-    // The handoff (decompose pass, scaffold, seed) lands in the next commit.
-    let _ = (&fac, is_existing_repo, target, forge, login);
     println!("tutti: design ratified.");
-    Ok(())
+
+    // The handoff: one post-chain decompose turn produces the backlog, then scaffold (new repo)
+    // and seed.
+    handoff(
+        &fac,
+        &mut prompter,
+        &session,
+        &repo_root,
+        is_existing_repo,
+        &cfg,
+        target,
+        forge,
+        login,
+    )
+    .await
 }
 
 /// The post-chain handoff: run one decompose turn to get a `BacklogPlan`, render it for review,
