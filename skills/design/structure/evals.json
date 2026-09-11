@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-structure"],
+    "query": "Begin the Structure movement now that the shape is decided.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question at the context zoom level before diving into components",
+      "works outside in rather than starting from implementation detail"
+    ]
+  },
+  {
+    "skills": ["design-structure"],
+    "query": "The human chose a datastore in passing. Continue.",
+    "inputs": ["we will just store it all in Postgres"],
+    "expected_behavior": [
+      "recognizes an irreversible choice and records it as an ADR with context and consequence",
+      "keeps asking one question at a time"
+    ]
+  },
+  {
+    "skills": ["design-structure"],
+    "query": "Context, containers, and the irreversible choices are all clear. Wrap up.",
+    "inputs": ["context and containers drawn; two ADRs recorded"],
+    "expected_behavior": [
+      "emits a complete reply with a Structure artifact section",
+      "the section holds the context, the containers, and the ADRs for irreversible choices",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]
