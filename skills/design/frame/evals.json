@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-frame"],
+    "query": "Begin the Frame movement for a self-hosted voice assistant.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question about who the customer is or what problem they feel",
+      "does not propose a solution or an architecture"
+    ]
+  },
+  {
+    "skills": ["design-frame"],
+    "query": "The human said 'we can spend about two weeks on it'. Continue.",
+    "inputs": ["we can spend about two weeks on it"],
+    "expected_behavior": [
+      "captures the appetite as a fixed budget that caps the solution, not an estimate",
+      "keeps asking one question at a time rather than a multi-part questionnaire"
+    ]
+  },
+  {
+    "skills": ["design-frame"],
+    "query": "Customer, problem, appetite, and non-goals are all clear. Wrap up.",
+    "inputs": ["owner is a solo homelab user; problem is trust; two weeks; no cloud sync"],
+    "expected_behavior": [
+      "emits a complete reply with a Frame artifact section",
+      "the section names the customer, the problem, the appetite, and the non-goals",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]
