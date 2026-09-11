@@ -3,6 +3,12 @@
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#97a0ab"/>
     </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ffb454"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5fd3c4"/>
+    </marker>
   </defs>
   <rect class="svg-node" x="24" y="16" width="130" height="42" rx="10" fill="rgba(255,180,84,.10)" stroke="#ffb454" stroke-width="1.4"/>
   <text class="nodetext" x="89" y="42" text-anchor="middle" fill="#ffd9a0">Client</text>
@@ -13,12 +19,12 @@
   <line x1="89" y1="58" x2="89" y2="240" stroke="#97a0ab" stroke-width="1" stroke-dasharray="3 4"/>
   <line x1="309" y1="58" x2="309" y2="240" stroke="#97a0ab" stroke-width="1" stroke-dasharray="3 4"/>
   <line x1="529" y1="58" x2="529" y2="240" stroke="#97a0ab" stroke-width="1" stroke-dasharray="3 4"/>
-  <line x1="89" y1="96" x2="309" y2="96" stroke="#ffb454" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="89" y1="96" x2="309" y2="96" stroke="#ffb454" stroke-width="1.4" marker-end="url(#arrow-amber)"/>
   <text class="flowlbl" x="199" y="88" text-anchor="middle" fill="#97a0ab">dial by public key</text>
-  <line x1="309" y1="138" x2="529" y2="138" stroke="#ffb454" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="309" y1="138" x2="529" y2="138" stroke="#ffb454" stroke-width="1.4" marker-end="url(#arrow-amber)"/>
   <text class="flowlbl" x="419" y="130" text-anchor="middle" fill="#97a0ab">open tunnel</text>
-  <line x1="529" y1="180" x2="309" y2="180" stroke="#5fd3c4" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="529" y1="180" x2="309" y2="180" stroke="#5fd3c4" stroke-width="1.4" marker-end="url(#arrow-teal)"/>
   <text class="flowlbl" x="419" y="172" text-anchor="middle" fill="#97a0ab">stream reply</text>
-  <line x1="309" y1="222" x2="89" y2="222" stroke="#5fd3c4" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="309" y1="222" x2="89" y2="222" stroke="#5fd3c4" stroke-width="1.4" marker-end="url(#arrow-teal)"/>
   <text class="flowlbl" x="199" y="214" text-anchor="middle" fill="#97a0ab">spoken audio</text>
 </svg>

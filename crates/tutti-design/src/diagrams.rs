@@ -73,4 +73,25 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn diagram_ids_match_the_skill_dirs_on_disk() {
+        // Set-equality between the declared ids and the actual skill directories, so neither a
+        // dir without a `DIAGRAM_IDS` entry nor an entry without a dir can slip through (the
+        // load test would catch the latter, but not the former).
+        let expected: BTreeSet<&str> = DIAGRAM_IDS.iter().copied().collect();
+        let base =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/design/diagrams");
+        let on_disk: BTreeSet<String> = std::fs::read_dir(&base)
+            .expect("skills/design/diagrams exists")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let on_disk: BTreeSet<&str> = on_disk.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            expected, on_disk,
+            "DIAGRAM_IDS and the skill dirs on disk must be the same set"
+        );
+    }
 }
