@@ -276,7 +276,10 @@ pub async fn run(
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let dst = dir.join(format!("{name}.json"));
             std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
-            println!("tutti: snapshotted the current session to {}", dst.display());
+            println!(
+                "tutti: snapshotted the current session to {}",
+                dst.display()
+            );
         }
     }
 
@@ -405,10 +408,8 @@ async fn handoff(
             package_name: package_name(&repo_name),
             repo_name,
         };
-        let report = scaffold(repo_root, &profile, &ctx, &|s| {
-            run_post_write(repo_root, s)
-        })
-        .map_err(|e| format!("scaffold failed: {e}"))?;
+        let report = scaffold(repo_root, &profile, &ctx, &|s| run_post_write(repo_root, s))
+            .map_err(|e| format!("scaffold failed: {e}"))?;
         println!(
             "tutti: scaffolded {} ({} file(s) written, {} skipped).",
             profile.display_name,
@@ -433,8 +434,14 @@ async fn handoff(
         None => cfg.forge.kind,
     };
     let login = login.or_else(|| cfg.forge.login.clone());
-    let adapters = crate::wire::build(cfg, kind, login.as_deref(), &target, repo_root.to_path_buf())
-        .map_err(|e| e.to_string())?;
+    let adapters = crate::wire::build(
+        cfg,
+        kind,
+        login.as_deref(),
+        &target,
+        repo_root.to_path_buf(),
+    )
+    .map_err(|e| e.to_string())?;
     let ready_label = cfg.status_labels().ready;
     let seed_report = seed(&plan, adapters.forge.as_ref(), &ready_label)
         .await
@@ -580,5 +587,58 @@ mod tests {
         assert!(session.ratified.contains(&MovementId::Constitution));
         // The ratified artifact is the revised one.
         assert!(session.artifacts[0].section.contains("v2 tightened"));
+    }
+
+    /// A live prompter for the smoke: answer every agent question with the same guidance and
+    /// ratify every proposed section, so a real chain drives to completion unattended.
+    struct AutoPrompter {
+        answer: String,
+    }
+    impl Prompter for AutoPrompter {
+        fn ask(&mut self, _question: &str) -> std::io::Result<String> {
+            Ok(self.answer.clone())
+        }
+        fn show(&mut self, _text: &str) {}
+        fn confirm(&mut self, _prompt: &str) -> std::io::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Live end-to-end smoke: drive a real `claude` session through the whole SmallCli chain,
+    /// run the post-chain decompose pass, and prove a backlog and a `design.html` are produced.
+    /// Ignored by default so the hermetic gate needs no `claude`; run with
+    /// `env -C <repo> cargo test -p tutti-cli -- --ignored live_smoke`.
+    #[tokio::test]
+    #[ignore = "live: needs claude -p on PATH"]
+    async fn live_smoke_drives_a_session_and_decomposes() {
+        let repo = tempfile::tempdir().unwrap();
+        let fac = ClaudeFacilitator {
+            session: ClaudeSession::default(),
+            model: "sonnet".into(),
+            cwd: repo.path().to_path_buf(),
+        };
+        let mut prompter = AutoPrompter {
+            answer: "Keep it minimal: a small CLI for solo developers, offline-first, one \
+                     command. Nothing else is in scope."
+                .into(),
+        };
+        let mut session = SessionState::new(ProjectShape::SmallCli);
+
+        drive_chain(&fac, &mut prompter, &mut session, repo.path())
+            .await
+            .expect("the chain drives to completion against real claude");
+        assert!(session.is_complete());
+
+        let raw = fac
+            .turn(&backlog_prompt(&session), None)
+            .await
+            .expect("the decompose turn runs");
+        let plan = parse_backlog(&raw.output).expect("a BacklogPlan comes back");
+        assert!(plan.issue_count() > 0, "the decompose pass produced issues");
+
+        let page = design_page_from_session(&session, "smoke");
+        let page_path = repo.path().join("design.html");
+        std::fs::write(&page_path, render_page(&page)).unwrap();
+        assert!(page_path.exists(), "a design.html was written");
     }
 }

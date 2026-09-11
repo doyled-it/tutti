@@ -534,7 +534,8 @@ mod tests {
         // A balanced but unrelated object deserializes into an all-default (issueless) plan
         // under serde's ignore-unknown-fields default; the issue-count floor must skip it and
         // find the real plan that follows.
-        let reply = "notes {\"aside\": 1} then {\"loose_issues\":[{\"title\":\"T\",\"body\":\"b\"}]}";
+        let reply =
+            "notes {\"aside\": 1} then {\"loose_issues\":[{\"title\":\"T\",\"body\":\"b\"}]}";
         let plan = parse_backlog(reply).unwrap();
         assert_eq!(plan.issue_count(), 1);
         assert_eq!(plan.loose_issues[0].title, "T");
