@@ -27,9 +27,23 @@ decides `ProjectShape`, and how it avoids re-litigating decisions the code alrea
 - **Grounding sources (first cut): stack detection, existing docs, and codegraph structure.**
   - **Stack:** `retrofit::detect_languages` + the detected `StackProfile`.
   - **Docs:** `README`, `AGENTS.md`, and `docs/` (existing prior intent and decisions).
-  - **Codegraph:** modules/symbols to infer Domain entities and Structure.
+  - **Codegraph:** its non-interactive JSON CLI (no MCP server needed) supplies the Domain and
+    Structure signal. `codegraph query <term> --kind <k> --json` lists symbols (types/entities),
+    `codegraph files --json` and `codegraph status --json` give the module/file structure and
+    counts. The grounder ensures the index first (`codegraph init` when `.codegraph/` is absent,
+    reusing the `context::CodeGraph::ensure_ready` pattern) then reads those commands. It is one
+    `RepoGrounder` impl behind the seam, so a machine without codegraph degrades to the
+    stack+docs grounding rather than failing.
   - **Git history is deliberately excluded** from the first cut (noisy signal, low marginal
     value over the above).
+- **Codegraph is MIT-licensed, so Tutti bundles it.** MIT permits redistribution with
+  attribution, so the decision is to ship the `codegraph` binary in Tutti's distribution rather
+  than requiring a separate install. At runtime the grounder uses a bundled binary if present and
+  otherwise falls back to a `codegraph` on `PATH` (the existing seam already probes
+  `codegraph --version`), so a dev checkout with codegraph installed and a shipped release both
+  work. The release-packaging mechanics (which artifact ships the binary, per-platform) are a
+  distribution task carried out where Tutti builds its release, tracked with E7/packaging; the
+  bundling policy itself is settled here.
 - **`ProjectShape` is detected and confirmed, not asked.** Inferred from the stack plus repo
   size/structure heuristics (a single CLI/library crate -> `SmallCli`; multiple services /
   containers -> `MultiService`; a mobile stack -> `Mobile`) and presented in Frame for the human
@@ -94,22 +108,22 @@ mobile toolchain marker). Presented in Frame for confirmation; the human's choic
 
 ## Decomposition (this issue vs E7)
 
-- **In E7a (hermetic + cheap real sources):**
+- **In E7a:**
   - The `RepoGrounder` seam and `RepoGrounding`/`DomainSignal` types in `tutti-design`, with a
     fake grounder and hermetic tests.
   - Grounding injection into the movement prompts + `SessionState.grounding`, tested over the
     fake.
   - `infer_shape` (pure) + its tests.
-  - A **real grounder for the cheap sources** (stack via `detect_languages`, docs via the
-    filesystem) in `tutti-app-core`, so "grounds from a real repo" is demonstrable now without
-    codegraph. Live-tested against a fixture repo.
-- **Deferred to E7 (surface wiring + packaging):**
-  - The **codegraph** grounding source (it needs the codegraph binary present). The user's
-    requirement is to **bundle codegraph if its license allows, otherwise install-and-run it**;
-    that packaging work rides with E7's wiring (or a small dedicated follow-up), behind the same
-    `RepoGrounder` seam, so E7a does not block on it. The seam already isolates it: the
-    codegraph-backed grounder is one `RepoGrounder` impl.
+  - A **real grounder** in `tutti-app-core` covering all three sources: stack (`detect_languages`),
+    docs (filesystem read of README/AGENTS.md/`docs/`), and **codegraph** (ensure the index, then
+    parse `codegraph query/files/status --json`). It degrades to stack+docs when codegraph is
+    absent. Live-tested against a fixture repo (the codegraph path behind `#[ignore]`, needing the
+    binary, matching the crate's live-tier convention).
+- **Deferred to E7 (surface wiring + release packaging):**
   - Wiring the grounder into `tutti design --repo <path>` and the Tauri surface.
+  - The per-platform release-packaging that actually ships the codegraph binary in the Tutti
+    distribution (the bundling policy is settled here: MIT permits it, so bundle with a `PATH`
+    fallback; only the release-artifact mechanics ride with E7/packaging).
 
 ## Testing (hermetic)
 
@@ -119,13 +133,15 @@ mobile toolchain marker). Presented in Frame for confirmation; the human's choic
   movement prompt contains the proposed entities, the Decide prompt contains the
   `already_decided` set plus the do-not-relitigate instruction, and Frame contains the inferred
   shape for confirmation. Frame/Constitution prompts still ask (they do not assert the intent).
-- The real cheap grounder (tutti-app-core): a live-tier test over a small fixture repo asserts
-  the stack and docs digest are populated. Codegraph grounding is out of E7a's tests.
+- The real grounder (tutti-app-core): a live-tier test over a small fixture repo asserts the
+  stack and docs digest are populated; a separate `#[ignore]`d codegraph test (needs the binary)
+  asserts the domain/structure signal is populated from `codegraph *--json` on a fixture.
 
 ## Out of scope
 
 - Git-history grounding (excluded from the first cut).
-- The codegraph grounding source and its bundling/install (E7).
+- The per-platform release packaging that ships the codegraph binary (E7); the bundle decision
+  itself is settled here.
 - Any change to the greenfield movement selection or the facilitation loop's control flow
   (grounding is additive context only).
 - Regenerating grounding mid-session as the repo changes (grounding is captured once per session;
