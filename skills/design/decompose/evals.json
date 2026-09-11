@@ -1,0 +1,30 @@
+[
+  {
+    "skills": ["design-decompose"],
+    "query": "Begin the Decompose movement now that the slices are set.",
+    "inputs": [],
+    "expected_behavior": [
+      "asks one open question that starts the milestone and epic and issue tree from the slices",
+      "does not write code or invent scope beyond the agreed slices"
+    ]
+  },
+  {
+    "skills": ["design-decompose"],
+    "query": "The human gave an issue with a vague acceptance. Continue.",
+    "inputs": ["issue: make the pairing screen nice"],
+    "expected_behavior": [
+      "asks for an EARS acceptance criterion in the WHEN a condition THE SYSTEM SHALL a behavior form",
+      "keeps each issue small enough to verify on its own"
+    ]
+  },
+  {
+    "skills": ["design-decompose"],
+    "query": "The tree, the EARS criteria, and the dependency ordering are all clear. Wrap up.",
+    "inputs": ["milestones, epics, and issues drafted; EARS criteria written; dependencies ordered"],
+    "expected_behavior": [
+      "emits a complete reply with a Decompose artifact section",
+      "the section holds the milestone and epic and issue tree, EARS criteria, and a dependency-ordered sequence",
+      "stops asking questions once coverage is met"
+    ]
+  }
+]
