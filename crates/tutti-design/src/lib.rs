@@ -22,6 +22,7 @@ mod diagrams;
 pub mod error;
 pub mod eval;
 pub mod facilitate;
+pub mod grounding;
 pub mod lint;
 pub mod movement;
 pub mod page;
@@ -39,6 +40,7 @@ pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTrans
 pub use facilitate::{
     advance, parse_reply, FacilitationInput, FacilitationState, Facilitator, MovementReply, RawTurn,
 };
+pub use grounding::{infer_shape, DomainSignal, RepoGrounder, RepoGrounding};
 pub use lint::{lint, Violation};
 pub use movement::{definition, movements_for, skill_dir_name, Movement, MovementId, RAILS};
 pub use page::{render_page, DesignPage, Section};
