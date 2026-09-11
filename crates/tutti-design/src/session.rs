@@ -6,6 +6,7 @@
 //! "this movement's artifact section is done and the human approved it".
 
 use crate::error::{DesignError, Result};
+use crate::grounding::RepoGrounding;
 use crate::movement::{movements_for, MovementId};
 use crate::shape::ProjectShape;
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,10 @@ pub struct SessionState {
     /// Ratified movements' artifact sections, in ratification order.
     #[serde(default)]
     pub artifacts: Vec<MovementArtifact>,
+    /// A read-only summary of the existing repo this session designs against, when the
+    /// session was grounded in one. `None` for a greenfield session.
+    #[serde(default)]
+    pub grounding: Option<RepoGrounding>,
 }
 
 impl SessionState {
@@ -72,6 +77,7 @@ impl SessionState {
             ratified: Vec::new(),
             active: None,
             artifacts: Vec::new(),
+            grounding: None,
         }
     }
 
@@ -182,6 +188,7 @@ mod tests {
             ratified: Vec::new(),
             active: None,
             artifacts: Vec::new(),
+            grounding: None,
         };
         assert!(matches!(s.validate(), Err(DesignError::Corrupt(_))));
     }
