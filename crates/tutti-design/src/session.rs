@@ -10,6 +10,40 @@ use crate::movement::{movements_for, MovementId};
 use crate::shape::ProjectShape;
 use serde::{Deserialize, Serialize};
 
+/// Who produced a turn in a movement's conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Speaker {
+    Agent,
+    Human,
+}
+
+/// One line of a movement's conversation transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Turn {
+    pub speaker: Speaker,
+    pub text: String,
+}
+
+/// The in-flight state of the movement currently being facilitated. Persisted after every
+/// turn so a stop mid-movement resumes exactly where it left off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovementProgress {
+    pub movement: MovementId,
+    /// The agent conversation id to resume on the next turn (None before the first turn).
+    pub agent_session_id: Option<String>,
+    pub transcript: Vec<Turn>,
+    /// The artifact section the agent has proposed (a `complete` reply), awaiting
+    /// ratification. None while still asking questions.
+    pub pending_artifact: Option<String>,
+}
+
+/// A ratified movement's captured artifact section (fed to the page renderer later).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovementArtifact {
+    pub movement: MovementId,
+    pub section: String,
+}
+
 /// The full, serializable state of a design session. This is exactly what is written to
 /// `.tutti/design/session.json`, so resuming is just deserializing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +54,12 @@ pub struct SessionState {
     pub movements: Vec<MovementId>,
     /// The movements already ratified, an in-order prefix of `movements`.
     pub ratified: Vec<MovementId>,
+    /// The movement being facilitated right now, if any (in-flight conversation state).
+    #[serde(default)]
+    pub active: Option<MovementProgress>,
+    /// Ratified movements' artifact sections, in ratification order.
+    #[serde(default)]
+    pub artifacts: Vec<MovementArtifact>,
 }
 
 impl SessionState {
@@ -30,6 +70,8 @@ impl SessionState {
             shape,
             movements: movements_for(shape),
             ratified: Vec::new(),
+            active: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -138,6 +180,8 @@ mod tests {
             shape: ProjectShape::SmallCli,
             movements: Vec::new(),
             ratified: Vec::new(),
+            active: None,
+            artifacts: Vec::new(),
         };
         assert!(matches!(s.validate(), Err(DesignError::Corrupt(_))));
     }
@@ -147,5 +191,33 @@ mod tests {
         let mut s = SessionState::new(ProjectShape::MultiService);
         s.ratify().unwrap();
         assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn a_fresh_session_has_no_active_movement_and_no_artifacts() {
+        let s = SessionState::new(ProjectShape::SmallCli);
+        assert!(s.active.is_none());
+        assert!(s.artifacts.is_empty());
+    }
+
+    #[test]
+    fn session_state_roundtrips_active_and_artifacts_through_serde() {
+        let mut s = SessionState::new(ProjectShape::SmallCli);
+        s.active = Some(MovementProgress {
+            movement: MovementId::Constitution,
+            agent_session_id: Some("sid-1".into()),
+            transcript: vec![Turn {
+                speaker: Speaker::Agent,
+                text: "q?".into(),
+            }],
+            pending_artifact: None,
+        });
+        s.artifacts.push(MovementArtifact {
+            movement: MovementId::Constitution,
+            section: "principles: ...".into(),
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        let back: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
     }
 }
