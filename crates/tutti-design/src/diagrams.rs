@@ -36,7 +36,10 @@ mod tests {
             );
             let evals =
                 crate::eval::load_evals(&dir).unwrap_or_else(|e| panic!("{id} evals: {e:?}"));
-            assert!(crate::eval::has_minimum_evals(&evals), "{id} needs >=3 evals");
+            assert!(
+                crate::eval::has_minimum_evals(&evals),
+                "{id} needs >=3 evals"
+            );
         }
     }
 
