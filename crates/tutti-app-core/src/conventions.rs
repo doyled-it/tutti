@@ -113,11 +113,45 @@ pub const TYPESCRIPT_CONVENTIONS: &[Convention] = &[
     },
 ];
 
+/// The Go conventions. Idioms match `skills/conventions/references/go.md` headings verbatim
+/// (enforced by the drift-guard test).
+pub const GO_CONVENTIONS: &[Convention] = &[
+    Convention {
+        idiom: "Accept interfaces, return concrete types; let the consumer define the interface it needs.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Keep interfaces small and defined at the point of use.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Use `defer` for cleanup immediately after acquiring a resource.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Avoid naked returns in anything longer than a few lines.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Write table-driven tests with subtests (`t.Run`).",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Pass `context.Context` as the first parameter for cancelable or request-scoped work; do not store it in structs.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Handle every error explicitly; wrap with `fmt.Errorf(\"...: %w\", err)` and inspect with `errors.Is`/`errors.As`; never string-match a message; do not discard an error with `_` unless deliberate.",
+        severity: ConventionSeverity::Correctness,
+    },
+];
+
 const SKILL_MD: &str = include_str!("../../../skills/conventions/SKILL.md");
 const RUST_REFERENCE: &str = include_str!("../../../skills/conventions/references/rust.md");
 const PYTHON_REFERENCE: &str = include_str!("../../../skills/conventions/references/python.md");
 const TYPESCRIPT_REFERENCE: &str =
     include_str!("../../../skills/conventions/references/typescript.md");
+const GO_REFERENCE: &str = include_str!("../../../skills/conventions/references/go.md");
 
 /// The reference markdown for a language id (`retrofit::detect_languages` ids), if we have one.
 fn reference_for(language: &str) -> Option<&'static str> {
@@ -125,6 +159,7 @@ fn reference_for(language: &str) -> Option<&'static str> {
         "rust" => Some(RUST_REFERENCE),
         "python" => Some(PYTHON_REFERENCE),
         "typescript" => Some(TYPESCRIPT_REFERENCE),
+        "go" => Some(GO_REFERENCE),
         _ => None,
     }
 }
@@ -265,6 +300,11 @@ mod tests {
     }
 
     #[test]
+    fn go_reference_headings_match_the_spine_verbatim() {
+        assert_reference_headings_match_the_spine("go.md", GO_CONVENTIONS);
+    }
+
+    #[test]
     fn python_spine_is_nonempty_and_carries_both_severities() {
         assert_spine_is_wellformed(PYTHON_CONVENTIONS);
     }
@@ -272,6 +312,11 @@ mod tests {
     #[test]
     fn typescript_spine_is_nonempty_and_carries_both_severities() {
         assert_spine_is_wellformed(TYPESCRIPT_CONVENTIONS);
+    }
+
+    #[test]
+    fn go_spine_is_nonempty_and_carries_both_severities() {
+        assert_spine_is_wellformed(GO_CONVENTIONS);
     }
 
     #[test]
@@ -283,6 +328,7 @@ mod tests {
                 "TypeScript conventions",
                 TYPESCRIPT_CONVENTIONS[0].idiom,
             ),
+            ("go", "Go conventions", GO_CONVENTIONS[0].idiom),
         ] {
             let p = conventions_preamble(&[lang.to_string()])
                 .unwrap_or_else(|| panic!("{lang} preamble"));
@@ -318,6 +364,7 @@ mod tests {
             std::fs::read_to_string(skill_dir().join("references/python.md")).unwrap();
         let disk_typescript =
             std::fs::read_to_string(skill_dir().join("references/typescript.md")).unwrap();
+        let disk_go = std::fs::read_to_string(skill_dir().join("references/go.md")).unwrap();
         assert_eq!(SKILL_MD, disk_skill, "embedded SKILL.md drifted from disk");
         assert_eq!(
             RUST_REFERENCE, disk_rust,
@@ -331,6 +378,7 @@ mod tests {
             TYPESCRIPT_REFERENCE, disk_typescript,
             "embedded typescript.md drifted from disk"
         );
+        assert_eq!(GO_REFERENCE, disk_go, "embedded go.md drifted from disk");
     }
 
     #[test]

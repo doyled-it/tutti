@@ -65,5 +65,24 @@
       "reports no convention violations",
       "does not invent findings outside the convention list"
     ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Go code that discards an error with _ and never checks it.",
+    "inputs": ["func count(s string) int {\n\tn, _ := strconv.Atoi(s)\n\treturn n\n}"],
+    "expected_behavior": [
+      "flags the discarded error as a correctness violation",
+      "assigns Major severity",
+      "ties it to the handle-every-error convention and suggests returning a wrapped error"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Go code that defers cleanup and wraps its error with %w; is anything wrong?",
+    "inputs": ["func load(ctx context.Context, p string) ([]byte, error) {\n\tf, err := os.Open(p)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"open %s: %w\", p, err)\n\t}\n\tdefer f.Close()\n\treturn io.ReadAll(f)\n}"],
+    "expected_behavior": [
+      "reports no convention violations",
+      "does not invent findings outside the convention list"
+    ]
   }
 ]

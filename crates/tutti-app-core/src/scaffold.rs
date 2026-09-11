@@ -725,6 +725,12 @@ pub fn go_profile() -> StackProfile {
 
 fn go_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
     let pkg = &ctx.package_name;
+    // The AGENTS.md idioms come from the convention spine, so the constitution and the
+    // conventions skill cannot state a different set (the drift-guard test enforces this).
+    let go_idioms: Vec<&'static str> = crate::conventions::GO_CONVENTIONS
+        .iter()
+        .map(|c| c.idiom)
+        .collect();
     let f = |path: &str, contents: String, executable: bool, role: FileRole| ScaffoldFile {
         path: PathBuf::from(path),
         contents,
@@ -832,20 +838,15 @@ jobs:
                         unused), and `go test ./...`. `golangci-lint` is a prerequisite, \
                         not part of the Go toolchain",
                     tests_live: "`*_test.go` files beside the package they test",
-                    idioms: &[
-                        "Accept interfaces, return concrete types; let the consumer define \
-                            the interface it needs.",
-                        "Keep interfaces small and defined at the point of use.",
-                        "Use `defer` for cleanup immediately after acquiring a resource.",
-                        "Avoid naked returns in anything longer than a few lines.",
-                        "Write table-driven tests with subtests (`t.Run`).",
-                        "Pass `context.Context` as the first parameter for cancelable or \
-                            request-scoped work; do not store it in structs.",
-                    ],
-                    error_handling: "handle every error explicitly; wrap with \
-                        `fmt.Errorf(\"...: %w\", err)` and inspect with `errors.Is`/\
-                        `errors.As`; never string-match a message; do not discard an error \
-                        with `_` unless deliberate",
+                    idioms: &go_idioms,
+                    // A condensed summary of the error-handling spine idiom (a Correctness
+                    // convention), so the constitution does not restate the same rule as both
+                    // a bullet and this line. Same relationship the Rust profile's
+                    // error_handling has to its spine.
+                    error_handling: "check every error; wrap with \
+                        `fmt.Errorf(\"...: %w\", err)` and match via `errors.Is`/\
+                        `errors.As`, never on the message text; discard with `_` only \
+                        deliberately",
                     layout: "package sources at the module root, tests as `*_test.go` \
                         beside them",
                 },
@@ -1149,6 +1150,14 @@ mod tests {
         assert_agents_md_idioms_come_from_the_spine(
             &typescript_profile(),
             crate::conventions::TYPESCRIPT_CONVENTIONS,
+        );
+    }
+
+    #[test]
+    fn go_agents_md_idioms_come_from_the_spine() {
+        assert_agents_md_idioms_come_from_the_spine(
+            &go_profile(),
+            crate::conventions::GO_CONVENTIONS,
         );
     }
 
