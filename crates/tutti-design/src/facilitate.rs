@@ -186,7 +186,9 @@ pub async fn advance(
                     "cannot ratify: the movement has no proposed artifact yet".into(),
                 )
             })?;
-            session.artifacts.push(MovementArtifact { movement, section });
+            session
+                .artifacts
+                .push(MovementArtifact { movement, section });
             session.ratify()?; // advances the ratified prefix (E1 invariant checks)
             session.active = None;
             store::save(repo_root, session)?;
@@ -291,8 +293,10 @@ mod tests {
     #[test]
     fn tolerates_prose_around_the_json_object() {
         // A `claude -p` reply may wrap the JSON in prose or a fenced block; extract the object.
-        let r = parse_reply("Sure!\n```json\n{\"ask\": \"What is out of scope?\"}\n```\nhope that helps")
-            .unwrap();
+        let r = parse_reply(
+            "Sure!\n```json\n{\"ask\": \"What is out of scope?\"}\n```\nhope that helps",
+        )
+        .unwrap();
         assert_eq!(
             r,
             MovementReply::Ask {
@@ -397,7 +401,9 @@ mod tests {
         .await
         .unwrap();
         match st {
-            FacilitationState::AwaitingRatification { ref artifact_section } => {
+            FacilitationState::AwaitingRatification {
+                ref artifact_section,
+            } => {
                 assert!(artifact_section.contains("privacy first"))
             }
             _ => panic!("expected AwaitingRatification"),
