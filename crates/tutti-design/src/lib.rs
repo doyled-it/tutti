@@ -33,7 +33,8 @@ pub mod store;
 pub mod svg;
 
 pub use decompose::{
-    render_plan, seed, BacklogPlan, ProposedEpic, ProposedIssue, ProposedMilestone, SeedReport,
+    backlog_prompt, parse_backlog, render_plan, seed, BacklogPlan, ProposedEpic, ProposedIssue,
+    ProposedMilestone, SeedReport,
 };
 pub use error::{DesignError, Result};
 pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTranscriptSource};

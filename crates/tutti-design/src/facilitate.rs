@@ -108,7 +108,11 @@ fn interpret(wire: ReplyWire) -> Result<MovementReply> {
 /// escapes (so a brace inside a JSON string does not throw off the balance). Nested objects
 /// are not yielded separately; each returned slice is a complete top-level object. Slices
 /// start and end on `{`/`}` (both ASCII), so they are always valid char boundaries.
-fn balanced_objects(s: &str) -> Vec<&str> {
+///
+/// Shared with `decompose::parse_backlog`, which extracts a `BacklogPlan` object from a reply
+/// that may wrap the JSON in prose or a fenced block, exactly as this does for a movement
+/// reply, so the balanced-object scanner lives in one place.
+pub(crate) fn balanced_objects(s: &str) -> Vec<&str> {
     let bytes = s.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
