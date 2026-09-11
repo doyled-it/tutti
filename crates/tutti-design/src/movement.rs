@@ -228,4 +228,36 @@ mod tests {
         assert_eq!(skill_dir_name(MovementId::Constitution), "constitution");
         assert_eq!(skill_dir_name(MovementId::Decompose), "decompose");
     }
+
+    #[test]
+    fn small_cli_golden_sequence() {
+        assert_eq!(
+            movements_for(ProjectShape::SmallCli),
+            vec![
+                MovementId::Constitution,
+                MovementId::Frame,
+                MovementId::Impact,
+                MovementId::Decide,
+                MovementId::Slice,
+                MovementId::Decompose,
+            ],
+            "small CLI keeps the ends and drops Domain + Structure"
+        );
+    }
+
+    #[test]
+    fn mobile_and_multiservice_run_the_full_chain() {
+        let full = vec![
+            MovementId::Constitution,
+            MovementId::Frame,
+            MovementId::Impact,
+            MovementId::Domain,
+            MovementId::Decide,
+            MovementId::Structure,
+            MovementId::Slice,
+            MovementId::Decompose,
+        ];
+        assert_eq!(movements_for(ProjectShape::Mobile), full);
+        assert_eq!(movements_for(ProjectShape::MultiService), full);
+    }
 }
