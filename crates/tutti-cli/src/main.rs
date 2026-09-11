@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `tutti` CLI: load config, acquire the run lock, wire adapters, drain issues.
 
+mod design;
 mod green;
 mod lock;
 mod retrofit;
