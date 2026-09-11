@@ -443,8 +443,20 @@ mod tests {
 
     #[test]
     fn no_grounding_leaves_the_prompt_ungrounded() {
+        // With no grounding, the Domain prompt must carry NO grounding block at all. Assert
+        // against the exact phrase the block emits, so this fails if the None path leaks it.
         let with_none = build_turn_prompt(&constitution_skill(), MovementId::Domain, "", None);
-        assert!(!with_none.contains("propose") || !with_none.contains("Session"));
+        assert!(!with_none.contains("the code suggests these entities"));
+        assert!(!with_none.contains("Grounding:"));
+        // Sanity: the same movement WITH grounding does inject the block, so the assertion above
+        // is discriminating, not vacuous.
+        let with_some = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Domain,
+            "",
+            Some(&sample_grounding()),
+        );
+        assert!(with_some.contains("the code suggests these entities"));
     }
 
     #[test]

@@ -32,11 +32,12 @@ impl RepoGrounder for RepoGroundingReader {
         let stack = crate::retrofit::detect_languages(repo_root);
         let docs_digest = read_docs_digest(repo_root);
         let is_mobile = detect_mobile(repo_root);
-        let (domain, structure, container_count) = codegraph_signal(repo_root);
-        // Coarse by design: the container count is the primary signal, but a codegraph-absent
-        // repo (container_count == 0) still leans on the number of detected languages so a
-        // polyglot repo is not silently forced to the small-CLI shape. Frame confirms it.
-        let inferred_shape = tutti_design::infer_shape(is_mobile, container_count.max(stack.len()));
+        let (domain, structure, service_roots) = codegraph_signal(repo_root);
+        // `service_roots` counts only real workspace members (crates/packages/services/...),
+        // NOT convention dirs like src/tests/examples, so a single-package repo (and a
+        // codegraph-absent one) infers SmallCli rather than being misread as multi-service.
+        // Frame confirms it, so a coarse guess only costs a correction.
+        let inferred_shape = tutti_design::infer_shape(is_mobile, service_roots);
         let already_decided = derive_decisions(&stack, &structure);
         Ok(RepoGrounding {
             stack,
@@ -118,26 +119,31 @@ fn detect_mobile(root: &Path) -> bool {
         || has("app/src/main/AndroidManifest.xml")
 }
 
-/// One symbol hit from `codegraph query ... --json`: an array of `{"node": {...}}`.
-#[derive(Deserialize)]
+/// One symbol hit from `codegraph query ... --json`: an array of `{"node": {...}}`. The
+/// fields default so one malformed element degrades to an empty name (filtered out) rather
+/// than failing the whole array parse.
+#[derive(Deserialize, Default)]
 struct Hit {
+    #[serde(default)]
     node: NodeInfo,
 }
 
 /// The subset of a codegraph node we read. Extra JSON fields are ignored by serde.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct NodeInfo {
+    #[serde(default)]
     name: String,
 }
 
 /// One entry from `codegraph files --json`: an array of `{"path": ..., ...}`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct FileEntry {
+    #[serde(default)]
     path: String,
 }
 
 /// Best-effort domain/structure signal from codegraph: `(entities + seams, structure,
-/// container_count)`. Returns empty/zero when the binary is absent or any step errors, so an
+/// service_roots)`. Returns empty/zero when the binary is absent or any step errors, so an
 /// un-indexable repo still grounds (on stack + docs alone).
 fn codegraph_signal(root: &Path) -> (DomainSignal, Vec<String>, usize) {
     if !codegraph_available() {
@@ -164,8 +170,11 @@ fn codegraph_signal(root: &Path) -> (DomainSignal, Vec<String>, usize) {
     // entities above; traits are the Rust-specific seam signal).
     let seams = query_names(root, "trait", MAX_SEAMS);
     let structure = read_structure(root);
-    let container_count = structure.len();
-    (DomainSignal { entities, seams }, structure, container_count)
+    (
+        DomainSignal { entities, seams },
+        structure.clone(),
+        count_service_roots(&structure),
+    )
 }
 
 /// Whether the `codegraph` binary is runnable (probed via `codegraph --version`). Mirrors
@@ -219,7 +228,11 @@ fn query_names(root: &Path, kind: &str, limit: usize) -> Vec<String> {
         return Vec::new();
     }
     match serde_json::from_slice::<Vec<Hit>>(&output.stdout) {
-        Ok(hits) => hits.into_iter().map(|h| h.node.name).collect(),
+        Ok(hits) => hits
+            .into_iter()
+            .map(|h| h.node.name)
+            .filter(|n| !n.is_empty())
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -255,6 +268,15 @@ fn read_structure(root: &Path) -> Vec<String> {
     containers.sort();
     containers.truncate(MAX_STRUCTURE);
     containers
+}
+
+/// Count real workspace members among the structure entries: a member is a `crates/<name>`
+/// style entry (it carries a `/`), never a top-level convention dir like `src`/`tests`/
+/// `examples` (which have no `/`). This is the shape signal, so a single-package repo (or one
+/// with only convention dirs) counts 0 and infers SmallCli rather than being misread as
+/// multi-service.
+fn count_service_roots(structure: &[String]) -> usize {
+    structure.iter().filter(|c| c.contains('/')).count()
 }
 
 /// The top-level container a repo-relative path belongs to: a workspace member directory
@@ -325,6 +347,33 @@ mod tests {
         assert!(
             std::str::from_utf8(t.as_bytes()).is_ok(),
             "truncation kept valid UTF-8"
+        );
+    }
+
+    #[test]
+    fn service_root_count_ignores_convention_dirs() {
+        // A single-package repo (src + tests + examples, no members) must count 0, so it
+        // infers SmallCli, not MultiService.
+        let single = vec![
+            "src".to_string(),
+            "tests".to_string(),
+            "examples".to_string(),
+        ];
+        assert_eq!(count_service_roots(&single), 0);
+        assert_eq!(
+            tutti_design::infer_shape(false, count_service_roots(&single)),
+            tutti_design::ProjectShape::SmallCli
+        );
+        // A real workspace with multiple members counts them and infers MultiService.
+        let workspace = vec![
+            "crates/a".to_string(),
+            "crates/b".to_string(),
+            "src".to_string(),
+        ];
+        assert_eq!(count_service_roots(&workspace), 2);
+        assert_eq!(
+            tutti_design::infer_shape(false, count_service_roots(&workspace)),
+            tutti_design::ProjectShape::MultiService
         );
     }
 
