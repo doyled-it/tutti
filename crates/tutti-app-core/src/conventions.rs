@@ -51,13 +51,115 @@ pub const RUST_CONVENTIONS: &[Convention] = &[
     },
 ];
 
+/// The Python conventions. Idioms match `skills/conventions/references/python.md` headings
+/// verbatim (enforced by the drift-guard test).
+pub const PYTHON_CONVENTIONS: &[Convention] = &[
+    Convention {
+        idiom: "Use `pathlib.Path` over `os.path` string juggling.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Use `dataclasses` for structured records rather than ad-hoc dicts or tuples.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Use f-strings for formatting.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Manage resources (files, locks, sessions) with `with` context managers.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Type-hint public function signatures (mypy strict makes these load-bearing).",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Iterate directly and use comprehensions, `enumerate`, and `zip` rather than C-style index loops.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Prefer EAFP (try/except) over precondition-checking; do not use a bare `except`.",
+        severity: ConventionSeverity::Correctness,
+    },
+];
+
+/// The TypeScript conventions. Idioms match `skills/conventions/references/typescript.md`
+/// headings verbatim (enforced by the drift-guard test).
+pub const TYPESCRIPT_CONVENTIONS: &[Convention] = &[
+    Convention {
+        idiom: "Model variant data as discriminated unions (a shared literal `kind` field) so the compiler narrows each case.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Make exhaustive `switch`es provably complete with a `never`-typed default, so a new variant fails compilation.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Use `readonly` and `as const` for data that should not be mutated.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Prefer `interface` or `type` aliases for public object shapes over inline anonymous types.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Prefer type guards over assertions (`as`); assert only when you genuinely know more than the compiler.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Avoid `any`; take `unknown` at untyped boundaries and narrow before use; do not silence errors with `// @ts-ignore` or `!` where narrowing would do.",
+        severity: ConventionSeverity::Correctness,
+    },
+];
+
+/// The Go conventions. Idioms match `skills/conventions/references/go.md` headings verbatim
+/// (enforced by the drift-guard test).
+pub const GO_CONVENTIONS: &[Convention] = &[
+    Convention {
+        idiom: "Accept interfaces, return concrete types; let the consumer define the interface it needs.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Keep interfaces small and defined at the point of use.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Use `defer` for cleanup immediately after acquiring a resource.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Avoid naked returns in anything longer than a few lines.",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Write table-driven tests with subtests (`t.Run`).",
+        severity: ConventionSeverity::Advisory,
+    },
+    Convention {
+        idiom: "Pass `context.Context` as the first parameter for cancelable or request-scoped work; do not store it in structs.",
+        severity: ConventionSeverity::Correctness,
+    },
+    Convention {
+        idiom: "Handle every error explicitly; wrap with `fmt.Errorf(\"...: %w\", err)` and inspect with `errors.Is`/`errors.As`; never string-match a message; do not discard an error with `_` unless deliberate.",
+        severity: ConventionSeverity::Correctness,
+    },
+];
+
 const SKILL_MD: &str = include_str!("../../../skills/conventions/SKILL.md");
 const RUST_REFERENCE: &str = include_str!("../../../skills/conventions/references/rust.md");
+const PYTHON_REFERENCE: &str = include_str!("../../../skills/conventions/references/python.md");
+const TYPESCRIPT_REFERENCE: &str =
+    include_str!("../../../skills/conventions/references/typescript.md");
+const GO_REFERENCE: &str = include_str!("../../../skills/conventions/references/go.md");
 
 /// The reference markdown for a language id (`retrofit::detect_languages` ids), if we have one.
 fn reference_for(language: &str) -> Option<&'static str> {
     match language {
         "rust" => Some(RUST_REFERENCE),
+        "python" => Some(PYTHON_REFERENCE),
+        "typescript" => Some(TYPESCRIPT_REFERENCE),
+        "go" => Some(GO_REFERENCE),
         _ => None,
     }
 }
@@ -140,6 +242,105 @@ mod tests {
         }
     }
 
+    /// Section-bounded drift guard shared by the per-language reference tests: every spine
+    /// idiom must appear as a `## ` heading in the reference file, and its tag line must live
+    /// in that heading's own section (up to the next `## `), so a wrong tag cannot be
+    /// satisfied by a sibling section's tag.
+    fn assert_reference_headings_match_the_spine(file: &str, conventions: &[Convention]) {
+        let md = std::fs::read_to_string(skill_dir().join("references").join(file))
+            .unwrap_or_else(|_| panic!("read {file}"));
+        for c in conventions {
+            let heading = format!("## {}", c.idiom);
+            assert!(
+                md.contains(&heading),
+                "{file} is missing the spine idiom as a heading:\n{heading}"
+            );
+            let after = md.split(&heading).nth(1).expect("heading present");
+            let section = after.split("\n## ").next().unwrap_or(after);
+            let tag = match c.severity {
+                ConventionSeverity::Correctness => "Tag: correctness",
+                ConventionSeverity::Advisory => "Tag: advisory",
+            };
+            assert!(
+                section.contains(tag),
+                "wrong or missing tag for idiom in {file}:\n{}\nexpected {tag}",
+                c.idiom
+            );
+        }
+    }
+
+    /// A spine is a usable convention list: non-empty, carries both severities, and every
+    /// idiom is a non-empty one-liner (they double as reference headings).
+    fn assert_spine_is_wellformed(conventions: &[Convention]) {
+        assert!(!conventions.is_empty());
+        assert!(conventions
+            .iter()
+            .any(|c| c.severity == ConventionSeverity::Correctness));
+        assert!(conventions
+            .iter()
+            .any(|c| c.severity == ConventionSeverity::Advisory));
+        for c in conventions {
+            assert!(!c.idiom.trim().is_empty());
+            assert!(
+                !c.idiom.contains('\n'),
+                "idiom must be one line: {}",
+                c.idiom
+            );
+        }
+    }
+
+    #[test]
+    fn python_reference_headings_match_the_spine_verbatim() {
+        assert_reference_headings_match_the_spine("python.md", PYTHON_CONVENTIONS);
+    }
+
+    #[test]
+    fn typescript_reference_headings_match_the_spine_verbatim() {
+        assert_reference_headings_match_the_spine("typescript.md", TYPESCRIPT_CONVENTIONS);
+    }
+
+    #[test]
+    fn go_reference_headings_match_the_spine_verbatim() {
+        assert_reference_headings_match_the_spine("go.md", GO_CONVENTIONS);
+    }
+
+    #[test]
+    fn python_spine_is_nonempty_and_carries_both_severities() {
+        assert_spine_is_wellformed(PYTHON_CONVENTIONS);
+    }
+
+    #[test]
+    fn typescript_spine_is_nonempty_and_carries_both_severities() {
+        assert_spine_is_wellformed(TYPESCRIPT_CONVENTIONS);
+    }
+
+    #[test]
+    fn go_spine_is_nonempty_and_carries_both_severities() {
+        assert_spine_is_wellformed(GO_CONVENTIONS);
+    }
+
+    #[test]
+    fn preamble_for_each_language_includes_the_contract_and_an_idiom() {
+        for (lang, needle, first) in [
+            ("python", "Python conventions", PYTHON_CONVENTIONS[0].idiom),
+            (
+                "typescript",
+                "TypeScript conventions",
+                TYPESCRIPT_CONVENTIONS[0].idiom,
+            ),
+            ("go", "Go conventions", GO_CONVENTIONS[0].idiom),
+        ] {
+            let p = conventions_preamble(&[lang.to_string()])
+                .unwrap_or_else(|| panic!("{lang} preamble"));
+            assert!(
+                p.contains("If you are reviewing"),
+                "{lang} carries the SKILL.md contract"
+            );
+            assert!(p.contains(needle), "{lang} carries its reference");
+            assert!(p.contains(first), "{lang} carries a spine idiom");
+        }
+    }
+
     #[test]
     fn conventions_skill_passes_the_e15_harness() {
         let skill = tutti_design::skill::load(&skill_dir()).expect("skill loads");
@@ -159,11 +360,25 @@ mod tests {
     fn embedded_skill_matches_disk() {
         let disk_skill = std::fs::read_to_string(skill_dir().join("SKILL.md")).unwrap();
         let disk_rust = std::fs::read_to_string(skill_dir().join("references/rust.md")).unwrap();
+        let disk_python =
+            std::fs::read_to_string(skill_dir().join("references/python.md")).unwrap();
+        let disk_typescript =
+            std::fs::read_to_string(skill_dir().join("references/typescript.md")).unwrap();
+        let disk_go = std::fs::read_to_string(skill_dir().join("references/go.md")).unwrap();
         assert_eq!(SKILL_MD, disk_skill, "embedded SKILL.md drifted from disk");
         assert_eq!(
             RUST_REFERENCE, disk_rust,
             "embedded rust.md drifted from disk"
         );
+        assert_eq!(
+            PYTHON_REFERENCE, disk_python,
+            "embedded python.md drifted from disk"
+        );
+        assert_eq!(
+            TYPESCRIPT_REFERENCE, disk_typescript,
+            "embedded typescript.md drifted from disk"
+        );
+        assert_eq!(GO_REFERENCE, disk_go, "embedded go.md drifted from disk");
     }
 
     #[test]

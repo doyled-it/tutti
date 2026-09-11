@@ -6,7 +6,10 @@ mod baseline;
 mod conventions;
 mod retrofit;
 mod scaffold;
-pub use conventions::{Convention, ConventionSeverity, ConventionsSkill, RUST_CONVENTIONS};
+pub use conventions::{
+    Convention, ConventionSeverity, ConventionsSkill, GO_CONVENTIONS, PYTHON_CONVENTIONS,
+    RUST_CONVENTIONS, TYPESCRIPT_CONVENTIONS,
+};
 pub use retrofit::{
     apply_retrofit, detect_languages, plan_retrofit, run_baseline_gate, ConfigMerge, RetrofitPlan,
     RetrofitReport, SkipReason,

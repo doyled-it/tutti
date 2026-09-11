@@ -27,5 +27,62 @@
       "reports no convention violations",
       "does not invent findings outside the convention list"
     ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Python function that swallows everything with a bare except.",
+    "inputs": ["def load(p):\n    try:\n        return read(p)\n    except:\n        return None"],
+    "expected_behavior": [
+      "flags the bare except as a correctness violation",
+      "assigns Major severity",
+      "ties it to the EAFP convention and suggests catching a specific exception"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this idiomatic Python using pathlib, a dataclass, and an f-string; is anything wrong?",
+    "inputs": ["from dataclasses import dataclass\nfrom pathlib import Path\n\n@dataclass\nclass Cfg:\n    root: Path\n\ndef banner(c: Cfg) -> str:\n    return f\"root={c.root / 'data'}\""],
+    "expected_behavior": [
+      "reports no convention violations",
+      "does not invent findings outside the convention list"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this TypeScript that casts an untyped value with `as` instead of narrowing.",
+    "inputs": ["function handle(data: unknown) {\n  const user = data as { id: string };\n  return user.id;\n}"],
+    "expected_behavior": [
+      "flags the unchecked `as` assertion on unknown as a correctness violation",
+      "assigns Major severity",
+      "suggests a type guard that narrows before reading .id"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this TypeScript discriminated union with a never-typed exhaustive switch; is anything wrong?",
+    "inputs": ["type Shape = { kind: 'a'; a: number } | { kind: 'b'; b: number };\nfunction area(s: Shape): number {\n  switch (s.kind) {\n    case 'a': return s.a;\n    case 'b': return s.b;\n    default: { const _x: never = s; return _x; }\n  }\n}"],
+    "expected_behavior": [
+      "reports no convention violations",
+      "does not invent findings outside the convention list"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Go code that discards an error with _ and never checks it.",
+    "inputs": ["func count(s string) int {\n\tn, _ := strconv.Atoi(s)\n\treturn n\n}"],
+    "expected_behavior": [
+      "flags the discarded error as a correctness violation",
+      "assigns Major severity",
+      "ties it to the handle-every-error convention and suggests returning a wrapped error"
+    ]
+  },
+  {
+    "skills": ["conventions"],
+    "query": "Review this Go code that defers cleanup and wraps its error with %w; is anything wrong?",
+    "inputs": ["func load(ctx context.Context, p string) ([]byte, error) {\n\tf, err := os.Open(p)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"open %s: %w\", p, err)\n\t}\n\tdefer f.Close()\n\treturn io.ReadAll(f)\n}"],
+    "expected_behavior": [
+      "reports no convention violations",
+      "does not invent findings outside the convention list"
+    ]
   }
 ]
