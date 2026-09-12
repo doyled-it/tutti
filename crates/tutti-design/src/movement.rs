@@ -282,19 +282,16 @@ mod tests {
     }
 
     #[test]
-    fn movements_for_still_matches_the_golden_sequences() {
+    fn movements_for_selects_exactly_the_non_skipped_movements() {
         use ProjectShape::*;
-        // depth_for and movements_for agree: a movement is selected iff its depth is not Skip.
-        for shape in [SmallCli, Mobile, MultiService] {
-            let selected: Vec<MovementId> = RAILS
-                .iter()
-                .map(|m| m.id)
-                .filter(|id| depth_for(*id, shape) != Depth::Skip)
-                .collect();
-            assert_eq!(movements_for(shape), selected);
-        }
-        // And the actual sequences are unchanged from E5's goldens.
+        // The only Skipped movements are SmallCli's Domain and Structure; everything else is
+        // selected (Mobile keeps Domain/Structure as Light, not Skip). Asserts real behavior,
+        // not a re-run of movements_for's own body.
+        assert!(!movements_for(SmallCli).contains(&MovementId::Domain));
+        assert!(!movements_for(SmallCli).contains(&MovementId::Structure));
         assert_eq!(movements_for(SmallCli).len(), 6);
+        assert!(movements_for(Mobile).contains(&MovementId::Domain));
+        assert!(movements_for(Mobile).contains(&MovementId::Structure));
         assert_eq!(movements_for(Mobile).len(), 8);
         assert_eq!(movements_for(MultiService).len(), 8);
     }
