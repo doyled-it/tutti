@@ -48,4 +48,7 @@ pub struct AppState {
     /// refused rather than racing the transcript read-modify-write. See
     /// `orchestrator::send_orchestrator_message`.
     pub orchestrator_busy: AtomicBool,
+    /// Set while a design facilitation turn (or a backlog propose/seed) is running, so two
+    /// design turns cannot overlap and race the session read-modify-write. See `design`.
+    pub design_busy: AtomicBool,
 }
