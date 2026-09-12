@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "proce
 
 tutti-app-core = { path = "../../crates/tutti-app-core" }
 tutti-core = { path = "../../crates/tutti-core" }
+tutti-design = { path = "../../crates/tutti-design" }
 tutti-git = { path = "../../crates/tutti-git" }
 tutti-backend-claude = { path = "../../crates/tutti-backend-claude" }
 tutti-forge-github = { path = "../../crates/tutti-forge-github" }

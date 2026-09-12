@@ -31,8 +31,8 @@
     onBrowse: () => void;
     onCreate: () => void;
     onRemove: (dir: string) => void;
-    section?: "board" | "orchestrator" | "subsessions";
-    onSection?: (s: "board" | "orchestrator" | "subsessions") => void;
+    section?: "board" | "orchestrator" | "subsessions" | "design";
+    onSection?: (s: "board" | "orchestrator" | "subsessions" | "design") => void;
   } = $props();
 
   const WIDTH_KEY = "tutti.sidebarWidth";
@@ -207,6 +207,9 @@
         class="nav-item"
         class:on={section === "subsessions"}
         onclick={() => onSection?.("subsessions")}>Subsessions</button
+      >
+      <button class="nav-item" class:on={section === "design"} onclick={() => onSection?.("design")}
+        >Design</button
       >
     </nav>
   </aside>

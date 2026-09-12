@@ -125,6 +125,27 @@ export interface OrchestratorTranscript {
 // re-exported here so the IPC surface stays the single import for callers.
 export type { GateProposal, TriageProposal, Proposal } from "./orchestrator";
 
+// The Design DTOs live in $lib/design alongside the reducers that consume them, re-exported
+// here so the IPC surface stays the single import for callers.
+export type {
+  MovementId,
+  ProjectShape,
+  DesignStep,
+  DesignArtifact,
+  DesignSessionStatus,
+  BacklogPlan,
+  BacklogProposal,
+  SeedReport,
+} from "./design";
+import type {
+  ProjectShape,
+  DesignStep,
+  DesignSessionStatus,
+  BacklogPlan,
+  BacklogProposal,
+  SeedReport,
+} from "./design";
+
 export interface GateStatus {
   commands: string[];
   is_noop: boolean;
@@ -218,4 +239,17 @@ export const api = {
     invoke<string>("clone_repo", { cloneUrl, parentDir, name }),
   createRepo: (forgeKind: string, login: string | null, namespace: Namespace, spec: NewRepo) =>
     invoke<RemoteRepo>("create_repo", { forgeKind, login, namespace, spec }),
+  // The Design surface: one command per discrete facilitation step (the frontend prompts).
+  designStart: (shape: ProjectShape) => invoke<DesignSessionStatus>("design_start", { shape }),
+  designSessionStatus: () => invoke<DesignSessionStatus | null>("design_session_status"),
+  designBeginMovement: () => invoke<DesignStep>("design_begin_movement"),
+  designReply: (text: string) => invoke<DesignStep>("design_reply", { text }),
+  designRevise: (text: string) => invoke<DesignStep>("design_revise", { text }),
+  designRatify: () => invoke<DesignStep>("design_ratify"),
+  designPreview: () => invoke<string>("design_preview"),
+  designProposeBacklog: () => invoke<BacklogProposal>("design_propose_backlog"),
+  designSeedBacklog: (plan: BacklogPlan) => invoke<SeedReport>("design_seed_backlog", { plan }),
+  // The agent's turn streams line by line over this event while a design command runs.
+  onDesignDelta: (cb: (text: string) => void) =>
+    listen<string>("design://delta", (e) => cb(e.payload)),
 };

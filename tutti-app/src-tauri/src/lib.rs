@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod commands;
+mod design;
 mod driver;
 mod orchestrator;
 mod state;
@@ -32,6 +33,15 @@ pub fn run() {
             orchestrator::get_transcript,
             orchestrator::apply_gate,
             orchestrator::get_gate_status,
+            design::design_start,
+            design::design_session_status,
+            design::design_begin_movement,
+            design::design_reply,
+            design::design_revise,
+            design::design_ratify,
+            design::design_preview,
+            design::design_propose_backlog,
+            design::design_seed_backlog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
