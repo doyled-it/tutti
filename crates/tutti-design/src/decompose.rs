@@ -346,6 +346,59 @@ pub async fn seed(
     Ok(report)
 }
 
+/// Build the post-chain decompose prompt: concatenate the ratified artifact sections and
+/// instruct the agent to emit a single `BacklogPlan` JSON object and nothing else. This is
+/// the one agent turn that turns a ratified design into a seedable backlog (the settled
+/// decision), run after `SessionState::is_complete`.
+pub fn backlog_prompt(session: &crate::session::SessionState) -> String {
+    let mut design = String::new();
+    for artifact in &session.artifacts {
+        design.push_str(crate::movement::definition(artifact.movement).title);
+        design.push('\n');
+        design.push_str(&artifact.section);
+        design.push_str("\n\n");
+    }
+    format!(
+        "You are decomposing a ratified software design into a build backlog.\n\n\
+         The ratified design:\n\n{design}\n\
+         From this ratified design, produce the milestone, epic, and issue backlog as a \
+         single JSON object matching this schema:\n\
+         {{\"milestone\": {{\"title\": \"...\", \"due\": null, \"description\": \"...\"}}, \
+         \"epics\": [{{\"title\": \"...\", \"body\": \"...\", \"issues\": [{{\"title\": \"...\", \
+         \"body\": \"...\", \"acceptance\": [\"<EARS line>\"], \"deps\": [\"<prerequisite issue \
+         title>\"]}}]}}], \"loose_issues\": [<same issue shape, for issues with no epic>]}}.\n\n\
+         Every issue must be small, testable, and dependency-ordered. Each `acceptance` line is \
+         an EARS criterion of the form `WHEN [condition] THE SYSTEM SHALL [behavior]`. `deps` \
+         names prerequisite issues by their exact title. `milestone` is optional; omit it or \
+         set it to null if there is only one.\n\n\
+         Reply with the JSON object and nothing else."
+    )
+}
+
+/// Parse the agent's reply into a `BacklogPlan`. The reply may wrap the JSON object in prose
+/// or a fenced code block, so this scans each top-level balanced `{...}` object and returns
+/// the LAST that deserializes into a plan carrying at least one issue. Last, not first,
+/// because an agent that restates the schema before the real plan emits a placeholder-bearing
+/// example object first; the real backlog comes after. A reply with no such object is a
+/// `DesignError::Facilitation`, never a silent empty plan (an unrelated prose object like
+/// `{"note": 1}` deserializes into an all-default, issueless plan under serde's
+/// ignore-unknown-fields default, so the issue-count floor is what rejects it).
+pub fn parse_backlog(reply: &str) -> Result<BacklogPlan, crate::error::DesignError> {
+    let mut last: Option<BacklogPlan> = None;
+    for candidate in crate::facilitate::balanced_objects(reply) {
+        if let Ok(plan) = serde_json::from_str::<BacklogPlan>(candidate) {
+            if plan.issue_count() > 0 {
+                last = Some(plan);
+            }
+        }
+    }
+    last.ok_or_else(|| {
+        crate::error::DesignError::Facilitation(
+            "no BacklogPlan JSON object with any issues in the agent reply".into(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +504,62 @@ mod tests {
             loose_issues: vec![issue("Loose Issue")],
         };
         assert_eq!(plan.issue_count(), 3);
+    }
+
+    #[test]
+    fn backlog_prompt_includes_the_ratified_artifacts() {
+        let mut s = crate::session::SessionState::new(crate::shape::ProjectShape::SmallCli);
+        s.artifacts.push(crate::session::MovementArtifact {
+            movement: crate::movement::MovementId::Frame,
+            section: "## Frame\ncustomer: solo devs".into(),
+        });
+        let p = backlog_prompt(&s);
+        assert!(p.contains("solo devs"));
+        assert!(
+            p.to_lowercase().contains("json"),
+            "asks for a BacklogPlan JSON"
+        );
+    }
+
+    #[test]
+    fn parse_backlog_reads_a_plan_json_possibly_wrapped_in_prose() {
+        let reply = "Here you go:\n```json\n{\"epics\":[{\"title\":\"Auth\",\"body\":\"b\",\"issues\":[{\"title\":\"Login\",\"body\":\"b\",\"acceptance\":[\"WHEN x THE SYSTEM SHALL y\"],\"deps\":[]}]}],\"loose_issues\":[]}\n```";
+        let plan = parse_backlog(reply).unwrap();
+        assert_eq!(plan.issue_count(), 1);
+        assert_eq!(plan.epics[0].title, "Auth");
+    }
+
+    #[test]
+    fn parse_backlog_errors_on_no_json() {
+        assert!(parse_backlog("no json here").is_err());
+    }
+
+    #[test]
+    fn parse_backlog_skips_an_unrelated_prose_object_before_the_plan() {
+        // A balanced but unrelated object deserializes into an all-default (issueless) plan
+        // under serde's ignore-unknown-fields default; the issue-count floor must skip it and
+        // find the real plan that follows.
+        let reply =
+            "notes {\"aside\": 1} then {\"loose_issues\":[{\"title\":\"T\",\"body\":\"b\"}]}";
+        let plan = parse_backlog(reply).unwrap();
+        assert_eq!(plan.issue_count(), 1);
+        assert_eq!(plan.loose_issues[0].title, "T");
+    }
+
+    #[test]
+    fn parse_backlog_prefers_the_last_plan_when_a_schema_example_precedes_it() {
+        // An agent that restates the schema before the real plan emits a placeholder-bearing
+        // example object first; the real backlog comes last and must win.
+        let reply = "Schema I will follow:\n\
+             {\"loose_issues\":[{\"title\":\"...\",\"body\":\"...\"}]}\n\
+             Actual backlog:\n\
+             {\"loose_issues\":[{\"title\":\"Add login\",\"body\":\"b\"}]}";
+        let plan = parse_backlog(reply).unwrap();
+        assert_eq!(plan.issue_count(), 1);
+        assert_eq!(
+            plan.loose_issues[0].title, "Add login",
+            "the real plan (last), not the schema example (first), is chosen"
+        );
     }
 
     fn sample_plan() -> BacklogPlan {

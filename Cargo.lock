@@ -604,6 +604,7 @@ dependencies = [
  "tutti-app-core",
  "tutti-backend-claude",
  "tutti-core",
+ "tutti-design",
  "tutti-forge-gitea",
  "tutti-forge-github",
  "tutti-forge-gitlab",
