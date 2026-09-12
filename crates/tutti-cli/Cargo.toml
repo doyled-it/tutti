@@ -20,5 +20,10 @@ tutti-design = { path = "../tutti-design" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
 
+[features]
+# Gates the live-tier tests (real `claude -p`, a real forge seed into a sandbox). Off by
+# default so the hermetic gate needs no toolchain: `cargo test -p tutti-cli --features live`.
+live = []
+
 [dev-dependencies]
 tempfile = "3"

@@ -615,12 +615,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn design_page_from_a_session_renders_self_contained_html() {
+        // The "design.html opens and renders" check, hermetic: a ratified artifact becomes a
+        // section in a single self-contained HTML document (inlined CSS, the movement heading).
+        let mut session = SessionState::new(ProjectShape::SmallCli);
+        session
+            .artifacts
+            .push(tutti_design::session::MovementArtifact {
+                movement: tutti_design::MovementId::Constitution,
+                section: "principles: privacy first".into(),
+            });
+        let html = render_page(&design_page_from_session(&session, "demo"));
+        assert!(html.contains("<html"), "a self-contained HTML document");
+        assert!(html.contains("<style"), "the page CSS is inlined");
+        assert!(
+            html.contains("privacy first"),
+            "the ratified artifact is rendered"
+        );
+        assert!(html.contains("demo"), "the title is rendered");
+    }
+
     /// Live end-to-end smoke: drive a real `claude` session through the whole SmallCli chain,
     /// run the post-chain decompose pass, and prove a backlog and a `design.html` are produced.
-    /// Ignored by default so the hermetic gate needs no `claude`; run with
-    /// `env -C <repo> cargo test -p tutti-cli -- --ignored live_smoke`.
+    /// Part of the `live` feature suite so the hermetic gate needs no `claude`; run with
+    /// `env -C <repo> cargo test -p tutti-cli --features live live_smoke`.
     #[tokio::test]
-    #[ignore = "live: needs claude -p on PATH"]
+    #[cfg_attr(not(feature = "live"), ignore = "live: needs claude -p on PATH")]
     async fn live_smoke_drives_a_session_and_decomposes() {
         let repo = tempfile::tempdir().unwrap();
         let fac = ClaudeFacilitator {
@@ -647,9 +668,57 @@ mod tests {
         let plan = parse_backlog(&raw.output).expect("a BacklogPlan comes back");
         assert!(plan.issue_count() > 0, "the decompose pass produced issues");
 
+        // The design.html opens and renders: it is a self-contained document (the E3 page CSS
+        // is inlined) carrying a section for each ratified movement.
         let page = design_page_from_session(&session, "smoke");
+        let html = render_page(&page);
+        assert!(html.contains("<html"), "a self-contained HTML document");
+        assert!(
+            html.contains("<style"),
+            "the page CSS is inlined (self-contained)"
+        );
         let page_path = repo.path().join("design.html");
-        std::fs::write(&page_path, render_page(&page)).unwrap();
+        std::fs::write(&page_path, &html).unwrap();
         assert!(page_path.exists(), "a design.html was written");
+    }
+
+    /// Live seed into a sandbox: turn a small backlog into real issues through the GitHub forge,
+    /// proving the propose -> seed handoff end to end. Operator-run: set `TUTTI_LIVE_SANDBOX` to
+    /// a throwaway `owner/repo` you can write to (via `gh` auth); the test skips cleanly when it
+    /// is unset. Part of the `live` suite:
+    /// `TUTTI_LIVE_SANDBOX=me/sandbox cargo test -p tutti-cli --features live live_seed`.
+    #[tokio::test]
+    #[cfg_attr(
+        not(feature = "live"),
+        ignore = "live: needs a sandbox forge + gh auth"
+    )]
+    async fn live_seed_into_the_sandbox() {
+        let Ok(repo) = std::env::var("TUTTI_LIVE_SANDBOX") else {
+            eprintln!("skipping: set TUTTI_LIVE_SANDBOX=owner/repo to run the live seed");
+            return;
+        };
+        let plan = tutti_design::BacklogPlan {
+            milestone: None,
+            epics: vec![],
+            loose_issues: vec![tutti_design::ProposedIssue {
+                title: "tutti design live-seed smoke".into(),
+                body: "Created by the E9 live seed test. Safe to close.".into(),
+                labels: vec![],
+                acceptance: vec!["WHEN the test runs THE SYSTEM SHALL create this issue".into()],
+                deps: vec![],
+            }],
+        };
+        let forge = tutti_forge_github::GitHubForge {
+            repo: repo.clone(),
+            status_labels: tutti_core::status::StatusLabels::default(),
+            repo_root: std::path::PathBuf::from("."),
+        };
+        let report = tutti_design::seed(&plan, &forge, "status:ready")
+            .await
+            .expect("the seed creates the issue on the sandbox");
+        assert!(
+            !report.created.is_empty() || !report.skipped.is_empty(),
+            "the seed reported creating or matching the issue (idempotent re-run)"
+        );
     }
 }
