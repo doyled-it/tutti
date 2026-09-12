@@ -43,7 +43,9 @@ pub use facilitate::{
 };
 pub use grounding::{infer_shape, DomainSignal, RepoGrounder, RepoGrounding};
 pub use lint::{lint, Violation};
-pub use movement::{definition, movements_for, skill_dir_name, Movement, MovementId, RAILS};
+pub use movement::{
+    definition, depth_for, movements_for, skill_dir_name, Depth, Movement, MovementId, RAILS,
+};
 pub use page::{render_page, DesignPage, Section};
 pub use session::SessionState;
 pub use shape::ProjectShape;

@@ -153,19 +153,38 @@ pub fn skill_dir_name(id: MovementId) -> &'static str {
     }
 }
 
+/// How deeply a movement runs for a project shape. `Skip` drops it, `Light` runs it briefly
+/// (a shorter checklist plus a brevity hint in the prompt), `Full` is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+    Full,
+    Light,
+    Skip,
+}
+
+/// The depth `id` runs at for `shape`. SmallCli collapses the middle (Domain/Structure skipped);
+/// Mobile runs the middle Light (a wrong seam is cheaper to revisit for one client + one backend
+/// than for a multi-service product); everything else is Full.
+pub fn depth_for(id: MovementId, shape: ProjectShape) -> Depth {
+    use MovementId::{Domain, Structure};
+    match (shape, id) {
+        (ProjectShape::SmallCli, Domain | Structure) => Depth::Skip,
+        (ProjectShape::Mobile, Domain | Structure) => Depth::Light,
+        _ => Depth::Full,
+    }
+}
+
 /// The movements a given project shape runs, in canonical order.
 ///
-/// Branching by shape (spec's branching table): a small CLI/library collapses the middle
-/// (skips Domain and Structure); mobile and multi-service run the full chain (they differ
-/// in per-movement depth, which lands in E5, not in selection).
+/// Re-expressed over `depth_for`: a movement is selected iff its depth is not `Skip`, so the
+/// selection and per-movement depth can never drift. Branching by shape (spec's branching
+/// table): a small CLI/library collapses the middle (skips Domain and Structure); mobile and
+/// multi-service run the full chain (they differ in per-movement depth, not in selection).
 pub fn movements_for(shape: ProjectShape) -> Vec<MovementId> {
     RAILS
         .iter()
         .map(|m| m.id)
-        .filter(|id| match shape {
-            ProjectShape::SmallCli => !matches!(id, MovementId::Domain | MovementId::Structure),
-            ProjectShape::Mobile | ProjectShape::MultiService => true,
-        })
+        .filter(|id| depth_for(*id, shape) != Depth::Skip)
         .collect()
 }
 
@@ -243,6 +262,41 @@ mod tests {
             ],
             "small CLI keeps the ends and drops Domain + Structure"
         );
+    }
+
+    #[test]
+    fn depth_for_matches_the_shape_rules() {
+        use ProjectShape::*;
+        // SmallCli collapses the middle.
+        assert_eq!(depth_for(MovementId::Domain, SmallCli), Depth::Skip);
+        assert_eq!(depth_for(MovementId::Structure, SmallCli), Depth::Skip);
+        assert_eq!(depth_for(MovementId::Frame, SmallCli), Depth::Full);
+        // Mobile runs the middle Light.
+        assert_eq!(depth_for(MovementId::Domain, Mobile), Depth::Light);
+        assert_eq!(depth_for(MovementId::Structure, Mobile), Depth::Light);
+        assert_eq!(depth_for(MovementId::Frame, Mobile), Depth::Full);
+        // MultiService runs everything Full.
+        for m in RAILS {
+            assert_eq!(depth_for(m.id, MultiService), Depth::Full);
+        }
+    }
+
+    #[test]
+    fn movements_for_still_matches_the_golden_sequences() {
+        use ProjectShape::*;
+        // depth_for and movements_for agree: a movement is selected iff its depth is not Skip.
+        for shape in [SmallCli, Mobile, MultiService] {
+            let selected: Vec<MovementId> = RAILS
+                .iter()
+                .map(|m| m.id)
+                .filter(|id| depth_for(*id, shape) != Depth::Skip)
+                .collect();
+            assert_eq!(movements_for(shape), selected);
+        }
+        // And the actual sequences are unchanged from E5's goldens.
+        assert_eq!(movements_for(SmallCli).len(), 6);
+        assert_eq!(movements_for(Mobile).len(), 8);
+        assert_eq!(movements_for(MultiService).len(), 8);
     }
 
     #[test]
