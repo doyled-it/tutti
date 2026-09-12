@@ -16,6 +16,7 @@
     appendRatified,
     dropTrailingEmptyAgent,
     stepToUi,
+    activeToStep,
     type DesignMessage,
     type DesignSessionStatus,
     type DesignStep,
@@ -58,7 +59,13 @@
     (async () => {
       try {
         status = await api.designSessionStatus();
-        if (status) preview = await api.designPreview().catch(() => "");
+        if (status) {
+          preview = await api.designPreview().catch(() => "");
+          // Rehydrate the in-flight step after a reload, so a movement awaiting ratification
+          // shows its proposed section (not a Continue button that would re-run the turn and
+          // overwrite it), and one awaiting an answer shows its question.
+          step = activeToStep(status.active);
+        }
       } catch (e) {
         error = String(e);
       }

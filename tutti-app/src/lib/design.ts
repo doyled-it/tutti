@@ -23,6 +23,14 @@ export interface DesignArtifact {
   section: string;
 }
 
+// The in-flight movement's pending state, so a pane reloaded mid-movement can rehydrate the
+// step instead of re-running the movement's opening turn.
+export interface DesignActive {
+  movement: MovementId;
+  pending_artifact: string | null;
+  pending_question: string | null;
+}
+
 export interface DesignSessionStatus {
   shape: ProjectShape;
   movements: MovementId[];
@@ -30,6 +38,20 @@ export interface DesignSessionStatus {
   current: MovementId | null;
   complete: boolean;
   artifacts: DesignArtifact[];
+  active: DesignActive | null;
+}
+
+// The DesignStep to rehydrate from a reloaded status's `active` (a pending artifact awaits
+// ratification; otherwise a pending question awaits an answer). Null when nothing is in flight.
+export function activeToStep(active: DesignActive | null): DesignStep | null {
+  if (!active) return null;
+  if (active.pending_artifact !== null) {
+    return { kind: "ratify", artifact_section: active.pending_artifact };
+  }
+  if (active.pending_question !== null) {
+    return { kind: "question", question: active.pending_question };
+  }
+  return null;
 }
 
 // The backlog shapes, mirroring tutti-design's serde types (optional fields carry
@@ -147,5 +169,13 @@ export function stepToUi(step: DesignStep): StepUi {
       return { mode: "advanced", text: "" };
     case "complete":
       return { mode: "complete", text: "" };
+    default:
+      // Exhaustiveness: a new DesignStep kind fails the type-check here rather than
+      // returning undefined silently.
+      return assertNever(step);
   }
+}
+
+function assertNever(x: never): never {
+  throw new Error(`unhandled DesignStep kind: ${JSON.stringify(x)}`);
 }

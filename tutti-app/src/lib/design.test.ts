@@ -8,6 +8,7 @@ import {
   appendRatified,
   dropTrailingEmptyAgent,
   stepToUi,
+  activeToStep,
   type DesignMessage,
   type DesignStep,
 } from "./design";
@@ -27,6 +28,16 @@ describe("design transcript reducers", () => {
     const next = appendDelta(msgs, "x");
     expect(next).not.toBe(msgs);
     expect(msgs[0].text).toBe("");
+  });
+
+  it("opens a new agent bubble when a delta arrives with none open", () => {
+    // The defensive branch: a delta after a finalized question (not an open text bubble)
+    // must start a fresh bubble, not append to the question.
+    const msgs: DesignMessage[] = [{ role: "agent", kind: "question", text: "Who?" }];
+    const next = appendDelta(msgs, "streamed");
+    expect(next).toHaveLength(2);
+    expect(next[1]).toEqual({ role: "agent", kind: "text", text: "streamed" });
+    expect(next[0]).toEqual({ role: "agent", kind: "question", text: "Who?" });
   });
 
   it("finalizes a streamed bubble into a clean question", () => {
@@ -68,6 +79,33 @@ describe("design transcript reducers", () => {
     expect(dropTrailingEmptyAgent(empty)).toEqual([]);
     const full: DesignMessage[] = [{ role: "agent", kind: "text", text: "partial" }];
     expect(dropTrailingEmptyAgent(full)).toEqual(full);
+  });
+});
+
+describe("activeToStep (reload rehydration)", () => {
+  it("rehydrates a pending artifact as a ratify step", () => {
+    const step = activeToStep({
+      movement: "constitution",
+      pending_artifact: "## Constitution\nprivacy first",
+      pending_question: null,
+    });
+    expect(step).toEqual({ kind: "ratify", artifact_section: "## Constitution\nprivacy first" });
+  });
+
+  it("rehydrates a pending question when no artifact is proposed", () => {
+    const step = activeToStep({
+      movement: "frame",
+      pending_artifact: null,
+      pending_question: "Who is this for?",
+    });
+    expect(step).toEqual({ kind: "question", question: "Who is this for?" });
+  });
+
+  it("is null when nothing is in flight", () => {
+    expect(activeToStep(null)).toBeNull();
+    expect(
+      activeToStep({ movement: "frame", pending_artifact: null, pending_question: null }),
+    ).toBeNull();
   });
 });
 

@@ -77,6 +77,21 @@ pub struct DesignSessionStatus {
     pub current: Option<MovementId>,
     pub complete: bool,
     pub artifacts: Vec<DesignArtifact>,
+    /// The in-flight movement's pending state, so a pane reloaded mid-movement can rehydrate
+    /// the step (show the pending question or the artifact awaiting ratification) instead of
+    /// re-running the movement's opening turn and overwriting a proposed artifact.
+    pub active: Option<DesignActive>,
+}
+
+/// The pending state of the movement currently being facilitated (from `session.active`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DesignActive {
+    pub movement: MovementId,
+    /// The artifact section awaiting ratification, if the last turn proposed one.
+    pub pending_artifact: Option<String>,
+    /// The last question the agent asked, if the movement is awaiting the human's answer
+    /// (only set when there is no `pending_artifact`).
+    pub pending_question: Option<String>,
 }
 
 /// A proposed backlog plus its human-readable review text, for the confirm-before-seed UI.
@@ -203,6 +218,26 @@ fn status_of(session: &SessionState) -> DesignSessionStatus {
                 section: a.section.clone(),
             })
             .collect(),
+        active: session.active.as_ref().map(|p| {
+            use tutti_design::session::Speaker;
+            let pending_artifact = p.pending_artifact.clone();
+            // The pending question is the last agent turn, but only when no artifact is
+            // proposed yet (once an artifact is pending, the movement awaits ratification).
+            let pending_question = if pending_artifact.is_some() {
+                None
+            } else {
+                p.transcript
+                    .iter()
+                    .rev()
+                    .find(|t| t.speaker == Speaker::Agent)
+                    .map(|t| t.text.clone())
+            };
+            DesignActive {
+                movement: p.movement,
+                pending_artifact,
+                pending_question,
+            }
+        }),
     }
 }
 
@@ -392,6 +427,12 @@ pub async fn design_seed_backlog(
     state: State<'_, AppState>,
 ) -> Result<SeedReportDto, String> {
     let _busy = acquire_busy(&state.design_busy)?;
+    // Re-validate at the command boundary: `parse_backlog` enforces this at propose time, but
+    // this command takes a `BacklogPlan` round-tripped through the frontend, and `seed` creates
+    // the ready label as a side effect even for an issueless plan. Refuse an empty backlog.
+    if plan.issue_count() == 0 {
+        return Err("empty backlog: nothing to seed".into());
+    }
     // Pull owned data out under the lock; the seed is many sequential forge writes, so do not
     // hold the project lock across them (it would block the board, the orchestrator, and the
     // run driver for the duration).
@@ -516,5 +557,65 @@ mod tests {
         assert!(!status.complete);
         assert_eq!(status.artifacts.len(), 1);
         assert_eq!(status.artifacts[0].movement, first);
+        assert!(
+            status.active.is_none(),
+            "no in-flight movement after a clean ratify"
+        );
+    }
+
+    #[test]
+    fn status_of_exposes_a_pending_artifact_for_rehydration() {
+        use tutti_design::session::{MovementProgress, Speaker, Turn};
+        let mut session = SessionState::new(ProjectShape::SmallCli);
+        let current = session.current().unwrap();
+        session.active = Some(MovementProgress {
+            movement: current,
+            agent_session_id: Some("sid".into()),
+            transcript: vec![Turn {
+                speaker: Speaker::Agent,
+                text: "## Constitution\nprivacy first".into(),
+            }],
+            pending_artifact: Some("## Constitution\nprivacy first".into()),
+        });
+        let active = status_of(&session)
+            .active
+            .expect("active movement is exposed");
+        assert_eq!(active.movement, current);
+        assert_eq!(
+            active.pending_artifact.as_deref(),
+            Some("## Constitution\nprivacy first")
+        );
+        // With an artifact pending, no pending question is reported (awaits ratification).
+        assert!(active.pending_question.is_none());
+    }
+
+    #[test]
+    fn status_of_exposes_a_pending_question_when_no_artifact() {
+        use tutti_design::session::{MovementProgress, Speaker, Turn};
+        let mut session = SessionState::new(ProjectShape::SmallCli);
+        let current = session.current().unwrap();
+        session.active = Some(MovementProgress {
+            movement: current,
+            agent_session_id: Some("sid".into()),
+            transcript: vec![
+                Turn {
+                    speaker: Speaker::Human,
+                    text: "an answer".into(),
+                },
+                Turn {
+                    speaker: Speaker::Agent,
+                    text: "What must stay true?".into(),
+                },
+            ],
+            pending_artifact: None,
+        });
+        let active = status_of(&session)
+            .active
+            .expect("active movement is exposed");
+        assert_eq!(
+            active.pending_question.as_deref(),
+            Some("What must stay true?")
+        );
+        assert!(active.pending_artifact.is_none());
     }
 }
