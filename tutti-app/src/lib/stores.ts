@@ -32,8 +32,8 @@ export const selectedIssueId = writable<number | null>(null);
 /** Which main-pane view is active: the Kanban board or the milestone lanes. */
 export const view = writable<"board" | "lanes">("board");
 
-/** Which sidebar section is active: the project board, orchestrator chat, or subsessions. */
-export const section = writable<"board" | "orchestrator" | "subsessions">("board");
+/** Which sidebar section is active: the board, orchestrator chat, subsessions, or design. */
+export const section = writable<"board" | "orchestrator" | "subsessions" | "design">("board");
 
 /**
  * True while an orchestrator chat turn is in flight. The sidebar blocks project switch/add/
@@ -42,6 +42,14 @@ export const section = writable<"board" | "orchestrator" | "subsessions">("board
  * this store only gates the UI.
  */
 export const orchestratorBusy = writable(false);
+
+/**
+ * True while a design facilitation turn (or a backlog propose/seed) is in flight. The
+ * sidebar blocks project switch/add/remove while it is set, the same posture as an active
+ * orchestrator turn, so a project cannot be swapped out from under a running design turn. The
+ * backend enforces its own single-flight guard; this store only gates the UI.
+ */
+export const designBusy = writable(false);
 
 /**
  * Live subsession state for the current run (in-memory, never persisted). Populated by the
