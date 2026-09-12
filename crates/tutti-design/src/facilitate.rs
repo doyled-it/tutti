@@ -323,11 +323,16 @@ pub async fn advance(
                 FacilitationInput::Reply(t) | FacilitationInput::Revise(t) => t.clone(),
                 _ => String::new(),
             };
-            // Resume the in-flight conversation if one exists (None on the first turn).
+            // Resume the in-flight conversation if one exists (None on the first turn). An
+            // empty session id is treated as absent: a backend whose stream carried no session
+            // id yields "", and passing `--resume ""` to the backend is not a valid resume (it
+            // silently starts a fresh conversation, losing the movement's context). Filtering
+            // here also heals an already-persisted empty id on reload.
             let resume = session
                 .active
                 .as_ref()
-                .and_then(|p| p.agent_session_id.clone());
+                .and_then(|p| p.agent_session_id.clone())
+                .filter(|s| !s.is_empty());
             // Run the turn BEFORE mutating any state, so a backend error or an unparseable
             // reply leaves `session` untouched (no half-written transcript, no desynced
             // resume id) and a retry with the same session is clean.
@@ -526,13 +531,21 @@ mod tests {
         replies: std::cell::RefCell<Vec<String>>,
         /// The `resume` argument each `turn` call received, in order (for threading tests).
         resumes: std::cell::RefCell<Vec<Option<String>>>,
+        /// The session id every turn returns (default "sid"; set "" to simulate a stream that
+        /// carried no session id).
+        session_id: String,
     }
     impl ScriptedFacilitator {
         fn new(replies: Vec<&str>) -> Self {
             Self {
                 replies: std::cell::RefCell::new(replies.into_iter().map(String::from).collect()),
                 resumes: std::cell::RefCell::new(vec![]),
+                session_id: "sid".into(),
             }
+        }
+        fn with_session_id(mut self, id: &str) -> Self {
+            self.session_id = id.into();
+            self
         }
     }
     impl Facilitator for ScriptedFacilitator {
@@ -540,7 +553,7 @@ mod tests {
             self.resumes.borrow_mut().push(resume.map(String::from));
             let out = self.replies.borrow_mut().remove(0);
             Ok(RawTurn {
-                session_id: "sid".into(),
+                session_id: self.session_id.clone(),
                 output: out,
             })
         }
@@ -789,6 +802,46 @@ mod tests {
             *fac.resumes.borrow(),
             vec![None, Some("sid".to_string())],
             "first turn has no resume; the second resumes the first turn's session id"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_session_id_is_never_passed_as_a_resume() {
+        // A backend whose stream carried no session id yields "". Passing `--resume ""` would
+        // silently start a fresh conversation and lose the movement's context, so an empty id
+        // must be treated as absent (resume None), not threaded through.
+        let d = tempfile::tempdir().unwrap();
+        let fac = ScriptedFacilitator::new(vec![
+            r#"{"ask": "q1?"}"#,
+            r#"{"complete": {"artifact_section": "done"}}"#,
+        ])
+        .with_session_id("");
+        let mut s = SessionState::new(crate::shape::ProjectShape::SmallCli);
+        let m = MovementId::Constitution;
+        advance(
+            &fac,
+            &constitution_skill(),
+            m,
+            &mut s,
+            d.path(),
+            FacilitationInput::Begin,
+        )
+        .await
+        .unwrap();
+        advance(
+            &fac,
+            &constitution_skill(),
+            m,
+            &mut s,
+            d.path(),
+            FacilitationInput::Reply("a1".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *fac.resumes.borrow(),
+            vec![None, None],
+            "an empty session id is treated as absent on the second turn, not passed as `--resume \"\"`"
         );
     }
 

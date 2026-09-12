@@ -104,8 +104,19 @@ pub async fn drive_movement(
     session: &mut SessionState,
     repo_root: &Path,
 ) -> Result<(), DesignError> {
+    // Bound the interaction count so a backend that never emits `complete` (keeps asking)
+    // fails cleanly instead of spinning forever, which matters for a non-interactive prompter
+    // (a live smoke or a headless driver) where no human can Ctrl-C.
+    const MAX_TURNS_PER_MOVEMENT: usize = 40;
     let mut input = FacilitationInput::Begin;
+    let mut turns = 0usize;
     loop {
+        turns += 1;
+        if turns > MAX_TURNS_PER_MOVEMENT {
+            return Err(DesignError::Facilitation(format!(
+                "movement {movement:?} did not converge after {MAX_TURNS_PER_MOVEMENT} turns"
+            )));
+        }
         let state = advance(fac, skill, movement, session, repo_root, input).await?;
         input = match state {
             FacilitationState::AwaitingHuman { question } => {

@@ -376,22 +376,27 @@ pub fn backlog_prompt(session: &crate::session::SessionState) -> String {
 }
 
 /// Parse the agent's reply into a `BacklogPlan`. The reply may wrap the JSON object in prose
-/// or a fenced code block, so this scans each top-level balanced `{...}` object in order and
-/// returns the first that deserializes into a plan carrying at least one issue. A reply with
-/// no such object is a `DesignError::Facilitation`, never a silent empty plan (an unrelated
-/// prose object like `{"note": 1}` deserializes into an all-default, issueless plan under
-/// serde's ignore-unknown-fields default, so the issue-count floor is what rejects it).
+/// or a fenced code block, so this scans each top-level balanced `{...}` object and returns
+/// the LAST that deserializes into a plan carrying at least one issue. Last, not first,
+/// because an agent that restates the schema before the real plan emits a placeholder-bearing
+/// example object first; the real backlog comes after. A reply with no such object is a
+/// `DesignError::Facilitation`, never a silent empty plan (an unrelated prose object like
+/// `{"note": 1}` deserializes into an all-default, issueless plan under serde's
+/// ignore-unknown-fields default, so the issue-count floor is what rejects it).
 pub fn parse_backlog(reply: &str) -> Result<BacklogPlan, crate::error::DesignError> {
+    let mut last: Option<BacklogPlan> = None;
     for candidate in crate::facilitate::balanced_objects(reply) {
         if let Ok(plan) = serde_json::from_str::<BacklogPlan>(candidate) {
             if plan.issue_count() > 0 {
-                return Ok(plan);
+                last = Some(plan);
             }
         }
     }
-    Err(crate::error::DesignError::Facilitation(
-        "no BacklogPlan JSON object with any issues in the agent reply".into(),
-    ))
+    last.ok_or_else(|| {
+        crate::error::DesignError::Facilitation(
+            "no BacklogPlan JSON object with any issues in the agent reply".into(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -539,6 +544,22 @@ mod tests {
         let plan = parse_backlog(reply).unwrap();
         assert_eq!(plan.issue_count(), 1);
         assert_eq!(plan.loose_issues[0].title, "T");
+    }
+
+    #[test]
+    fn parse_backlog_prefers_the_last_plan_when_a_schema_example_precedes_it() {
+        // An agent that restates the schema before the real plan emits a placeholder-bearing
+        // example object first; the real backlog comes last and must win.
+        let reply = "Schema I will follow:\n\
+             {\"loose_issues\":[{\"title\":\"...\",\"body\":\"...\"}]}\n\
+             Actual backlog:\n\
+             {\"loose_issues\":[{\"title\":\"Add login\",\"body\":\"b\"}]}";
+        let plan = parse_backlog(reply).unwrap();
+        assert_eq!(plan.issue_count(), 1);
+        assert_eq!(
+            plan.loose_issues[0].title, "Add login",
+            "the real plan (last), not the schema example (first), is chosen"
+        );
     }
 
     fn sample_plan() -> BacklogPlan {
