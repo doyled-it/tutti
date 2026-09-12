@@ -33,6 +33,7 @@
   import CreateRepo from "$lib/components/CreateRepo.svelte";
   import OrchestratorPane from "$lib/components/OrchestratorPane.svelte";
   import SubsessionsPane from "$lib/components/SubsessionsPane.svelte";
+  import DesignPane from "$lib/components/DesignPane.svelte";
 
   let issueDetail = $state<IssueDetail | null>(null);
   let issueLoading = $state(false);
@@ -350,6 +351,14 @@
     <div class="work">
       {#if $section === "subsessions"}
         <SubsessionsPane />
+      {:else if $section === "design"}
+        {#if $activeDir}
+          {#key $activeDir}
+            <DesignPane />
+          {/key}
+        {:else}
+          <div class="no-project">Open a project to design it.</div>
+        {/if}
       {:else if $section === "orchestrator"}
         {#if $board}
           {#key $activeDir}

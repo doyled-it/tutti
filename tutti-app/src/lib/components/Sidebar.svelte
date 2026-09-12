@@ -208,6 +208,9 @@
         class:on={section === "subsessions"}
         onclick={() => onSection?.("subsessions")}>Subsessions</button
       >
+      <button class="nav-item" class:on={section === "design"} onclick={() => onSection?.("design")}
+        >Design</button
+      >
     </nav>
   </aside>
   <Resizer {onResize} ariaLabel="Resize sidebar" />
