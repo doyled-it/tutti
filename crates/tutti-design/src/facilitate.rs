@@ -5,7 +5,7 @@
 
 use crate::error::{DesignError, Result};
 use crate::grounding::RepoGrounding;
-use crate::movement::{definition, MovementId};
+use crate::movement::{definition, Depth, MovementId};
 use crate::session::{MovementArtifact, MovementProgress, SessionState, Speaker, Turn};
 use crate::skill::Skill;
 use crate::store;
@@ -245,21 +245,40 @@ fn build_turn_prompt(
     movement: MovementId,
     human_input: &str,
     grounding: Option<&RepoGrounding>,
+    depth: Depth,
 ) -> String {
     let def = definition(movement);
-    let checklist = def
-        .checklist
+    // Light runs briefly: show the load-bearing first half of the checklist (the points are
+    // listed load-bearing-first in RAILS) and frame the movement as brief. Full shows all.
+    let items: &[&str] = match depth {
+        Depth::Light => {
+            let keep = def.checklist.len().div_ceil(2).max(1);
+            &def.checklist[..keep]
+        }
+        // Skip never reaches a prompt (the movement is not selected); treat as Full defensively.
+        Depth::Full | Depth::Skip => def.checklist,
+    };
+    let checklist = items
         .iter()
         .map(|c| format!("- {c}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let cover_line = match depth {
+        Depth::Light => {
+            "This movement runs LIGHT for this project shape. Keep this movement brief, one or \
+             two exchanges, and cover only the essentials below:"
+        }
+        Depth::Full | Depth::Skip => {
+            "Cover these points, going deeper where the answer is novel or complex:"
+        }
+    };
     let grounding_block = grounding
         .map(|g| grounding_block(movement, g))
         .unwrap_or_default();
     format!(
         "{skill_body}\n\n\
          You are facilitating the \"{title}\" movement. Guiding question: {question}\n\n\
-         Cover these points, going deeper where the answer is novel or complex:\n{checklist}\
+         {cover_line}\n{checklist}\
          {grounding_block}\n\n\
          Ask ONE question at a time. Reply with a single JSON object and nothing else: \
          either {{\"ask\": \"<your next question>\"}} while you still need input, or \
@@ -336,8 +355,14 @@ pub async fn advance(
             // Run the turn BEFORE mutating any state, so a backend error or an unparseable
             // reply leaves `session` untouched (no half-written transcript, no desynced
             // resume id) and a retry with the same session is clean.
-            let prompt =
-                build_turn_prompt(skill, movement, &human_input, session.grounding.as_ref());
+            let depth = crate::movement::depth_for(movement, session.shape);
+            let prompt = build_turn_prompt(
+                skill,
+                movement,
+                &human_input,
+                session.grounding.as_ref(),
+                depth,
+            );
             let raw = fac.turn(&prompt, resume.as_deref()).await?;
             let reply = parse_reply(&raw.output)?;
             // Success: now mutate. Create the progress record on the first turn.
@@ -401,12 +426,46 @@ mod tests {
     }
 
     #[test]
+    fn a_light_movement_prompt_is_briefer_with_a_reduced_checklist() {
+        // Domain has a 3-item checklist; Light shows the reduced subset and a brevity hint.
+        let full = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Domain,
+            "",
+            None,
+            Depth::Full,
+        );
+        let light = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Domain,
+            "",
+            None,
+            Depth::Light,
+        );
+        assert!(
+            light.to_lowercase().contains("brief") || light.to_lowercase().contains("light"),
+            "Light carries a brevity hint"
+        );
+        // Light lists fewer checklist bullets than Full.
+        let count = |s: &str| s.matches("\n- ").count();
+        assert!(
+            count(&light) < count(&full),
+            "Light shows a reduced checklist"
+        );
+        assert!(
+            !full.to_lowercase().contains("keep this movement brief"),
+            "Full is not brief-framed"
+        );
+    }
+
+    #[test]
     fn frame_prompt_offers_the_inferred_shape_but_still_asks() {
         let p = build_turn_prompt(
             &constitution_skill(),
             MovementId::Frame,
             "",
             Some(&sample_grounding()),
+            Depth::Full,
         );
         assert!(
             p.contains("small_cli") || p.contains("SmallCli") || p.contains("shape"),
@@ -425,6 +484,7 @@ mod tests {
             MovementId::Domain,
             "",
             Some(&sample_grounding()),
+            Depth::Full,
         );
         assert!(
             p.contains("Session") && p.contains("Movement"),
@@ -439,6 +499,7 @@ mod tests {
             MovementId::Decide,
             "",
             Some(&sample_grounding()),
+            Depth::Full,
         );
         assert!(
             p.contains("transport is iroh"),
@@ -454,7 +515,13 @@ mod tests {
     fn no_grounding_leaves_the_prompt_ungrounded() {
         // With no grounding, the Domain prompt must carry NO grounding block at all. Assert
         // against the exact phrase the block emits, so this fails if the None path leaks it.
-        let with_none = build_turn_prompt(&constitution_skill(), MovementId::Domain, "", None);
+        let with_none = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Domain,
+            "",
+            None,
+            Depth::Full,
+        );
         assert!(!with_none.contains("the code suggests these entities"));
         assert!(!with_none.contains("Grounding:"));
         // Sanity: the same movement WITH grounding does inject the block, so the assertion above
@@ -464,6 +531,7 @@ mod tests {
             MovementId::Domain,
             "",
             Some(&sample_grounding()),
+            Depth::Full,
         );
         assert!(with_some.contains("the code suggests these entities"));
     }
