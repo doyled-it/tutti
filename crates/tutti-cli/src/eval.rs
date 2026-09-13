@@ -80,25 +80,29 @@ impl Judge for ClaudeJudge {
             .block_on(run_turn(&self.session, &prompt, &self.model, &self.cwd))
             .map_err(|e| DesignError::Facilitation(format!("eval judge turn: {e}")))?;
 
-        let object = first_json_object(&outcome.assistant_text).ok_or_else(|| {
-            DesignError::Facilitation("the judge did not return a JSON verdict object".to_string())
-        })?;
-        let verdict: Verdict = serde_json::from_str(object).map_err(|e| {
-            DesignError::Facilitation(format!("could not parse the judge verdict: {e}"))
-        })?;
-
-        if verdict.met.len() != record.expected_behavior.len() {
-            return Err(DesignError::Facilitation(format!(
-                "the judge returned {} verdict(s) for {} expected behavior(s)",
-                verdict.met.len(),
-                record.expected_behavior.len()
-            )));
+        // Try each balanced JSON object in the reply (a chatty judge may wrap the verdict in
+        // prose or emit an earlier brace group), returning the first that parses as a Verdict
+        // of the right length. A wrong-length verdict or an unparseable reply is an error, never
+        // a silent pass/fail.
+        let want = record.expected_behavior.len();
+        let mut last_err =
+            "the judge did not return a JSON verdict object of the right length".to_string();
+        for object in balanced_objects(&outcome.assistant_text) {
+            match serde_json::from_str::<Verdict>(object) {
+                Ok(v) if v.met.len() == want => {
+                    let passed = v.met.iter().all(|&m| m);
+                    return Ok(EvalOutcome { met: v.met, passed });
+                }
+                Ok(v) => {
+                    last_err = format!(
+                        "the judge returned {} verdict(s) for {want} expected behavior(s)",
+                        v.met.len()
+                    );
+                }
+                Err(e) => last_err = format!("could not parse the judge verdict: {e}"),
+            }
         }
-        let passed = verdict.met.iter().all(|&m| m);
-        Ok(EvalOutcome {
-            met: verdict.met,
-            passed,
-        })
+        Err(DesignError::Facilitation(last_err))
     }
 }
 
@@ -134,39 +138,53 @@ fn judging_prompt(expected_behavior: &[String], transcript: &str) -> String {
     )
 }
 
-/// Extract the first balanced `{...}` object from `text`, robust to prose around it and to
-/// braces and quotes inside JSON strings. The delimiters scanned (`{`, `}`, `"`, `\\`) are
-/// all ASCII, so the returned slice sits on char boundaries.
-fn first_json_object(text: &str) -> Option<&str> {
-    let start = text.find('{')?;
+/// Every top-level balanced `{...}` object in `text`, in order, robust to prose around them and
+/// to braces and quotes inside JSON strings. The delimiters scanned (`{`, `}`, `"`, `\\`) are
+/// all ASCII, so each returned slice sits on char boundaries. The judge tries each in turn, so a
+/// chatty reply with an earlier brace group does not defeat the real verdict object.
+fn balanced_objects(text: &str) -> Vec<&str> {
     let bytes = text.as_bytes();
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, &byte) in bytes.iter().enumerate().skip(start) {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&text[start..=offset]);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let mut depth = 0usize;
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut end = None;
+            for (offset, &byte) in bytes.iter().enumerate().skip(i) {
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        in_string = false;
+                    }
+                    continue;
+                }
+                match byte {
+                    b'"' => in_string = true,
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(offset);
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
+            if let Some(end) = end {
+                out.push(&text[i..=end]);
+                i = end + 1;
+                continue;
+            }
         }
+        i += 1;
     }
-    None
+    out
 }
 
 /// Run `tutti eval <skill-dir>`: load the skill and its eval records, drive each record through
@@ -231,26 +249,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_json_object_extracts_from_surrounding_prose() {
+    fn balanced_objects_extracts_from_surrounding_prose() {
         let text = "Here is my verdict: {\"met\": [true, false]} and that is all.";
-        assert_eq!(first_json_object(text), Some("{\"met\": [true, false]}"));
+        assert_eq!(balanced_objects(text), vec!["{\"met\": [true, false]}"]);
     }
 
     #[test]
-    fn first_json_object_ignores_braces_inside_strings() {
+    fn balanced_objects_ignores_braces_inside_strings() {
         let text = "{\"note\": \"a } brace and a { brace\", \"met\": [true]}";
-        assert_eq!(first_json_object(text), Some(text));
+        assert_eq!(balanced_objects(text), vec![text]);
     }
 
     #[test]
-    fn first_json_object_none_when_absent_or_unbalanced() {
-        assert_eq!(first_json_object("no json here"), None);
-        assert_eq!(first_json_object("{\"met\": [true]"), None);
+    fn balanced_objects_empty_when_absent_or_unbalanced() {
+        assert!(balanced_objects("no json here").is_empty());
+        assert!(balanced_objects("{\"met\": [true]").is_empty());
+    }
+
+    #[test]
+    fn balanced_objects_yields_a_prose_group_then_the_verdict() {
+        // A chatty judge: an earlier brace group, then the real verdict. Both are returned in
+        // order, so the judge can skip the first (which fails to parse) and use the second.
+        let objs = balanced_objects("Looking at {behavior a, b}: {\"met\": [true, true]}");
+        assert_eq!(objs.len(), 2);
+        assert_eq!(objs[1], "{\"met\": [true, true]}");
     }
 
     #[test]
     fn verdict_deserializes_the_met_array() {
-        let object = first_json_object("prose {\"met\": [true, false, true]} more").unwrap();
+        let object = balanced_objects("prose {\"met\": [true, false, true]} more")
+            .into_iter()
+            .next()
+            .unwrap();
         let verdict: Verdict = serde_json::from_str(object).unwrap();
         assert_eq!(verdict.met, vec![true, false, true]);
     }
