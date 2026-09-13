@@ -268,6 +268,7 @@ pub async fn run(
     repo: Option<PathBuf>,
     resume: bool,
     branch: Option<String>,
+    list_branches: bool,
     config: PathBuf,
     target: Option<String>,
     forge: Option<String>,
@@ -276,21 +277,35 @@ pub async fn run(
     let cfg = Config::load(&config).map_err(|e| e.to_string())?;
     let repo_root = repo.clone().unwrap_or_else(|| PathBuf::from("."));
 
-    // Minimal branch: snapshot the current session under a branch name before this run mutates
-    // it, so a design variant can be preserved. Running a fully independent session per branch
-    // (a separate live session file the driver reads and writes) is follow-up work; see the
-    // plan's out-of-scope note.
+    // --list-branches: print the saved session branches and exit.
+    if list_branches {
+        let names = store::list_branches(&repo_root).map_err(|e| e.to_string())?;
+        if names.is_empty() {
+            println!("tutti: no design session branches");
+        } else {
+            for name in names {
+                println!("{name}");
+            }
+        }
+        return Ok(());
+    }
+
+    // Branch handling. With --resume, switch to (activate) the named branch as the working
+    // session. Without --resume, snapshot the current session under the name first (a fork you
+    // can return to), then continue on the active session. A missing branch on switch, or an
+    // invalid name, is a clean error.
     if let Some(name) = &branch {
-        let src = store::session_path(&repo_root);
-        if src.exists() {
-            let dir = repo_root.join(".tutti").join("design").join("branches");
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let dst = dir.join(format!("{name}.json"));
-            std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
-            println!(
-                "tutti: snapshotted the current session to {}",
-                dst.display()
-            );
+        if resume {
+            store::activate_branch(&repo_root, name).map_err(|e| e.to_string())?;
+            println!("tutti: switched to branch '{name}'");
+        } else if store::session_path(&repo_root).exists() {
+            store::snapshot_active_to_branch(&repo_root, name).map_err(|e| e.to_string())?;
+            println!("tutti: snapshotted the current session to branch '{name}'");
+        } else {
+            // Nothing to snapshot yet; validate the name so a bad one fails now, then proceed
+            // to start a fresh session (which this branch name will apply to on a later fork).
+            store::branch_path(&repo_root, name).map_err(|e| e.to_string())?;
+            println!("tutti: no active session to snapshot yet; starting fresh");
         }
     }
 
