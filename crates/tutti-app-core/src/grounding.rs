@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use tutti_core::context::codegraph_bin;
 
 use serde::Deserialize;
 use tutti_design::{DomainSignal, RepoGrounder, RepoGrounding};
@@ -177,38 +178,9 @@ fn codegraph_signal(root: &Path) -> (DomainSignal, Vec<String>, usize) {
     )
 }
 
-/// The codegraph binary to invoke, resolved per call: the `TUTTI_CODEGRAPH_BIN` env override
-/// wins, else a `codegraph` bundled beside the running binary (so a packaged tutti ships its
-/// own, per D3), else bare `codegraph` on `PATH`.
-fn codegraph_bin() -> std::ffi::OsString {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf));
-    resolve_codegraph_bin(std::env::var_os("TUTTI_CODEGRAPH_BIN"), exe_dir.as_deref())
-}
-
-/// Pure resolution used by `codegraph_bin` (env override, then a `codegraph` file in
-/// `exe_dir`, then bare `codegraph`). Split out so it is testable without a real binary.
-fn resolve_codegraph_bin(
-    env_override: Option<std::ffi::OsString>,
-    exe_dir: Option<&Path>,
-) -> std::ffi::OsString {
-    if let Some(o) = env_override {
-        if !o.is_empty() {
-            return o;
-        }
-    }
-    if let Some(dir) = exe_dir {
-        let beside = dir.join("codegraph");
-        if beside.is_file() {
-            return beside.into_os_string();
-        }
-    }
-    std::ffi::OsString::from("codegraph")
-}
-
-/// Whether the `codegraph` binary is runnable (probed via `codegraph --version`). Mirrors
-/// `tutti_core::context::CodeGraph::detect`.
+/// Whether the `codegraph` binary is runnable (probed via `codegraph --version`). Uses the same
+/// `tutti_core::context::codegraph_bin` resolver as the engine's context provider, so a bundled
+/// codegraph (beside the binary) is honored identically in both.
 fn codegraph_available() -> bool {
     Command::new(codegraph_bin())
         .arg("--version")
@@ -474,31 +446,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_codegraph_bin_prefers_env_then_beside_binary_then_path() {
-        use std::ffi::OsString;
-        // The env override wins outright.
-        assert_eq!(
-            resolve_codegraph_bin(Some(OsString::from("/opt/cg")), None),
-            OsString::from("/opt/cg")
-        );
-        // Beside the binary, when a `codegraph` file is present there.
-        let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("codegraph"), b"#!/bin/sh\n").unwrap();
-        assert_eq!(
-            resolve_codegraph_bin(None, Some(d.path())),
-            d.path().join("codegraph").into_os_string()
-        );
-        // Otherwise bare `codegraph` on PATH: an empty override, an exe dir without codegraph,
-        // and no exe dir all fall through.
-        let empty = tempfile::tempdir().unwrap();
-        assert_eq!(
-            resolve_codegraph_bin(Some(OsString::new()), Some(empty.path())),
-            OsString::from("codegraph")
-        );
-        assert_eq!(
-            resolve_codegraph_bin(None, None),
-            OsString::from("codegraph")
-        );
-    }
+    // The codegraph-bin resolver now lives in tutti_core::context and is tested there
+    // (resolve_codegraph_bin_prefers_env_then_beside_binary_then_path); grounding uses it via
+    // the shared codegraph_bin() so a bundled codegraph is honored the same way engine-wide.
 }
