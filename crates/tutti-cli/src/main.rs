@@ -2,6 +2,7 @@
 //! The `tutti` CLI: load config, acquire the run lock, wire adapters, drain issues.
 
 mod design;
+mod eval;
 mod green;
 mod lock;
 mod retrofit;
@@ -122,6 +123,15 @@ enum Cmd {
         #[arg(long, default_value = "tutti.toml")]
         config: PathBuf,
     },
+    /// Run a skill's behavioral eval: drive a real backend over each eval record and judge the
+    /// transcript against its `expected_behavior` rubric semantically (a model as judge).
+    Eval {
+        /// The skill directory (holds SKILL.md and evals.json).
+        skill_dir: PathBuf,
+        /// The model to run both the skill and the judge on.
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+    },
 }
 
 #[tokio::main]
@@ -235,6 +245,21 @@ async fn main() -> std::process::ExitCode {
                 std::process::ExitCode::FAILURE
             }
         },
+        Cmd::Eval { skill_dir, model } => {
+            // `eval::run` owns a runtime and its live seams `block_on` it, so it must run off a
+            // thread that is not a runtime worker (this `main` is a `#[tokio::main]` worker).
+            match std::thread::spawn(move || eval::run(skill_dir, model)).join() {
+                Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+                Ok(Err(e)) => {
+                    eprintln!("tutti: {e}");
+                    std::process::ExitCode::FAILURE
+                }
+                Err(_) => {
+                    eprintln!("tutti: the eval run panicked");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 
