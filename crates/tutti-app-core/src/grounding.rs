@@ -177,10 +177,40 @@ fn codegraph_signal(root: &Path) -> (DomainSignal, Vec<String>, usize) {
     )
 }
 
+/// The codegraph binary to invoke, resolved per call: the `TUTTI_CODEGRAPH_BIN` env override
+/// wins, else a `codegraph` bundled beside the running binary (so a packaged tutti ships its
+/// own, per D3), else bare `codegraph` on `PATH`.
+fn codegraph_bin() -> std::ffi::OsString {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    resolve_codegraph_bin(std::env::var_os("TUTTI_CODEGRAPH_BIN"), exe_dir.as_deref())
+}
+
+/// Pure resolution used by `codegraph_bin` (env override, then a `codegraph` file in
+/// `exe_dir`, then bare `codegraph`). Split out so it is testable without a real binary.
+fn resolve_codegraph_bin(
+    env_override: Option<std::ffi::OsString>,
+    exe_dir: Option<&Path>,
+) -> std::ffi::OsString {
+    if let Some(o) = env_override {
+        if !o.is_empty() {
+            return o;
+        }
+    }
+    if let Some(dir) = exe_dir {
+        let beside = dir.join("codegraph");
+        if beside.is_file() {
+            return beside.into_os_string();
+        }
+    }
+    std::ffi::OsString::from("codegraph")
+}
+
 /// Whether the `codegraph` binary is runnable (probed via `codegraph --version`). Mirrors
 /// `tutti_core::context::CodeGraph::detect`.
 fn codegraph_available() -> bool {
-    Command::new("codegraph")
+    Command::new(codegraph_bin())
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -197,7 +227,7 @@ fn ensure_index(root: &Path) {
     if root.join(".codegraph").exists() {
         return;
     }
-    let _ = Command::new("codegraph")
+    let _ = Command::new(codegraph_bin())
         .arg("init")
         .arg("-i")
         .arg(root)
@@ -210,7 +240,7 @@ fn ensure_index(root: &Path) {
 /// matched symbol names. Empty on any error (binary missing, non-zero exit, unparseable JSON).
 /// The empty search term lists every symbol of the kind.
 fn query_names(root: &Path, kind: &str, limit: usize) -> Vec<String> {
-    let output = Command::new("codegraph")
+    let output = Command::new(codegraph_bin())
         .arg("query")
         .arg("")
         .arg("--kind")
@@ -241,7 +271,7 @@ fn query_names(root: &Path, kind: &str, limit: usize) -> Vec<String> {
 /// (`crates/<name>`, `packages/<name>`, ...) and other top-level source directories, distinct
 /// and sorted, capped at `MAX_STRUCTURE`. Empty on any codegraph error.
 fn read_structure(root: &Path) -> Vec<String> {
-    let output = Command::new("codegraph")
+    let output = Command::new(codegraph_bin())
         .arg("files")
         .arg("-p")
         .arg(root)
@@ -441,6 +471,34 @@ mod tests {
             domain.entities.iter().any(|e| e == "Movement"),
             "entities: {:?}",
             domain.entities
+        );
+    }
+
+    #[test]
+    fn resolve_codegraph_bin_prefers_env_then_beside_binary_then_path() {
+        use std::ffi::OsString;
+        // The env override wins outright.
+        assert_eq!(
+            resolve_codegraph_bin(Some(OsString::from("/opt/cg")), None),
+            OsString::from("/opt/cg")
+        );
+        // Beside the binary, when a `codegraph` file is present there.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("codegraph"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            resolve_codegraph_bin(None, Some(d.path())),
+            d.path().join("codegraph").into_os_string()
+        );
+        // Otherwise bare `codegraph` on PATH: an empty override, an exe dir without codegraph,
+        // and no exe dir all fall through.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_codegraph_bin(Some(OsString::new()), Some(empty.path())),
+            OsString::from("codegraph")
+        );
+        assert_eq!(
+            resolve_codegraph_bin(None, None),
+            OsString::from("codegraph")
         );
     }
 }
