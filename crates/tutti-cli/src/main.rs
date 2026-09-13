@@ -101,9 +101,9 @@ enum Cmd {
         /// Resume the saved session at `.tutti/design/` instead of starting a new one.
         #[arg(long)]
         resume: bool,
-        /// Branch the design session. Without `--resume`, snapshots the current session under
-        /// this name before running (a fork you can return to); with `--resume`, switches to
-        /// (activates) the named branch and continues it.
+        /// Branch the design session. Without `--resume`, forks: snapshots the current session
+        /// under this name and continues that session. With `--resume`, switches to (activates)
+        /// the named branch (the prior active session is auto-saved to the 'autosave' branch).
         #[arg(long)]
         branch: Option<String>,
         /// List the saved session branches and exit.

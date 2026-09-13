@@ -56,6 +56,7 @@ pub fn branches_dir(repo_root: &Path) -> PathBuf {
 /// whitespace, so a name can never escape `branches_dir`.
 fn valid_branch_name(name: &str) -> Result<()> {
     let ok = !name.is_empty()
+        && name.len() <= 100
         && name.trim() == name
         && name
             .chars()
@@ -109,8 +110,11 @@ pub fn list_branches(repo_root: &Path) -> Result<Vec<String>> {
     match fs::read_dir(&dir) {
         Ok(rd) => {
             for entry in rd.flatten() {
+                // Only real files, so a directory whose name ends in `.json` is not listed as a
+                // phantom branch that would then error on load.
+                let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
                 let p = entry.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("json") {
+                if is_file && p.extension().and_then(|x| x.to_str()) == Some("json") {
                     if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
                         names.push(stem.to_string());
                     }
@@ -237,6 +241,20 @@ mod tests {
         for good in ["alt", "explore-auth", "v2_idea", "a1"] {
             assert!(save_branch(d.path(), good, &s).is_ok(), "accepts {good:?}");
         }
+        // A name over the length cap is rejected (fails validation, not the filesystem).
+        assert!(
+            save_branch(d.path(), &"a".repeat(101), &s).is_err(),
+            "rejects an over-long name"
+        );
+    }
+
+    #[test]
+    fn list_branches_ignores_a_directory_named_like_a_branch() {
+        let d = tempfile::tempdir().unwrap();
+        save_branch(d.path(), "real", &SessionState::new(ProjectShape::SmallCli)).unwrap();
+        // A subdirectory whose name ends in .json must not be listed as a phantom branch.
+        fs::create_dir_all(branches_dir(d.path()).join("bogus.json")).unwrap();
+        assert_eq!(list_branches(d.path()).unwrap(), vec!["real".to_string()]);
     }
 
     #[test]

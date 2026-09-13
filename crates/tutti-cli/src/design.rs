@@ -290,22 +290,42 @@ pub async fn run(
         return Ok(());
     }
 
-    // Branch handling. With --resume, switch to (activate) the named branch as the working
-    // session. Without --resume, snapshot the current session under the name first (a fork you
-    // can return to), then continue on the active session. A missing branch on switch, or an
-    // invalid name, is a clean error.
+    // `resume` may be promoted to true below when `--branch` forks an existing session (a fork
+    // continues the current session, not a fresh one).
+    let mut resume = resume;
+
+    // Branch handling.
+    // - `--resume --branch <name>`: SWITCH to (activate) the named branch as the working session.
+    //   Activating overwrites `session.json`, so the current active session is first auto-saved
+    //   to the reserved `autosave` branch, so a switch never silently destroys in-flight work.
+    // - `--branch <name>` (no --resume): FORK. Snapshot the current session under the name, then
+    //   CONTINUE that same session (promote to resume), so a fork preserves a copy and keeps
+    //   going, matching the flag's contract. With no active session yet, just validate the name
+    //   and start fresh.
+    let has_active = store::session_path(&repo_root).exists();
     if let Some(name) = &branch {
         if resume {
+            if has_active {
+                store::snapshot_active_to_branch(&repo_root, "autosave")
+                    .map_err(|e| e.to_string())?;
+            }
             store::activate_branch(&repo_root, name).map_err(|e| e.to_string())?;
-            println!("tutti: switched to branch '{name}'");
-        } else if store::session_path(&repo_root).exists() {
+            println!(
+                "tutti: switched to branch '{name}'{}",
+                if has_active {
+                    " (previous session saved as branch 'autosave')"
+                } else {
+                    ""
+                }
+            );
+        } else if has_active {
             store::snapshot_active_to_branch(&repo_root, name).map_err(|e| e.to_string())?;
-            println!("tutti: snapshotted the current session to branch '{name}'");
+            resume = true; // a fork continues the current session
+            println!("tutti: forked the current session to branch '{name}'; continuing it");
         } else {
-            // Nothing to snapshot yet; validate the name so a bad one fails now, then proceed
-            // to start a fresh session (which this branch name will apply to on a later fork).
+            // Nothing to snapshot yet; validate the name so a bad one fails now, then start fresh.
             store::branch_path(&repo_root, name).map_err(|e| e.to_string())?;
-            println!("tutti: no active session to snapshot yet; starting fresh");
+            println!("tutti: no active session to fork yet; starting fresh");
         }
     }
 
