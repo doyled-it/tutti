@@ -25,11 +25,44 @@ pub struct CodeGraph {
     project: PathBuf,
 }
 
+/// The codegraph binary to invoke, resolved per call: the `TUTTI_CODEGRAPH_BIN` env override
+/// wins, else a `codegraph` bundled beside the running binary (so a packaged tutti ships its
+/// own), else bare `codegraph` on `PATH`. The single resolver both this engine context provider
+/// and `tutti-app-core`'s existing-repo grounder use, so a bundled codegraph is honored the same
+/// way everywhere codegraph is invoked.
+pub fn codegraph_bin() -> std::ffi::OsString {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+    resolve_codegraph_bin(std::env::var_os("TUTTI_CODEGRAPH_BIN"), exe_dir.as_deref())
+}
+
+/// Pure resolution used by `codegraph_bin` (env override, then a `codegraph` file in `exe_dir`,
+/// then bare `codegraph`). Split out so it is testable without a real binary.
+pub fn resolve_codegraph_bin(
+    env_override: Option<std::ffi::OsString>,
+    exe_dir: Option<&std::path::Path>,
+) -> std::ffi::OsString {
+    if let Some(o) = env_override {
+        if !o.is_empty() {
+            return o;
+        }
+    }
+    if let Some(dir) = exe_dir {
+        let beside = dir.join("codegraph");
+        if beside.is_file() {
+            return beside.into_os_string();
+        }
+    }
+    std::ffi::OsString::from("codegraph")
+}
+
 impl CodeGraph {
     /// `None` when the `codegraph` binary is not runnable (probed via `codegraph --version`).
-    /// `project` is the main working dir to index and serve.
+    /// `project` is the main working dir to index and serve. Resolves the binary via
+    /// `codegraph_bin` (env / beside-binary / PATH), so a bundled codegraph is detected.
     pub fn detect(project: PathBuf) -> Option<CodeGraph> {
-        let ok = std::process::Command::new("codegraph")
+        let ok = std::process::Command::new(codegraph_bin())
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -61,7 +94,7 @@ impl ContextProvider for CodeGraph {
         }
         // `codegraph init -i <project>` = initialize + initial index. Best-effort: a
         // failure (missing binary, permissions) must not fail the agent run.
-        let status = tokio::process::Command::new("codegraph")
+        let status = tokio::process::Command::new(codegraph_bin())
             .arg("init")
             .arg("-i")
             .arg(&self.project)
@@ -82,7 +115,7 @@ impl ContextProvider for CodeGraph {
     fn mcp_servers(&self) -> Vec<McpServer> {
         vec![McpServer {
             name: "codegraph".into(),
-            command: "codegraph".into(),
+            command: codegraph_bin().to_string_lossy().into_owned(),
             args: vec![
                 "serve".into(),
                 "--mcp".into(),
@@ -137,6 +170,33 @@ mod tests {
         assert!(
             dir.path().join(".codegraph").exists(),
             "index dir should exist"
+        );
+    }
+
+    #[test]
+    fn resolve_codegraph_bin_prefers_env_then_beside_binary_then_path() {
+        use std::ffi::OsString;
+        // The env override wins outright.
+        assert_eq!(
+            resolve_codegraph_bin(Some(OsString::from("/opt/cg")), None),
+            OsString::from("/opt/cg")
+        );
+        // A `codegraph` beside the binary is used when present.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("codegraph"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            resolve_codegraph_bin(None, Some(d.path())),
+            d.path().join("codegraph").into_os_string()
+        );
+        // Otherwise bare `codegraph` on PATH (empty override, exe dir without codegraph, none).
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_codegraph_bin(Some(OsString::new()), Some(empty.path())),
+            OsString::from("codegraph")
+        );
+        assert_eq!(
+            resolve_codegraph_bin(None, None),
+            OsString::from("codegraph")
         );
     }
 }
