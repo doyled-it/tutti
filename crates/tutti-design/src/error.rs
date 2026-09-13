@@ -26,6 +26,10 @@ pub enum DesignError {
     /// invalid step such as ratifying before an artifact was proposed).
     #[error("facilitation: {0}")]
     Facilitation(String),
+    /// A session-store operation could not proceed (an invalid branch name, or a branch or
+    /// active session that does not exist).
+    #[error("store: {0}")]
+    Store(String),
 }
 
 /// Crate-local result alias.

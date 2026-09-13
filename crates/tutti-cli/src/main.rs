@@ -101,9 +101,14 @@ enum Cmd {
         /// Resume the saved session at `.tutti/design/` instead of starting a new one.
         #[arg(long)]
         resume: bool,
-        /// Snapshot the current session under this branch name before running.
+        /// Branch the design session. Without `--resume`, forks: snapshots the current session
+        /// under this name and continues that session. With `--resume`, switches to (activates)
+        /// the named branch (the prior active session is auto-saved to the 'autosave' branch).
         #[arg(long)]
         branch: Option<String>,
+        /// List the saved session branches and exit.
+        #[arg(long)]
+        list_branches: bool,
         /// The forge target to seed the backlog onto ("owner/name" etc, see `Run`). Omit to
         /// skip seeding onto a forge.
         #[arg(long)]
@@ -207,11 +212,23 @@ async fn main() -> std::process::ExitCode {
             repo,
             resume,
             branch,
+            list_branches,
             target,
             forge,
             login,
             config,
-        } => match design::run(repo, resume, branch, config, target, forge, login).await {
+        } => match design::run(
+            repo,
+            resume,
+            branch,
+            list_branches,
+            config,
+            target,
+            forge,
+            login,
+        )
+        .await
+        {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("tutti: {e}");
