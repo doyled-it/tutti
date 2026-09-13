@@ -37,7 +37,10 @@ pub use decompose::{
     ProposedMilestone, SeedReport,
 };
 pub use error::{DesignError, Result};
-pub use eval::{load_evals, run_evals, score, EvalOutcome, EvalRecord, SkillTranscriptSource};
+pub use eval::{
+    load_evals, run_evals, run_evals_judged, score, EvalOutcome, EvalRecord, Judge,
+    SkillTranscriptSource, SubstringJudge,
+};
 pub use facilitate::{
     advance, parse_reply, FacilitationInput, FacilitationState, Facilitator, MovementReply, RawTurn,
 };

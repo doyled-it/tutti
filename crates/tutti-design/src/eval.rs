@@ -112,6 +112,41 @@ pub fn run_evals(
         .collect()
 }
 
+/// Scores a transcript against a record's `expected_behavior`. The hermetic default is
+/// `SubstringJudge` (the deterministic `score`); the live model-as-judge is `ClaudeJudge`
+/// (tutti-cli), which judges the rubric semantically rather than by substring. A seam so the
+/// judged runner is testable without a backend.
+pub trait Judge {
+    fn judge(&self, record: &EvalRecord, transcript: &str) -> Result<EvalOutcome, DesignError>;
+}
+
+/// The deterministic substring judge: `Judge` over the existing `score`. Always succeeds (a
+/// substring match cannot fail); the fallible signature is for the live judge.
+pub struct SubstringJudge;
+
+impl Judge for SubstringJudge {
+    fn judge(&self, record: &EvalRecord, transcript: &str) -> Result<EvalOutcome, DesignError> {
+        Ok(score(record, transcript))
+    }
+}
+
+/// Run every record: get its transcript from `source`, score it with `judge`. One outcome per
+/// record, in order. Any source or judge error aborts the run (a failed backend call or an
+/// unparseable verdict is an error, not a silently failed record).
+pub fn run_evals_judged(
+    records: &[EvalRecord],
+    source: &dyn SkillTranscriptSource,
+    judge: &dyn Judge,
+) -> Result<Vec<EvalOutcome>, DesignError> {
+    records
+        .iter()
+        .map(|record| {
+            let transcript = source.transcript_for(record)?;
+            judge.judge(record, &transcript)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +275,62 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes[0].passed);
         assert!(!outcomes[1].passed);
+    }
+
+    /// A source that hands back one fixed transcript for every record.
+    struct FixedSource(String);
+    impl SkillTranscriptSource for FixedSource {
+        fn transcript_for(&self, _record: &EvalRecord) -> Result<String, DesignError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// A judge that reports a fixed `met` vector for every record.
+    struct FakeJudge(Vec<bool>);
+    impl Judge for FakeJudge {
+        fn judge(
+            &self,
+            _record: &EvalRecord,
+            _transcript: &str,
+        ) -> Result<EvalOutcome, DesignError> {
+            Ok(EvalOutcome {
+                met: self.0.clone(),
+                passed: self.0.iter().all(|&m| m),
+            })
+        }
+    }
+
+    #[test]
+    fn substring_judge_matches_score() {
+        let r = record();
+        let transcript = "First I filtered the rows, then I reported the row count.";
+        assert_eq!(
+            SubstringJudge.judge(&r, transcript).unwrap(),
+            score(&r, transcript)
+        );
+    }
+
+    #[test]
+    fn run_evals_judged_uses_the_judge_for_each_record() {
+        // record()'s rubric has two behaviors, so each `met` vector is length 2.
+        let recs = vec![record(), record()];
+
+        let outcomes = run_evals_judged(
+            &recs,
+            &FixedSource("x".into()),
+            &FakeJudge(vec![true, true]),
+        )
+        .unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| o.passed));
+
+        // A judge that fails one behavior makes every record not pass.
+        let outcomes = run_evals_judged(
+            &recs,
+            &FixedSource("x".into()),
+            &FakeJudge(vec![true, false]),
+        )
+        .unwrap();
+        assert!(outcomes.iter().all(|o| !o.passed));
     }
 }
