@@ -269,4 +269,58 @@ mod tests {
         assert!(prompt.contains("the transcript body"));
         assert!(prompt.contains("\"met\""));
     }
+
+    /// Live end-to-end: drive a real `claude` session over the Constitution skill's eval
+    /// records and judge each transcript, asserting one verdict per record without error. It
+    /// does not assert every record passes (a real judge may disagree with a record); it
+    /// proves the live source + judge run end to end. Part of the `live` suite:
+    /// `env -C <repo> cargo test -p tutti-cli --features live live_eval -- --nocapture`.
+    ///
+    /// A plain `#[test]` (not `#[tokio::test]`): the seams `block_on` a runtime, so the driving
+    /// thread must not be a runtime worker.
+    #[test]
+    #[cfg_attr(not(feature = "live"), ignore = "live: needs claude -p on PATH")]
+    fn live_eval_judges_the_constitution_skill() {
+        let skill_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills/design/constitution");
+        let skill = tutti_design::load_skill(&skill_dir).expect("the constitution skill loads");
+        let records = tutti_design::load_evals(&skill_dir).expect("its eval records load");
+        assert!(
+            records.len() >= 3,
+            "the constitution skill carries at least three eval records"
+        );
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let workdir = tempfile::tempdir().unwrap();
+        let source = ClaudeTranscriptSource {
+            session: ClaudeSession::default(),
+            model: "sonnet".into(),
+            skill,
+            cwd: workdir.path().to_path_buf(),
+            handle: runtime.handle().clone(),
+        };
+        let judge = ClaudeJudge {
+            session: ClaudeSession::default(),
+            model: "sonnet".into(),
+            cwd: workdir.path().to_path_buf(),
+            handle: runtime.handle().clone(),
+        };
+
+        let outcomes = tutti_design::run_evals_judged(&records, &source, &judge)
+            .expect("the live source and judge run end to end");
+        assert_eq!(outcomes.len(), records.len(), "one verdict per eval record");
+        for (record, outcome) in records.iter().zip(outcomes.iter()) {
+            assert_eq!(
+                outcome.met.len(),
+                record.expected_behavior.len(),
+                "one boolean per expected behavior"
+            );
+            eprintln!(
+                "{}: {} -> {:?}",
+                if outcome.passed { "PASS" } else { "FAIL" },
+                record.query,
+                outcome.met
+            );
+        }
+    }
 }
