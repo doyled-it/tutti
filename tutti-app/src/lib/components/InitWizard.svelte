@@ -276,7 +276,7 @@
     {:else if current === "stack"}
       <QuestionCard
         question="Which stack should Tutti scaffold?"
-        description="Tutti can lay down an opinionated, agent-ready setup for a fresh repo: real lint/type/test config, a canonical gate script, CI, and AGENTS.md. Pick None to wire your own."
+        description="Tutti can lay down an opinionated, agent-ready setup for a fresh repo: real lint/type/test config, a canonical gate script, CI, and AGENTS.md. Not sure yet? Pick 'Decide during the design chat' and the design conversation settles the stack, then Tutti scaffolds it at the handoff. Pick None to wire your own."
         {error}
       >
         <StackStep bind:value={s.stack} />

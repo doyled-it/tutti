@@ -52,6 +52,7 @@ export const STACKS = [
   { id: "rust", label: "Rust (cargo fmt, clippy, test)" },
   { id: "typescript", label: "TypeScript (bun, tsc, bun test)" },
   { id: "go", label: "Go (gofmt, vet, test)" },
+  { id: "defer", label: "Decide during the design chat" },
   { id: "none", label: "None (I'll wire it myself)" },
 ] as const;
 
@@ -186,6 +187,9 @@ export function toInitForm(s: WizardState): InitForm {
     require_label: s.requireLabel.trim(),
     skip_labels: s.skipLabels.map((l) => l.trim()).filter((l) => l.length > 0),
     gate_commands: gate.length > 0 ? gate : [NO_OP_GATE],
-    stack: s.stack === "none" ? null : s.stack,
+    // "defer" and "none" both scaffold nothing now (stack: null); "defer" additionally sets
+    // defer_stack so init drops a marker and the design handoff offers to scaffold later.
+    stack: s.stack === "none" || s.stack === "defer" ? null : s.stack,
+    defer_stack: s.stack === "defer",
   };
 }

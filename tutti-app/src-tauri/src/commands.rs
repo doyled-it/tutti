@@ -323,6 +323,12 @@ pub struct InitForm {
     /// The chosen opinionated stack id (e.g. "python"), or None for no scaffold.
     #[serde(default)]
     pub stack: Option<String>,
+    /// The user deferred the stack choice to the design chat. Scaffolds nothing now (like
+    /// `stack: None`), but drops a `.tutti/scaffold.pending` marker so the design handoff
+    /// offers to scaffold the stack the conversation settles on. Distinct from "None (I'll
+    /// wire it myself)", which leaves no marker and expects the user to wire the gate.
+    #[serde(default)]
+    pub defer_stack: bool,
 }
 
 /// Map the form onto the renderer's params. Shared by `init_project` and
@@ -389,6 +395,20 @@ pub async fn init_project(
     seed_status_labels(&state).await;
     // 3b. Scaffold the opinionated stack (if chosen) and seed the integration branch.
     seed_stack(&form).await;
+    // 3c. If the stack was deferred to the design chat, drop a marker so the design handoff
+    // offers to scaffold it. Guarded on `stack.is_none()` so a caller that somehow set both a
+    // concrete stack (scaffolded above) and defer does not also arm the design-pane scaffold,
+    // which would scaffold twice. Best effort: a marker-write failure only means the design
+    // pane will not prompt, which is recoverable by re-running the design handoff.
+    if form.defer_stack && form.stack.is_none() {
+        let marker = crate::design::scaffold_pending_marker(&root);
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&marker, b"") {
+            eprintln!("could not write scaffold-pending marker: {e}");
+        }
+    }
     // 4. Persist.
     let mut store = load_store(&app)?;
     store.upsert(entry.clone());
@@ -442,7 +462,7 @@ async fn seed_stack(form: &InitForm) {
 }
 
 /// Run `git -C <dir> <args>`, returning stdout on success.
-async fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
     let out = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -743,6 +763,7 @@ mod tests {
             skip_labels: vec!["status:needs-human".into()],
             gate_commands: vec!["cargo test".into()],
             stack: None,
+            defer_stack: false,
         };
         let p = params_from(&form);
         assert_eq!(p.trunk, "main");
@@ -773,6 +794,7 @@ mod tests {
             skip_labels: vec!["status:needs-human".into()],
             gate_commands: vec!["true".into()],
             stack: Some("python".into()),
+            defer_stack: false,
         };
         let p = params_from(&form);
         assert_eq!(
@@ -798,6 +820,7 @@ mod tests {
             skip_labels: vec!["status:needs-human".into()],
             gate_commands: vec!["cargo test".into()],
             stack: None,
+            defer_stack: false,
         };
         let p = params_from(&form);
         assert_eq!(p.gate_commands, vec!["cargo test".to_string()]);

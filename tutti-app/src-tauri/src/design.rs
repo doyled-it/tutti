@@ -99,6 +99,29 @@ pub struct DesignActive {
 pub struct BacklogProposal {
     pub plan: BacklogPlan,
     pub rendered: String,
+    /// The project deferred its stack choice to the design chat (a `.tutti/scaffold.pending`
+    /// marker is present), so the pane should offer a scaffold step before seeding.
+    pub scaffold_pending: bool,
+}
+
+/// What a `design_scaffold` run wrote (a serializable projection of `ScaffoldReport`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ScaffoldReportDto {
+    pub stack: String,
+    pub written: usize,
+    pub skipped: usize,
+    pub warnings: Vec<String>,
+    /// Whether the scaffold was committed and pushed to the integration branch. False means it
+    /// is written on disk but not published (a git failure), so the pane keeps the retry path
+    /// open and the marker is left in place.
+    pub pushed: bool,
+}
+
+/// The marker `init_project` drops when the user defers their stack choice to the design
+/// chat. Its presence tells the design handoff to offer a scaffold step; `design_scaffold`
+/// removes it once the chosen stack is laid down.
+pub(crate) fn scaffold_pending_marker(repo_root: &Path) -> PathBuf {
+    repo_root.join(".tutti").join("scaffold.pending")
 }
 
 /// What a seed run did (a serializable projection of `tutti_design::SeedReport`).
@@ -415,7 +438,83 @@ pub async fn design_propose_backlog(
         .map_err(|e| e.to_string())?;
     let plan = parse_backlog(&raw.output).map_err(|e| e.to_string())?;
     let rendered = render_plan(&plan);
-    Ok(BacklogProposal { plan, rendered })
+    let scaffold_pending = scaffold_pending_marker(&dir).exists();
+    Ok(BacklogProposal {
+        plan,
+        rendered,
+        scaffold_pending,
+    })
+}
+
+/// Scaffold the stack the design chat settled on into the loaded project, commit and push it,
+/// then clear the `.tutti/scaffold.pending` marker. Called by the pane between proposing and
+/// seeding when the project deferred its stack choice (the create wizard's "Decide during the
+/// design chat" option). Mirrors the CLI's `handoff`, which asks the stack after the chain and
+/// scaffolds before seeding.
+#[tauri::command]
+pub async fn design_scaffold(
+    stack: String,
+    state: State<'_, AppState>,
+) -> Result<ScaffoldReportDto, String> {
+    let _busy = acquire_busy(&state.design_busy)?;
+    let (integration_branch, repo, repo_root) = {
+        let guard = state.project.lock().await;
+        let p = guard.as_ref().ok_or("no project loaded")?;
+        (
+            p.config.integration_branch.clone(),
+            p.repo.clone(),
+            p.repo_root.clone(),
+        )
+    };
+    let profile =
+        tutti_app_core::stack_profile(&stack).ok_or_else(|| format!("unknown stack: {stack}"))?;
+    let repo_name = repo.rsplit('/').next().unwrap_or(&repo).to_string();
+    let ctx = tutti_app_core::ScaffoldContext {
+        package_name: tutti_app_core::package_name(&repo_name),
+        repo_name,
+    };
+    let run_post =
+        |step: &tutti_app_core::PostWriteStep| tutti_app_core::run_post_write(&repo_root, step);
+    let report = tutti_app_core::scaffold(&repo_root, &profile, &ctx, &run_post)
+        .map_err(|e| format!("scaffold failed: {e}"))?;
+    // Post-write warnings (a failed `uv sync`, lockfile generation, ...) are not fatal, but the
+    // gate tooling is then half-configured, so carry them to the pane instead of dropping them.
+    let mut warnings = report.warnings;
+    // Commit + push the scaffold. Stage everything EXCEPT `.tutti/` so the design session state
+    // and the `.tutti/scaffold.pending` marker are never committed or published (the marker is a
+    // local signal; the session is internal). Unlike `seed_stack`, which runs on a pristine repo
+    // at init, this runs after the whole design chain, when `.tutti/design/` is fully populated.
+    // Surface git failures as warnings rather than swallowing them into a false success.
+    let mut pushed = false;
+    let _ = crate::commands::git_in(&repo_root, &["add", "-A", "--", ":(exclude).tutti"]).await;
+    match crate::commands::git_in(&repo_root, &["commit", "-m", "chore: tutti scaffold"]).await {
+        Err(e) => warnings.push(format!("git commit failed, scaffold not committed: {e}")),
+        Ok(_) => match crate::commands::git_in(&repo_root, &["push", "origin", "HEAD"]).await {
+            Err(e) => warnings.push(format!("git push failed, scaffold not published: {e}")),
+            Ok(_) => match crate::commands::git_in(
+                &repo_root,
+                &["push", "origin", &format!("HEAD:{integration_branch}")],
+            )
+            .await
+            {
+                Err(e) => warnings.push(format!("git push to {integration_branch} failed: {e}")),
+                Ok(_) => pushed = true,
+            },
+        },
+    }
+    // Clear the marker only once the scaffold is committed and pushed to the integration branch,
+    // so a failed commit/push leaves the step available to retry rather than reporting a false
+    // success the user cannot recover from in-app.
+    if pushed {
+        let _ = std::fs::remove_file(scaffold_pending_marker(&repo_root));
+    }
+    Ok(ScaffoldReportDto {
+        stack: profile.display_name.to_string(),
+        written: report.written.len(),
+        skipped: report.skipped.len(),
+        warnings,
+        pushed,
+    })
 }
 
 /// Seed a reviewed backlog onto the active project's own forge, idempotently. The target and
@@ -457,6 +556,12 @@ pub async fn design_seed_backlog(
 mod tests {
     use super::*;
     use tutti_design::session::MovementArtifact;
+
+    #[test]
+    fn scaffold_marker_lives_under_dot_tutti() {
+        let marker = scaffold_pending_marker(Path::new("/repo"));
+        assert_eq!(marker, Path::new("/repo/.tutti/scaffold.pending"));
+    }
 
     #[test]
     fn awaiting_human_maps_to_a_question_step() {
