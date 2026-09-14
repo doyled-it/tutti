@@ -82,11 +82,23 @@ export interface BacklogPlan {
 export interface BacklogProposal {
   plan: BacklogPlan;
   rendered: string;
+  /** The project deferred its stack to the design chat; offer a scaffold step before seed. */
+  scaffold_pending: boolean;
 }
 
 export interface SeedReport {
   created: string[];
   skipped: string[];
+}
+
+export interface ScaffoldReport {
+  stack: string;
+  written: number;
+  skipped: number;
+  warnings: string[];
+  /** Whether the scaffold was committed and pushed. False means it is on disk but not
+   * published (a git failure); the pane keeps the retry path open. */
+  pushed: boolean;
 }
 
 // One line of the facilitation transcript. An agent "text" bubble is the live-streaming one

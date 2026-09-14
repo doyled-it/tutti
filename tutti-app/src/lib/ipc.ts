@@ -106,6 +106,9 @@ export interface InitForm {
   skip_labels: string[];
   gate_commands: string[];
   stack?: string | null;
+  /** The user deferred the stack choice to the design chat; init drops a scaffold-pending
+   * marker and the design handoff offers to scaffold the settled stack. */
+  defer_stack?: boolean;
 }
 
 export type MessageKind = "text" | "tool" | "proposal";
@@ -136,6 +139,7 @@ export type {
   BacklogPlan,
   BacklogProposal,
   SeedReport,
+  ScaffoldReport,
 } from "./design";
 import type {
   ProjectShape,
@@ -144,6 +148,7 @@ import type {
   BacklogPlan,
   BacklogProposal,
   SeedReport,
+  ScaffoldReport,
 } from "./design";
 
 export interface GateStatus {
@@ -248,6 +253,7 @@ export const api = {
   designRatify: () => invoke<DesignStep>("design_ratify"),
   designPreview: () => invoke<string>("design_preview"),
   designProposeBacklog: () => invoke<BacklogProposal>("design_propose_backlog"),
+  designScaffold: (stack: string) => invoke<ScaffoldReport>("design_scaffold", { stack }),
   designSeedBacklog: (plan: BacklogPlan) => invoke<SeedReport>("design_seed_backlog", { plan }),
   // The agent's turn streams line by line over this event while a design command runs.
   onDesignDelta: (cb: (text: string) => void) =>

@@ -227,6 +227,17 @@ describe("toInitForm", () => {
     expect(toInitForm({ ...base(), stack: "none" }).stack).toBeNull();
   });
 
+  it("maps the defer choice to no scaffold now plus the defer flag", () => {
+    const deferred = toInitForm({ ...base(), stack: "defer" });
+    expect(deferred.stack).toBeNull();
+    expect(deferred.defer_stack).toBe(true);
+  });
+
+  it("does not set the defer flag for a concrete stack or none", () => {
+    expect(toInitForm({ ...base(), stack: "python" }).defer_stack).toBe(false);
+    expect(toInitForm({ ...base(), stack: "none" }).defer_stack).toBe(false);
+  });
+
   it("carries the remaining fields through unchanged", () => {
     const f = toInitForm({ ...base(), routing: "phase_stacking" });
     expect(f.dir).toBe("/tmp/proj");

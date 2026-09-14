@@ -22,6 +22,7 @@
     type DesignStep,
     type BacklogProposal,
     type SeedReport,
+    type ScaffoldReport,
     type ProjectShape,
     type MovementId,
   } from "$lib/design";
@@ -32,6 +33,21 @@
   let preview = $state("");
   let proposal = $state<BacklogProposal | null>(null);
   let seedReport = $state<SeedReport | null>(null);
+  // The scaffold step, shown between propose and seed only when the project deferred its
+  // stack to the design chat (`proposal.scaffold_pending`). Once scaffolded, `scaffolded`
+  // gates it off and the Seed button appears.
+  let scaffoldStack = $state("typescript");
+  let scaffoldReport = $state<ScaffoldReport | null>(null);
+  let scaffolded = $state(false);
+
+  // The real (scaffoldable) stacks, matching tutti-app-core's stack ids. Mirrors the create
+  // wizard minus its "defer"/"none" opt-outs, since here a concrete stack is being chosen.
+  const DESIGN_STACKS: { id: string; label: string }[] = [
+    { id: "python", label: "Python (uv, ruff, mypy, pytest)" },
+    { id: "rust", label: "Rust (cargo fmt, clippy, test)" },
+    { id: "typescript", label: "TypeScript (bun, tsc, bun test)" },
+    { id: "go", label: "Go (gofmt, vet, test)" },
+  ];
 
   let draft = $state("");
   let reviseOpen = $state(false);
@@ -215,10 +231,31 @@
   async function propose() {
     error = null;
     seedReport = null;
+    scaffoldReport = null;
+    scaffolded = false;
     thinking = true;
     designBusy.set(true);
     try {
       proposal = await api.designProposeBacklog();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      thinking = false;
+      designBusy.set(false);
+    }
+  }
+
+  async function scaffold() {
+    if (!proposal || thinking) return;
+    error = null;
+    thinking = true;
+    designBusy.set(true);
+    try {
+      scaffoldReport = await api.designScaffold(scaffoldStack);
+      // Advance to seeding only when the scaffold was actually committed and pushed. On a git
+      // failure (pushed=false) stay on the step so the warning shows and the user can retry or
+      // seed anyway; the backend leaves the marker in place for a clean retry.
+      scaffolded = scaffoldReport.pushed;
     } catch (e) {
       error = String(e);
     } finally {
@@ -331,12 +368,78 @@
           <div class="backlog">
             <div class="backlog-title">Proposed backlog</div>
             <pre class="backlog-text">{proposal.rendered}</pre>
-            <div class="ratify-actions">
-              <button class="accent" onclick={seed} disabled={thinking}>Seed backlog</button>
-              <button class="ghost" onclick={() => (proposal = null)} disabled={thinking}>
-                Cancel
-              </button>
-            </div>
+            {#if proposal.scaffold_pending && !scaffolded}
+              <div class="scaffold-step">
+                <div class="scaffold-title">Scaffold the stack</div>
+                <p class="scaffold-hint">
+                  You deferred the stack to the design chat. Pick the one the conversation landed
+                  on. Tutti lays down its lint, type, test, gate, and CI setup, then seeds the
+                  backlog.
+                </p>
+                <label class="scaffold-label" for="scaffold-stack">Stack</label>
+                <select id="scaffold-stack" bind:value={scaffoldStack} disabled={thinking}>
+                  {#each DESIGN_STACKS as s (s.id)}
+                    <option value={s.id}>{s.label}</option>
+                  {/each}
+                </select>
+                {#if scaffoldReport && !scaffoldReport.pushed}
+                  <div class="scaffold-report scaffold-warn">
+                    Scaffolded {scaffoldReport.stack} ({scaffoldReport.written} file(s) written), but
+                    it was not committed or pushed:
+                    <ul>
+                      {#each scaffoldReport.warnings as w (w)}
+                        <li>{w}</li>
+                      {/each}
+                    </ul>
+                    Fix the cause and retry, or seed the backlog without publishing the scaffold.
+                  </div>
+                {:else if scaffoldReport && scaffoldReport.warnings.length > 0}
+                  <div class="scaffold-report scaffold-warn">
+                    Scaffold warnings:
+                    <ul>
+                      {#each scaffoldReport.warnings as w (w)}
+                        <li>{w}</li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+                <div class="ratify-actions">
+                  <button class="accent" onclick={scaffold} disabled={thinking}>
+                    {scaffoldReport && !scaffoldReport.pushed
+                      ? "Retry scaffold"
+                      : "Scaffold and continue"}
+                  </button>
+                  {#if scaffoldReport && !scaffoldReport.pushed}
+                    <button class="ghost" onclick={() => (scaffolded = true)} disabled={thinking}>
+                      Seed anyway
+                    </button>
+                  {/if}
+                  <button class="ghost" onclick={() => (proposal = null)} disabled={thinking}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            {:else}
+              {#if scaffoldReport}
+                <div class="scaffold-report">
+                  Scaffolded {scaffoldReport.stack} ({scaffoldReport.written} file(s) written,
+                  {scaffoldReport.skipped} skipped).
+                  {#if scaffoldReport.warnings.length > 0}
+                    <ul>
+                      {#each scaffoldReport.warnings as w (w)}
+                        <li>{w}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              {/if}
+              <div class="ratify-actions">
+                <button class="accent" onclick={seed} disabled={thinking}>Seed backlog</button>
+                <button class="ghost" onclick={() => (proposal = null)} disabled={thinking}>
+                  Cancel
+                </button>
+              </div>
+            {/if}
           </div>
         {:else if seedReport}
           <div class="seed-report">
@@ -566,6 +669,49 @@
   .seed-report {
     font-size: 13px;
     color: var(--text-dim);
+  }
+  .scaffold-step {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .scaffold-title {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .scaffold-hint {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 0 0 8px;
+  }
+  .scaffold-label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .scaffold-step select {
+    width: 100%;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+  }
+  .scaffold-report {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .scaffold-warn {
+    color: var(--danger, #ff8c6b);
+  }
+  .scaffold-report ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
   }
   .preview {
     flex: 1;

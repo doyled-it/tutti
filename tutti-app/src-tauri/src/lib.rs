@@ -41,6 +41,7 @@ pub fn run() {
             design::design_ratify,
             design::design_preview,
             design::design_propose_backlog,
+            design::design_scaffold,
             design::design_seed_backlog,
         ])
         .run(tauri::generate_context!())
