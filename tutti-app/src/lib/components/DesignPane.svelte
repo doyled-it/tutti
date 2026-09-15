@@ -17,6 +17,7 @@
     dropTrailingEmptyAgent,
     stepToUi,
     activeToStep,
+    messagesFromActive,
     type DesignMessage,
     type DesignSessionStatus,
     type DesignStep,
@@ -55,6 +56,48 @@
   let thinking = $state(false);
   let error = $state<string | null>(null);
 
+  // Bound DOM nodes for the ergonomics fixes below.
+  let transcriptEl = $state<HTMLDivElement | null>(null);
+  let composerEl = $state<HTMLTextAreaElement | null>(null);
+
+  // Sticky-bottom autoscroll, mirroring SubsessionsPane: only follow the tail when the reader is
+  // already near the bottom, so scrolling up to re-read a question is not fought on every
+  // streamed token. `stick`/`lastMovement` are plain locals (bookkeeping across effect runs),
+  // deliberately NOT $state so writing them in the effect cannot loop it.
+  let stick = true;
+  let lastMovement: string | null = null;
+
+  function onTranscriptScroll() {
+    const el = transcriptEl;
+    if (!el) return;
+    // "Near the bottom" tolerance so a reader parked at the end stays stuck through a delta.
+    stick = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }
+
+  $effect(() => {
+    const movement = status?.current ?? null;
+    // Touch what grows/changes so the effect re-runs: a new/streamed bubble, the Thinking
+    // indicator toggling, and the movement switching.
+    void messages.length;
+    void thinking;
+    const el = transcriptEl;
+    if (!el) return;
+    if (movement !== lastMovement) {
+      // New movement (or first shown): jump to the latest and re-arm sticky.
+      lastMovement = movement;
+      stick = true;
+      el.scrollTop = el.scrollHeight;
+    } else if (stick) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
+  // Return focus to the answer box whenever it becomes usable (initial question and after each
+  // send), so the user does not have to click back into it after pressing Enter.
+  $effect(() => {
+    if (questioning && !thinking) composerEl?.focus();
+  });
+
   // The delta listener runs for every turn, but only movement turns (begin/reply/revise)
   // finalize their stream into a clean question/section, so only they stream into the
   // transcript. Ratify runs no agent turn; propose streams raw decompose JSON not worth
@@ -77,6 +120,9 @@
         status = await api.designSessionStatus();
         if (status) {
           preview = await api.designPreview().catch(() => "");
+          // Repaint the movement's conversation so a remount (hot reload, reopening the
+          // section) shows the whole Q&A history instead of a blank scrollback.
+          messages = messagesFromActive(status.active);
           // Rehydrate the in-flight step after a reload, so a movement awaiting ratification
           // shows its proposed section (not a Continue button that would re-run the turn and
           // overwrite it), and one awaiting an answer shows its question.
@@ -316,11 +362,17 @@
           {/each}
         </div>
 
-        <div class="transcript">
+        <div class="transcript" bind:this={transcriptEl} onscroll={onTranscriptScroll}>
           {#each messages as m, i (i)}
-            <div class="msg {m.role} {m.kind}">
-              <div class="bubble">{m.text}</div>
-            </div>
+            <!-- The in-flight agent "text" bubble accumulates raw streamed tokens, which for a
+                 question turn is a `{"ask": "..."}` JSON object. Showing it flashes the JSON
+                 before the finalized question replaces it, so hide it and let the "Thinking..."
+                 indicator stand in until the clean question or section lands. -->
+            {#if !(m.role === "agent" && m.kind === "text")}
+              <div class="msg {m.role} {m.kind}">
+                <div class="bubble">{m.text}</div>
+              </div>
+            {/if}
           {/each}
           {#if thinking}
             <div class="msg agent"><div class="bubble thinking">Thinking...</div></div>
@@ -334,6 +386,7 @@
         {#if questioning}
           <div class="compose">
             <textarea
+              bind:this={composerEl}
               bind:value={draft}
               onkeydown={onKey}
               placeholder="Answer the question..."
@@ -613,6 +666,7 @@
   }
   .compose button {
     align-self: flex-end;
+    height: 44px;
     padding: 8px 16px;
     cursor: pointer;
   }

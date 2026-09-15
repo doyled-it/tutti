@@ -29,6 +29,14 @@ export interface DesignActive {
   movement: MovementId;
   pending_artifact: string | null;
   pending_question: string | null;
+  // The whole in-flight movement transcript, so a reloaded pane can repaint the conversation
+  // instead of showing only the pending question over a blank scrollback.
+  transcript: DesignTurn[];
+}
+
+export interface DesignTurn {
+  role: "agent" | "human";
+  text: string;
 }
 
 export interface DesignSessionStatus {
@@ -109,6 +117,25 @@ export interface DesignMessage {
   role: "user" | "agent";
   kind: DesignMessageKind;
   text: string;
+}
+
+// Rebuild the transcript bubbles from a reloaded session's in-flight movement turns, so a pane
+// remount (a hot reload, reopening the section) shows the whole conversation instead of a blank
+// scroll. Human turns become answers. Agent turns become `question` bubbles (never `text`, which
+// the template hides as the live JSON-stream placeholder), except the trailing agent turn when an
+// artifact is pending: it is the proposed section and is marked `section` so its reload styling
+// matches the live `appendRatified` path (monospace).
+export function messagesFromActive(active: DesignActive | null): DesignMessage[] {
+  if (!active) return [];
+  const lastAgentIdx =
+    active.pending_artifact !== null
+      ? active.transcript.map((t) => t.role).lastIndexOf("agent")
+      : -1;
+  return active.transcript.map((t, i) => {
+    if (t.role === "human") return { role: "user", kind: "text", text: t.text };
+    const kind: DesignMessageKind = i === lastAgentIdx ? "section" : "question";
+    return { role: "agent", kind, text: t.text };
+  });
 }
 
 // Open a fresh agent text bubble that streamed deltas will accumulate into.

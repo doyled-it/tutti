@@ -9,6 +9,7 @@ import {
   dropTrailingEmptyAgent,
   stepToUi,
   activeToStep,
+  messagesFromActive,
   type DesignMessage,
   type DesignStep,
 } from "./design";
@@ -88,6 +89,7 @@ describe("activeToStep (reload rehydration)", () => {
       movement: "constitution",
       pending_artifact: "## Constitution\nprivacy first",
       pending_question: null,
+      transcript: [],
     });
     expect(step).toEqual({ kind: "ratify", artifact_section: "## Constitution\nprivacy first" });
   });
@@ -97,6 +99,7 @@ describe("activeToStep (reload rehydration)", () => {
       movement: "frame",
       pending_artifact: null,
       pending_question: "Who is this for?",
+      transcript: [],
     });
     expect(step).toEqual({ kind: "question", question: "Who is this for?" });
   });
@@ -104,8 +107,62 @@ describe("activeToStep (reload rehydration)", () => {
   it("is null when nothing is in flight", () => {
     expect(activeToStep(null)).toBeNull();
     expect(
-      activeToStep({ movement: "frame", pending_artifact: null, pending_question: null }),
+      activeToStep({
+        movement: "frame",
+        pending_artifact: null,
+        pending_question: null,
+        transcript: [],
+      }),
     ).toBeNull();
+  });
+});
+
+describe("messagesFromActive (reload repaint)", () => {
+  it("is empty when nothing is in flight", () => {
+    expect(messagesFromActive(null)).toEqual([]);
+  });
+
+  it("repaints human turns as answers and agent turns as questions", () => {
+    const msgs = messagesFromActive({
+      movement: "constitution",
+      pending_artifact: null,
+      pending_question: "What must stay true?",
+      transcript: [
+        { role: "agent", text: "Who is this for?" },
+        { role: "human", text: "MLB fans" },
+        { role: "agent", text: "What must stay true?" },
+      ],
+    });
+    expect(msgs).toEqual([
+      { role: "agent", kind: "question", text: "Who is this for?" },
+      { role: "user", kind: "text", text: "MLB fans" },
+      { role: "agent", kind: "question", text: "What must stay true?" },
+    ]);
+  });
+
+  it("never emits a hidden agent text bubble", () => {
+    const msgs = messagesFromActive({
+      movement: "frame",
+      pending_artifact: "## Frame",
+      pending_question: null,
+      transcript: [{ role: "agent", text: "a question" }],
+    });
+    expect(msgs.some((m) => m.role === "agent" && m.kind === "text")).toBe(false);
+  });
+
+  it("marks the trailing agent turn as a section when an artifact is pending", () => {
+    const msgs = messagesFromActive({
+      movement: "frame",
+      pending_artifact: "## Frame\nthe frame",
+      pending_question: null,
+      transcript: [
+        { role: "agent", text: "a question" },
+        { role: "human", text: "an answer" },
+        { role: "agent", text: "## Frame\nthe frame" },
+      ],
+    });
+    expect(msgs[0]).toEqual({ role: "agent", kind: "question", text: "a question" });
+    expect(msgs[2]).toEqual({ role: "agent", kind: "section", text: "## Frame\nthe frame" });
   });
 });
 
