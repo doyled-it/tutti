@@ -92,6 +92,19 @@ pub struct DesignActive {
     /// The last question the agent asked, if the movement is awaiting the human's answer
     /// (only set when there is no `pending_artifact`).
     pub pending_question: Option<String>,
+    /// The whole in-flight movement transcript (agent/human turns), so a pane reloaded
+    /// mid-movement can repaint the conversation rather than showing a blank scrollback with
+    /// only the pending question. Older turns from already-ratified movements are not kept in
+    /// `session.active`, so this covers the current movement only, which is what the chat shows.
+    pub transcript: Vec<DesignTurn>,
+}
+
+/// One turn of the in-flight movement transcript, projected for the pane.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DesignTurn {
+    /// "agent" or "human", matching the frontend `DesignMessage.role`.
+    pub role: String,
+    pub text: String,
 }
 
 /// A proposed backlog plus its human-readable review text, for the confirm-before-seed UI.
@@ -255,10 +268,22 @@ fn status_of(session: &SessionState) -> DesignSessionStatus {
                     .find(|t| t.speaker == Speaker::Agent)
                     .map(|t| t.text.clone())
             };
+            let transcript = p
+                .transcript
+                .iter()
+                .map(|t| DesignTurn {
+                    role: match t.speaker {
+                        Speaker::Agent => "agent".to_string(),
+                        Speaker::Human => "human".to_string(),
+                    },
+                    text: t.text.clone(),
+                })
+                .collect();
             DesignActive {
                 movement: p.movement,
                 pending_artifact,
                 pending_question,
+                transcript,
             }
         }),
     }
@@ -722,5 +747,11 @@ mod tests {
             Some("What must stay true?")
         );
         assert!(active.pending_artifact.is_none());
+        // The whole movement transcript is exposed for the pane to repaint on a remount.
+        assert_eq!(active.transcript.len(), 2);
+        assert_eq!(active.transcript[0].role, "human");
+        assert_eq!(active.transcript[0].text, "an answer");
+        assert_eq!(active.transcript[1].role, "agent");
+        assert_eq!(active.transcript[1].text, "What must stay true?");
     }
 }
