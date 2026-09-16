@@ -13,7 +13,7 @@ export type ProjectShape = "small_cli" | "mobile" | "multi_service";
 // The result of one command turn, mirroring the Rust `DesignStep` (serde tag = "kind",
 // snake_case). `advanced` is a ratified movement with another queued; `complete` is the last.
 export type DesignStep =
-  | { kind: "question"; question: string }
+  | { kind: "question"; question: string; options: string[] }
   | { kind: "ratify"; artifact_section: string }
   | { kind: "advanced"; movement: MovementId; next: MovementId }
   | { kind: "complete"; movement: MovementId };
@@ -29,6 +29,9 @@ export interface DesignActive {
   movement: MovementId;
   pending_artifact: string | null;
   pending_question: string | null;
+  // Selectable options offered with the pending question (empty for an open question), so a
+  // reloaded pane re-renders the choices.
+  pending_options: string[];
   // The whole in-flight movement transcript, so a reloaded pane can repaint the conversation
   // instead of showing only the pending question over a blank scrollback.
   transcript: DesignTurn[];
@@ -62,7 +65,7 @@ export function activeToStep(active: DesignActive | null): DesignStep | null {
     return { kind: "ratify", artifact_section: active.pending_artifact };
   }
   if (active.pending_question !== null) {
-    return { kind: "question", question: active.pending_question };
+    return { kind: "question", question: active.pending_question, options: active.pending_options };
   }
   return null;
 }

@@ -89,19 +89,25 @@ describe("activeToStep (reload rehydration)", () => {
       movement: "constitution",
       pending_artifact: "## Constitution\nprivacy first",
       pending_question: null,
+      pending_options: [],
       transcript: [],
     });
     expect(step).toEqual({ kind: "ratify", artifact_section: "## Constitution\nprivacy first" });
   });
 
-  it("rehydrates a pending question when no artifact is proposed", () => {
+  it("rehydrates a pending question with its options when no artifact is proposed", () => {
     const step = activeToStep({
       movement: "frame",
       pending_artifact: null,
       pending_question: "Who is this for?",
+      pending_options: ["Solo devs", "Teams"],
       transcript: [],
     });
-    expect(step).toEqual({ kind: "question", question: "Who is this for?" });
+    expect(step).toEqual({
+      kind: "question",
+      question: "Who is this for?",
+      options: ["Solo devs", "Teams"],
+    });
   });
 
   it("is null when nothing is in flight", () => {
@@ -111,6 +117,7 @@ describe("activeToStep (reload rehydration)", () => {
         movement: "frame",
         pending_artifact: null,
         pending_question: null,
+        pending_options: [],
         transcript: [],
       }),
     ).toBeNull();
@@ -127,6 +134,7 @@ describe("messagesFromActive (reload repaint)", () => {
       movement: "constitution",
       pending_artifact: null,
       pending_question: "What must stay true?",
+      pending_options: [],
       transcript: [
         { role: "agent", text: "Who is this for?" },
         { role: "human", text: "MLB fans" },
@@ -145,6 +153,7 @@ describe("messagesFromActive (reload repaint)", () => {
       movement: "frame",
       pending_artifact: "## Frame",
       pending_question: null,
+      pending_options: [],
       transcript: [{ role: "agent", text: "a question" }],
     });
     expect(msgs.some((m) => m.role === "agent" && m.kind === "text")).toBe(false);
@@ -155,6 +164,7 @@ describe("messagesFromActive (reload repaint)", () => {
       movement: "frame",
       pending_artifact: "## Frame\nthe frame",
       pending_question: null,
+      pending_options: [],
       transcript: [
         { role: "agent", text: "a question" },
         { role: "human", text: "an answer" },
@@ -168,7 +178,7 @@ describe("messagesFromActive (reload repaint)", () => {
 
 describe("stepToUi", () => {
   it("maps a question step to question mode with the question text", () => {
-    const step: DesignStep = { kind: "question", question: "Who?" };
+    const step: DesignStep = { kind: "question", question: "Who?", options: [] };
     expect(stepToUi(step)).toEqual({ mode: "question", text: "Who?" });
   });
 
