@@ -140,6 +140,7 @@ export type {
   BacklogProposal,
   SeedReport,
   ScaffoldReport,
+  DesignStartOutcome,
 } from "./design";
 import type {
   ProjectShape,
@@ -149,6 +150,7 @@ import type {
   BacklogProposal,
   SeedReport,
   ScaffoldReport,
+  DesignStartOutcome,
 } from "./design";
 
 export interface GateStatus {
@@ -245,7 +247,8 @@ export const api = {
   createRepo: (forgeKind: string, login: string | null, namespace: Namespace, spec: NewRepo) =>
     invoke<RemoteRepo>("create_repo", { forgeKind, login, namespace, spec }),
   // The Design surface: one command per discrete facilitation step (the frontend prompts).
-  designStart: (shape: ProjectShape) => invoke<DesignSessionStatus>("design_start", { shape }),
+  designStart: (shape: ProjectShape, overwrite = false) =>
+    invoke<DesignStartOutcome>("design_start", { shape, overwrite }),
   designSessionStatus: () => invoke<DesignSessionStatus | null>("design_session_status"),
   designBeginMovement: () => invoke<DesignStep>("design_begin_movement"),
   designReply: (text: string) => invoke<DesignStep>("design_reply", { text }),

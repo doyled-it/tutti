@@ -373,9 +373,30 @@ pub async fn design_session_status(
 #[tauri::command]
 pub async fn design_start(
     shape: ProjectShape,
+    overwrite: bool,
     state: State<'_, AppState>,
-) -> Result<DesignSessionStatus, String> {
+) -> Result<DesignStartOutcome, String> {
     let (dir, _) = active_context(&state).await?;
+    // Never clobber an in-progress design conversation without an explicit overwrite: starting
+    // over silently discards its transcript and agent session id. Report the collision as a
+    // machine-readable outcome (not a string error) so the caller can confirm, and even then
+    // snapshot the prior session to a recovery branch first before overwriting.
+    if let Some(prior) = store::load(&dir).map_err(|e| e.to_string())? {
+        if !overwrite {
+            return Ok(DesignStartOutcome::ExistsNeedsOverwrite);
+        }
+        // Keep a backup branch of the prior session before overwriting. The GUI cannot restore
+        // branches yet (only the CLI's `--branch`/`--list-branches` can), so this is a safety
+        // net on disk, not a first-class GUI recovery flow (tracked as a follow-up).
+        let branch = recovery_branch_name();
+        if let Err(e) = store::save_branch(&dir, &branch, &prior) {
+            // A failed snapshot must not proceed to overwrite: that would be the silent data
+            // loss this guard exists to prevent.
+            return Err(format!(
+                "could not snapshot the existing session before overwriting: {e}"
+            ));
+        }
+    }
     let mut session = SessionState::new(shape);
     // Best-effort grounding: a failure to read the repo is not fatal to starting a session.
     if !detect_languages(&dir).is_empty() {
@@ -384,7 +405,32 @@ pub async fn design_start(
         }
     }
     store::save(&dir, &session).map_err(|e| e.to_string())?;
-    Ok(status_of(&session))
+    Ok(DesignStartOutcome::Started {
+        status: status_of(&session),
+    })
+}
+
+/// The outcome of `design_start`: either the fresh session's status, or a machine-readable
+/// signal that a session already exists so the caller must confirm an overwrite. This is a
+/// tagged outcome rather than a string error so the frontend branches on `kind`, not on prose.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DesignStartOutcome {
+    /// A new session was started; carry its status.
+    Started { status: DesignSessionStatus },
+    /// A session already exists and `overwrite` was not set; the caller should confirm.
+    ExistsNeedsOverwrite,
+}
+
+/// A `valid_branch_name`-safe name for the recovery snapshot taken before an overwrite:
+/// `superseded-<unix-seconds>-<subsec-nanos>`. The nanos component avoids a same-second collision
+/// (two snapshots in one wall-clock second would otherwise overwrite the same branch, losing the
+/// first). Still `valid_branch_name`-safe: digits and dashes only.
+fn recovery_branch_name() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("superseded-{}-{}", now.as_secs(), now.subsec_nanos())
 }
 
 /// Build a best-effort design page from the session's ratified artifacts. Ported from the
@@ -651,6 +697,21 @@ mod tests {
         .unwrap();
         assert!(json.contains("\"kind\":\"question\""));
         assert!(json.contains("\"question\":\"q?\""));
+    }
+
+    #[test]
+    fn recovery_branch_name_is_a_valid_store_branch_name() {
+        let name = recovery_branch_name();
+        // Must satisfy store::valid_branch_name (non-empty, <=100, ASCII alnum/-/_), so the
+        // pre-overwrite snapshot in design_start cannot fail on a malformed name.
+        assert!(name.starts_with("superseded-"));
+        assert!(!name.is_empty() && name.len() <= 100);
+        assert!(name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        // The name must be accepted by the store's branch-path validation, so the pre-overwrite
+        // snapshot cannot fail on a malformed name.
+        assert!(store::branch_path(Path::new("/tmp/repo"), &name).is_ok());
     }
 
     #[test]
