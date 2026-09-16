@@ -49,6 +49,11 @@ export interface DesignSessionStatus {
   active: DesignActive | null;
 }
 
+// The outcome of design_start: a fresh session's status, or a machine-readable signal that a
+// session already exists so the caller must confirm an overwrite (tagged by `kind`, not prose).
+export type DesignStartOutcome =
+  { kind: "started"; status: DesignSessionStatus } | { kind: "exists_needs_overwrite" };
+
 // The DesignStep to rehydrate from a reloaded status's `active` (a pending artifact awaits
 // ratification; otherwise a pending question awaits an answer). Null when nothing is in flight.
 export function activeToStep(active: DesignActive | null): DesignStep | null {

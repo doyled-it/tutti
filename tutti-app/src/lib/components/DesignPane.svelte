@@ -55,6 +55,10 @@
   let reviseText = $state("");
   let thinking = $state(false);
   let error = $state<string | null>(null);
+  // A shape awaiting an overwrite confirmation: set when design_start reports a session already
+  // exists, cleared on cancel or after the confirmed start. Guards against silently clobbering an
+  // in-progress design conversation (see the backend guard in design_start).
+  let startOverShape = $state<ProjectShape | null>(null);
 
   // Bound DOM nodes for the ergonomics fixes below.
   let transcriptEl = $state<HTMLDivElement | null>(null);
@@ -182,7 +186,35 @@
   async function start(shape: ProjectShape) {
     error = null;
     try {
-      status = await api.designStart(shape);
+      const outcome = await api.designStart(shape);
+      // A session already exists: show an overwrite confirm rather than starting over silently.
+      // The signal is the outcome's `kind`, not a matched error string, so a reworded backend
+      // message cannot break the confirm path.
+      if (outcome.kind === "exists_needs_overwrite") {
+        startOverShape = shape;
+        return;
+      }
+      // No existing session, so `messages` is already empty (messagesFromActive only runs when a
+      // status exists); no reset needed here, unlike the overwrite path.
+      status = outcome.status;
+      await begin();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function startConfirmed() {
+    const shape = startOverShape;
+    startOverShape = null;
+    if (!shape) return;
+    error = null;
+    try {
+      // overwrite: the backend snapshots the prior session to a recovery branch first.
+      const outcome = await api.designStart(shape, true);
+      if (outcome.kind !== "started") return; // unreachable with overwrite=true, but total.
+      // A prior session may have painted the transcript; clear it for the fresh conversation.
+      messages = [];
+      status = outcome.status;
       await begin();
     } catch (e) {
       error = String(e);
@@ -342,11 +374,32 @@
     <div class="picker">
       <h2>Design a project</h2>
       <p>Pick the shape of what you are building. The chain adapts its movements to it.</p>
-      <div class="shapes">
-        {#each SHAPES as s (s.id)}
-          <button class="shape" onclick={() => start(s.id)} disabled={thinking}>{s.label}</button>
-        {/each}
-      </div>
+      {#if startOverShape}
+        <div class="start-over-confirm">
+          <p>
+            This project already has a design conversation. Starting over replaces it with a fresh
+            one. A backup of the current session is kept on disk (under <code>.tutti/design</code>).
+            Continue?
+          </p>
+          <div class="start-over-actions">
+            <button class="accent" onclick={startConfirmed} disabled={thinking}>
+              Start over
+            </button>
+            <button class="ghost" onclick={() => (startOverShape = null)} disabled={thinking}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      {:else}
+        <div class="shapes">
+          {#each SHAPES as s (s.id)}
+            <button class="shape" onclick={() => start(s.id)} disabled={thinking}>{s.label}</button>
+          {/each}
+        </div>
+      {/if}
+      {#if error}
+        <div class="chat-error">{error}</div>
+      {/if}
     </div>
   {:else}
     <div class="body">
@@ -565,6 +618,32 @@
   }
   .shape:hover {
     background: var(--hover);
+  }
+  .start-over-confirm {
+    max-width: 420px;
+    text-align: center;
+  }
+  .start-over-confirm code {
+    font-size: 12px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg-panel);
+  }
+  .start-over-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 10px;
+  }
+  .start-over-actions button {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
   }
   .body {
     flex: 1;
