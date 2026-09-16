@@ -18,9 +18,10 @@ use tutti_app_core::{detect_languages, RepoGroundingReader};
 use tutti_backend_claude::session::ClaudeSession;
 use tutti_core::message::AgentEvent;
 use tutti_design::{
-    advance, backlog_prompt, definition, parse_backlog, render_page, render_plan, seed, store,
-    BacklogPlan, DesignError, DesignPage, FacilitationInput, FacilitationState, Facilitator,
-    MovementId, ProjectShape, RawTurn, RepoGrounder, Section, SessionState, Skill,
+    advance, backlog_prompt, definition, parse_backlog, render_page, render_plan,
+    render_section_body, seed, store, BacklogPlan, DesignError, DesignPage, FacilitationInput,
+    FacilitationState, Facilitator, MovementId, ProjectShape, RawTurn, RepoGrounder, Section,
+    SessionState, Skill,
 };
 
 /// What to present after one `advance` (or after starting the next movement). A serializable
@@ -433,9 +434,11 @@ fn recovery_branch_name() -> String {
     format!("superseded-{}-{}", now.as_secs(), now.subsec_nanos())
 }
 
-/// Build a best-effort design page from the session's ratified artifacts. Ported from the
-/// CLI's `design_page_from_session`: each ratified section's markdown is escaped into a
-/// `<pre>` block (the rich diagram-aware render is a separate concern), so nothing is lost.
+/// Build a best-effort design page from the session's ratified artifacts. Each ratified
+/// section's markdown is rendered to HTML by `render_section_body` (which also drops the
+/// artifact's own leading heading, since the page renders the movement heading itself), so the
+/// preview shows formatted prose rather than raw markdown. The rich diagram-aware render is a
+/// separate concern owned by E3.
 fn design_page_from_session(session: &SessionState, title: &str) -> DesignPage {
     let sections = session
         .artifacts
@@ -446,7 +449,7 @@ fn design_page_from_session(session: &SessionState, title: &str) -> DesignPage {
             Section {
                 eyebrow: format!("MOVEMENT {} - {}", i + 1, def.title.to_uppercase()),
                 heading: def.title.to_string(),
-                body_html: format!("<pre>{}</pre>", escape_html(&artifact.section)),
+                body_html: render_section_body(&artifact.section),
                 diagrams: Vec::new(),
             }
         })
@@ -456,13 +459,6 @@ fn design_page_from_session(session: &SessionState, title: &str) -> DesignPage {
         subtitle: "A Tutti design".to_string(),
         sections,
     }
-}
-
-/// Minimal HTML escaping for inlining plain text as a `<pre>` body.
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// The repo/design-page title: the directory's file name, falling back to "app".
@@ -719,7 +715,7 @@ mod tests {
         let mut session = SessionState::new(ProjectShape::SmallCli);
         session.artifacts.push(MovementArtifact {
             movement: MovementId::Constitution,
-            section: "principles: privacy & <safety>".into(),
+            section: "## Constitution\n\n**Privacy** is first.".into(),
         });
         session.artifacts.push(MovementArtifact {
             movement: MovementId::Frame,
@@ -728,9 +724,14 @@ mod tests {
         let page = design_page_from_session(&session, "demo");
         assert_eq!(page.title, "demo");
         assert_eq!(page.sections.len(), 2);
-        // The first section carries the Constitution artifact, HTML-escaped inside a <pre>.
         assert!(page.sections[0].eyebrow.contains("CONSTITUTION"));
-        assert!(page.sections[0].body_html.contains("&lt;safety&gt;"));
+        // The artifact markdown is rendered to HTML (not a raw <pre> block), and its own leading
+        // "## Constitution" heading is dropped so the page's <h2> is not duplicated.
+        assert!(page.sections[0]
+            .body_html
+            .contains("<strong>Privacy</strong>"));
+        assert!(!page.sections[0].body_html.contains("<pre>"));
+        assert!(!page.sections[0].body_html.contains("## Constitution"));
     }
 
     #[test]
