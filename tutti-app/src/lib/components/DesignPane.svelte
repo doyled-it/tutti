@@ -809,6 +809,30 @@
   .msg.agent.section .bubble.md {
     max-width: 100%;
     width: 100%;
+    /* A wide markdown table scrolls horizontally instead of squishing its columns. */
+    overflow-x: auto;
+  }
+  .bubble.md :global(table) {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 12px;
+  }
+  .bubble.md :global(th),
+  .bubble.md :global(td) {
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .bubble.md :global(th) {
+    background: var(--bg);
+    font-weight: 600;
+  }
+  .bubble.md :global(blockquote) {
+    margin: 6px 0;
+    padding-left: 10px;
+    border-left: 2px solid var(--border);
+    color: var(--text-dim);
   }
   .bubble.md :global(h1),
   .bubble.md :global(h2),
