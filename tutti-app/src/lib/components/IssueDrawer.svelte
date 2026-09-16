@@ -3,9 +3,7 @@
      the roadmap rail's place while an issue is selected. Closing clears the selection. -->
 <script lang="ts">
   import type { IssueDetail, Status } from "$lib/ipc";
-  import { marked } from "marked";
-  import DOMPurify from "dompurify";
-  import { browser } from "$app/environment";
+  import { renderMarkdown } from "$lib/markdown";
   import { openUrl } from "@tauri-apps/plugin-opener";
 
   let {
@@ -65,15 +63,6 @@
     const s = name.indexOf(":");
     if (s > 0 && s + 1 < name.length) return { scope: name.slice(0, s), value: name.slice(s + 1) };
     return null;
-  }
-
-  // Render the issue body as markdown, sanitized before it ever touches {@html}. DOMPurify
-  // needs a DOM, which does not exist during SvelteKit's static build/prerender, so skip
-  // sanitizing (and rendering) outside the browser rather than risk unsanitized output.
-  function renderMarkdown(md: string): string {
-    if (!md) return "";
-    const raw = marked.parse(md, { async: false, gfm: true, breaks: true }) as string;
-    return browser ? DOMPurify.sanitize(raw) : "";
   }
 
   // Links inside rendered markdown must open in the user's external browser, not navigate
