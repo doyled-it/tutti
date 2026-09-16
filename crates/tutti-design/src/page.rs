@@ -72,6 +72,42 @@ pub fn render_page(page: &DesignPage) -> String {
     out
 }
 
+/// Render a movement's ratified artifact (GitHub-flavored markdown) into the section `body_html`.
+/// A leading ATX heading is dropped first: the page already renders the movement heading as an
+/// `<h2>`, so the artifact's own `# Title` / `## Title` would duplicate it. The output is HTML,
+/// inlined verbatim by `render_page`, so it must only ever reach a trusted or sandboxed surface
+/// (the app's design preview is a `sandbox=""` iframe); pulldown-cmark escapes text content but
+/// passes raw HTML in the markdown through unchanged.
+pub fn render_section_body(markdown: &str) -> String {
+    use pulldown_cmark::{html, Options, Parser};
+    let body = strip_leading_heading(markdown);
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TABLES);
+    let parser = Parser::new_ext(body, opts);
+    let mut out = String::new();
+    html::push_html(&mut out, parser);
+    out
+}
+
+/// Drop a single leading ATX heading line (`#`..`######` followed by a space) and any blank
+/// lines after it, so a section artifact that repeats its own title does not double the heading
+/// the page renders. Leaves the text unchanged when it does not start with a heading.
+fn strip_leading_heading(markdown: &str) -> &str {
+    let trimmed = markdown.trim_start_matches(['\n', '\r']);
+    let first_line_end = trimmed.find('\n').unwrap_or(trimmed.len());
+    let first_line = trimmed[..first_line_end].trim_end();
+    let hashes = first_line.chars().take_while(|&c| c == '#').count();
+    let is_atx_heading = (1..=6).contains(&hashes)
+        && first_line[hashes..].starts_with(' ')
+        && !first_line[hashes..].trim().is_empty();
+    if is_atx_heading {
+        trimmed[first_line_end..].trim_start_matches(['\n', '\r'])
+    } else {
+        trimmed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +188,54 @@ mod tests {
     fn render_page_is_deterministic() {
         let page = sample_page();
         assert_eq!(render_page(&page), render_page(&page));
+    }
+
+    #[test]
+    fn render_section_body_renders_markdown_to_html() {
+        let md = "**Principles**\n\n- One\n- Two";
+        let html = render_section_body(md);
+        assert!(html.contains("<strong>Principles</strong>"));
+        assert!(html.contains("<ul>"));
+        assert!(html.contains("<li>One</li>"));
+        // Raw markdown markers must not survive into the output.
+        assert!(!html.contains("**Principles**"));
+        assert!(!html.contains("- One"));
+    }
+
+    #[test]
+    fn render_section_body_drops_a_duplicate_leading_heading() {
+        // The page renders the movement heading itself, so the artifact's own leading heading is
+        // stripped to avoid showing "Constitution" twice.
+        let md = "## Constitution\n\nMLB Races is a web app.";
+        let html = render_section_body(md);
+        assert!(!html.contains("Constitution"));
+        assert!(html.contains("MLB Races is a web app."));
+    }
+
+    #[test]
+    fn render_section_body_keeps_body_when_it_has_no_leading_heading() {
+        let html = render_section_body("Just a paragraph.");
+        assert!(html.contains("<p>Just a paragraph.</p>"));
+    }
+
+    #[test]
+    fn strip_leading_heading_ignores_a_hashless_line() {
+        // A `#` not followed by a space (e.g. a "#1 seed") is not an ATX heading.
+        assert_eq!(strip_leading_heading("#1 seed race"), "#1 seed race");
+    }
+
+    #[test]
+    fn strip_leading_heading_handles_crlf_and_bounds() {
+        // CRLF after the heading and before the body is consumed.
+        assert_eq!(strip_leading_heading("## Title\r\n\r\nBody"), "Body");
+        // Six hashes is the max ATX level; seven is not a heading.
+        assert_eq!(strip_leading_heading("###### H\nX"), "X");
+        assert_eq!(
+            strip_leading_heading("####### too many\nX"),
+            "####### too many\nX"
+        );
+        // A heading with no body leaves an empty remainder rather than panicking.
+        assert_eq!(strip_leading_heading("## Only a heading"), "");
     }
 
     #[test]

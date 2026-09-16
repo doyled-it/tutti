@@ -20,9 +20,10 @@ use tutti_backend_claude::session::ClaudeSession;
 use tutti_core::config::{Config, ForgeKind};
 use tutti_core::message::AgentEvent;
 use tutti_design::{
-    advance, backlog_prompt, definition, parse_backlog, render_page, render_plan, seed, store,
-    DesignError, DesignPage, FacilitationInput, FacilitationState, Facilitator, MovementId,
-    ProjectShape, RawTurn, RepoGrounder, Section, SessionState, Skill,
+    advance, backlog_prompt, definition, parse_backlog, render_page, render_plan,
+    render_section_body, seed, store, DesignError, DesignPage, FacilitationInput,
+    FacilitationState, Facilitator, MovementId, ProjectShape, RawTurn, RepoGrounder, Section,
+    SessionState, Skill,
 };
 
 /// The real `Facilitator`: one facilitation turn is one `ClaudeSession::turn` in `cwd`,
@@ -217,9 +218,10 @@ fn ask_stack(prompter: &mut impl Prompter) -> Result<StackProfile, String> {
     }
 }
 
-/// Build a best-effort design page from the session's ratified artifacts. This is E7's thin
-/// handoff render, not E3's rich page: each ratified section's markdown is escaped into a
-/// `<pre>` block so nothing is lost, and the real diagram-aware render remains E3's to own.
+/// Build a best-effort design page from the session's ratified artifacts. This is E7's handoff
+/// render, not E3's rich diagrammed page: each ratified section's markdown is rendered to HTML by
+/// `render_section_body` (which also drops the artifact's own leading heading, since the page
+/// renders the movement heading itself). The diagram-aware render remains E3's to own.
 fn design_page_from_session(session: &SessionState, title: &str) -> DesignPage {
     let sections = session
         .artifacts
@@ -230,7 +232,7 @@ fn design_page_from_session(session: &SessionState, title: &str) -> DesignPage {
             Section {
                 eyebrow: format!("MOVEMENT {} - {}", i + 1, def.title.to_uppercase()),
                 heading: def.title.to_string(),
-                body_html: format!("<pre>{}</pre>", escape_html(&artifact.section)),
+                body_html: render_section_body(&artifact.section),
                 diagrams: Vec::new(),
             }
         })
@@ -240,13 +242,6 @@ fn design_page_from_session(session: &SessionState, title: &str) -> DesignPage {
         subtitle: "A Tutti design".to_string(),
         sections,
     }
-}
-
-/// Minimal HTML escaping for inlining plain text as a `<pre>` body.
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// The repo name for scaffold/context and the design-page title: the directory's file name,

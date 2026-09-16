@@ -49,7 +49,7 @@ pub use lint::{lint, Violation};
 pub use movement::{
     definition, depth_for, movements_for, skill_dir_name, Depth, Movement, MovementId, RAILS,
 };
-pub use page::{render_page, DesignPage, Section};
+pub use page::{render_page, render_section_body, DesignPage, Section};
 pub use session::SessionState;
 pub use shape::ProjectShape;
 pub use skill::{load as load_skill, Frontmatter, Skill};
