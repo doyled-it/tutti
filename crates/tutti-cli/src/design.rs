@@ -120,9 +120,21 @@ pub async fn drive_movement(
         }
         let state = advance(fac, skill, movement, session, repo_root, input).await?;
         input = match state {
-            FacilitationState::AwaitingHuman { question } => {
+            FacilitationState::AwaitingHuman { question, options } => {
+                // The CLI prompter is free-text, so show any suggested options inline; the human
+                // can type one of them or their own answer.
+                let prompt = if options.is_empty() {
+                    question
+                } else {
+                    let choices = options
+                        .iter()
+                        .map(|o| format!("  - {o}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!("{question}\nOptions (or type your own):\n{choices}")
+                };
                 let answer = prompter
-                    .ask(&question)
+                    .ask(&prompt)
                     .map_err(|e| DesignError::Facilitation(format!("reading input: {e}")))?;
                 FacilitationInput::Reply(answer)
             }

@@ -274,19 +274,22 @@
     }
   }
 
-  async function reply() {
-    const text = draft.trim();
-    if (!text || thinking) return;
+  // Send an explicit answer (a picked option, or the typed draft). Shared by the Send button,
+  // Enter in the composer, an option click, and arrow+Enter option selection.
+  async function sendAnswer(text: string) {
+    const answer = text.trim();
+    if (!answer || thinking) return;
     error = null;
-    messages = appendAnswer(messages, text);
+    messages = appendAnswer(messages, answer);
     draft = "";
+    optionIndex = 0;
     step = null;
     thinking = true;
     streaming = true;
     designBusy.set(true);
     messages = startAgent(messages);
     try {
-      const st = await api.designReply(text);
+      const st = await api.designReply(answer);
       await handleStep(st);
     } catch (e) {
       messages = dropTrailingEmptyAgent(messages);
@@ -296,6 +299,10 @@
       thinking = false;
       designBusy.set(false);
     }
+  }
+
+  function reply() {
+    void sendAnswer(draft);
   }
 
   async function ratify() {
@@ -393,6 +400,26 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    // With options present and an empty draft, Up/Down move the highlight and Enter picks the
+    // highlighted option. Once the user types, Enter sends their own text instead.
+    if (options.length > 0 && draft.trim() === "") {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        optionIndex = (optionIndex + 1) % options.length;
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        optionIndex = (optionIndex - 1 + options.length) % options.length;
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        // Guard against a stale index if options ever shrink without a reset.
+        void sendAnswer(options[optionIndex] ?? options[0] ?? "");
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       reply();
@@ -401,6 +428,9 @@
 
   let ratifying = $derived(step?.kind === "ratify");
   let questioning = $derived(step?.kind === "question");
+  // The options offered with the current question (empty for an open question / non-question).
+  let options = $derived(step?.kind === "question" ? step.options : []);
+  let optionIndex = $state(0);
 </script>
 
 <div class="pane">
@@ -477,13 +507,31 @@
         {/if}
 
         {#if questioning}
+          {#if options.length > 0}
+            <!-- Selectable suggested answers. Click one to send it; or use Up/Down to highlight
+                 and Enter to pick (handled in onKey). Typing in the box sends a custom answer.
+                 Keyed by index (options are ephemeral and a model may repeat a string). -->
+            <div class="options">
+              {#each options as opt, i (i)}
+                <button
+                  type="button"
+                  class="option"
+                  class:highlighted={i === optionIndex && draft.trim() === ""}
+                  onclick={() => sendAnswer(opt)}
+                  disabled={thinking}>{opt}</button
+                >
+              {/each}
+            </div>
+          {/if}
           <div class="compose">
             <textarea
               bind:this={composerEl}
               bind:value={draft}
               onkeydown={onKey}
               use:autogrow={{ value: draft }}
-              placeholder="Answer the question..."
+              placeholder={options.length > 0
+                ? "Pick an option above, or type your own answer..."
+                : "Answer the question..."}
               disabled={thinking}></textarea>
             <button onclick={reply} disabled={thinking || !draft.trim()}>Send</button>
           </div>
@@ -808,6 +856,31 @@
     padding: 6px 14px;
     background: rgba(239, 68, 68, 0.12);
     color: #ef4444;
+  }
+  .options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 16px 0;
+  }
+  .option {
+    text-align: left;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+  }
+  .option.highlighted {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+  }
+  .option:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .compose {
     display: flex;

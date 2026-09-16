@@ -36,6 +36,11 @@ pub struct MovementProgress {
     /// The artifact section the agent has proposed (a `complete` reply), awaiting
     /// ratification. None while still asking questions.
     pub pending_artifact: Option<String>,
+    /// The selectable options the agent offered with its last question (empty for an open
+    /// question or once an artifact is pending). Persisted so a reloaded pane can re-render the
+    /// choices, not just the question text.
+    #[serde(default)]
+    pub pending_options: Vec<String>,
 }
 
 /// A ratified movement's captured artifact section (fed to the page renderer later).
@@ -218,6 +223,7 @@ mod tests {
                 text: "q?".into(),
             }],
             pending_artifact: None,
+            pending_options: vec!["A".into(), "B".into()],
         });
         s.artifacts.push(MovementArtifact {
             movement: MovementId::Constitution,

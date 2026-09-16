@@ -32,8 +32,12 @@ use tutti_design::{
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DesignStep {
-    /// The agent asked a question; collect a reply.
-    Question { question: String },
+    /// The agent asked a question; collect a reply. `options` are short selectable suggested
+    /// answers (empty for an open question); the human may pick one or type their own.
+    Question {
+        question: String,
+        options: Vec<String>,
+    },
     /// The agent proposed an artifact section; collect ratify or revise.
     Ratify { artifact_section: String },
     /// A movement was ratified and another one follows; begin it next.
@@ -49,7 +53,9 @@ impl DesignStep {
     /// Map a facilitation state onto the wire DTO. Pure; unit-tested below.
     fn from_state(state: FacilitationState) -> Self {
         match state {
-            FacilitationState::AwaitingHuman { question } => DesignStep::Question { question },
+            FacilitationState::AwaitingHuman { question, options } => {
+                DesignStep::Question { question, options }
+            }
             FacilitationState::AwaitingRatification { artifact_section } => {
                 DesignStep::Ratify { artifact_section }
             }
@@ -93,6 +99,9 @@ pub struct DesignActive {
     /// The last question the agent asked, if the movement is awaiting the human's answer
     /// (only set when there is no `pending_artifact`).
     pub pending_question: Option<String>,
+    /// The selectable options offered with the pending question (empty for an open question or
+    /// once an artifact is pending), so a reloaded pane re-renders the choices.
+    pub pending_options: Vec<String>,
     /// The whole in-flight movement transcript (agent/human turns), so a pane reloaded
     /// mid-movement can repaint the conversation rather than showing a blank scrollback with
     /// only the pending question. Older turns from already-ratified movements are not kept in
@@ -280,10 +289,18 @@ fn status_of(session: &SessionState) -> DesignSessionStatus {
                     text: t.text.clone(),
                 })
                 .collect();
+            // Options belong to the pending question only; once an artifact is proposed the
+            // movement awaits ratification, so no options are offered.
+            let pending_options = if pending_artifact.is_some() {
+                Vec::new()
+            } else {
+                p.pending_options.clone()
+            };
             DesignActive {
                 movement: p.movement,
                 pending_artifact,
                 pending_question,
+                pending_options,
                 transcript,
             }
         }),
@@ -634,11 +651,13 @@ mod tests {
     fn awaiting_human_maps_to_a_question_step() {
         let st = DesignStep::from_state(FacilitationState::AwaitingHuman {
             question: "Who is this for?".into(),
+            options: vec!["Solo devs".into(), "Teams".into()],
         });
         assert_eq!(
             st,
             DesignStep::Question {
-                question: "Who is this for?".into()
+                question: "Who is this for?".into(),
+                options: vec!["Solo devs".into(), "Teams".into()],
             }
         );
     }
@@ -689,10 +708,12 @@ mod tests {
     fn design_step_serializes_with_a_snake_case_kind_tag() {
         let json = serde_json::to_string(&DesignStep::Question {
             question: "q?".into(),
+            options: vec!["a".into()],
         })
         .unwrap();
         assert!(json.contains("\"kind\":\"question\""));
         assert!(json.contains("\"question\":\"q?\""));
+        assert!(json.contains("\"options\":[\"a\"]"));
     }
 
     #[test]
@@ -768,6 +789,7 @@ mod tests {
                 text: "## Constitution\nprivacy first".into(),
             }],
             pending_artifact: Some("## Constitution\nprivacy first".into()),
+            pending_options: vec![],
         });
         let active = status_of(&session)
             .active
@@ -800,6 +822,7 @@ mod tests {
                 },
             ],
             pending_artifact: None,
+            pending_options: vec!["Privacy".into(), "Speed".into()],
         });
         let active = status_of(&session)
             .active
@@ -809,6 +832,8 @@ mod tests {
             Some("What must stay true?")
         );
         assert!(active.pending_artifact.is_none());
+        // The pending options are exposed for the pane to render selectable choices on reload.
+        assert_eq!(active.pending_options, vec!["Privacy", "Speed"]);
         // The whole movement transcript is exposed for the pane to repaint on a remount.
         assert_eq!(active.transcript.len(), 2);
         assert_eq!(active.transcript[0].role, "human");

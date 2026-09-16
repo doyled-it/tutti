@@ -32,8 +32,13 @@ pub trait Facilitator {
 /// The agent's structured reply for one turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MovementReply {
-    /// The agent needs more from the human before it can cover the movement.
-    Ask { question: String },
+    /// The agent needs more from the human before it can cover the movement. `options` are
+    /// short, selectable suggested answers (empty for an open question); the human may pick one
+    /// or type their own.
+    Ask {
+        question: String,
+        options: Vec<String>,
+    },
     /// The agent judges the movement covered and proposes its artifact section.
     Complete {
         artifact_section: String,
@@ -51,6 +56,10 @@ struct CompleteBody {
 #[derive(Deserialize)]
 struct ReplyWire {
     ask: Option<String>,
+    // Optional so both an absent key and an explicit `null` (which a model may emit instead of
+    // omitting) deserialize to "no options" rather than failing the whole reply.
+    #[serde(default)]
+    options: Option<Vec<String>>,
     complete: Option<CompleteBody>,
 }
 
@@ -82,7 +91,17 @@ fn interpret(wire: ReplyWire) -> Result<MovementReply> {
             if question.trim().is_empty() {
                 return Err(DesignError::Facilitation("`ask` was empty".into()));
             }
-            Ok(MovementReply::Ask { question })
+            // Drop blank option strings so a stray "" never renders as an empty button, and
+            // dedupe (preserving order): the UI keys options by value, so a repeated string
+            // would otherwise throw a duplicate-key error at render.
+            let mut options: Vec<String> = Vec::new();
+            for o in wire.options.unwrap_or_default() {
+                let o = o.trim().to_string();
+                if !o.is_empty() && !options.contains(&o) {
+                    options.push(o);
+                }
+            }
+            Ok(MovementReply::Ask { question, options })
         }
         (None, Some(body)) => {
             if body.artifact_section.trim().is_empty() {
@@ -179,8 +198,12 @@ pub enum FacilitationInput {
 /// What to present to the human after one `advance`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FacilitationState {
-    /// The agent asked a question; show it and collect a `Reply`.
-    AwaitingHuman { question: String },
+    /// The agent asked a question; show it and collect a `Reply`. `options` are short suggested
+    /// answers to render as selectable choices (empty for an open question).
+    AwaitingHuman {
+        question: String,
+        options: Vec<String>,
+    },
     /// The agent proposed an artifact section; show it and collect `Accept`/`Revise`.
     AwaitingRatification { artifact_section: String },
     /// The movement was ratified; `next` is the following movement, if any.
@@ -246,6 +269,7 @@ fn build_turn_prompt(
     human_input: &str,
     grounding: Option<&RepoGrounding>,
     depth: Depth,
+    offer_options: bool,
 ) -> String {
     let def = definition(movement);
     // Light runs briefly: show the load-bearing first half of the checklist (the points are
@@ -275,15 +299,43 @@ fn build_turn_prompt(
     let grounding_block = grounding
         .map(|g| grounding_block(movement, g))
         .unwrap_or_default();
+    // Style: get to the point. Terse questions, no restating the human's answer, and only ask
+    // when the answer genuinely changes the design, else propose the section.
+    let style = "Style: keep every message to at most one or two sentences. Do not restate or \
+         summarize the human's answer, and do not explain your reasoning at length. Ask a \
+         question ONLY when the answer would genuinely change the design; if you already have \
+         enough to cover the points, reply with `complete` instead of asking more. Prefer \
+         finishing the movement over asking another question, but only `complete` with the full \
+         movement section written out as markdown (never an empty or placeholder section).";
+    // Options contract: once the core idea is captured, every question carries 2-4 short,
+    // concrete, mutually distinct suggested answers. They are suggestions, not exhaustive: the
+    // human can always type their own. Before that, ask open questions with no options.
+    // The options guidance and the concrete `ask` example both flip on `offer_options`, so an
+    // open question is never shown a populated-options example that would nudge it to add them.
+    let (options_line, ask_example) = if offer_options {
+        (
+            "For this question, include an `options` array of 2 to 4 short, concrete, distinct \
+             suggested answers (a few words each, not full sentences). They are suggestions; the \
+             human may still type their own, so do not add an \"other\" option.",
+            "{\"ask\": \"<your next question>\", \"options\": [\"<choice>\", \"<choice>\"]}",
+        )
+    } else {
+        (
+            "Ask an open question (with no `options`) to draw out the core idea in the human's \
+             own words.",
+            "{\"ask\": \"<your next question>\"}",
+        )
+    };
     format!(
         "{skill_body}\n\n\
          You are facilitating the \"{title}\" movement. Guiding question: {question}\n\n\
          {cover_line}\n{checklist}\
          {grounding_block}\n\n\
-         Ask ONE question at a time. Reply with a single JSON object and nothing else: \
-         either {{\"ask\": \"<your next question>\"}} while you still need input, or \
-         {{\"complete\": {{\"artifact_section\": \"<the movement's section as markdown>\", \
-         \"diagrams\": []}}}} once every point is covered.\n\n\
+         {style}\n\n\
+         Ask ONE question at a time. {options_line}\n\n\
+         Reply with a single JSON object and nothing else: either {ask_example} while you still \
+         need input, or {{\"complete\": {{\"artifact_section\": \"<the movement's section as \
+         markdown>\", \"diagrams\": []}}}} once every point is covered.\n\n\
          Human: {human_input}",
         skill_body = skill.body,
         title = def.title,
@@ -352,6 +404,23 @@ pub async fn advance(
                 .as_ref()
                 .and_then(|p| p.agent_session_id.clone())
                 .filter(|s| !s.is_empty());
+            // Offer selectable options once the core idea is captured: after the first two
+            // agent turns of the first movement. The opening two questions stay open
+            // (`agent_turns >= 2`); every movement after the first offers options from its first
+            // question (`!ratified.is_empty()`), since the idea is already established. The count
+            // is per active movement (the transcript is per-movement), which is exactly the first
+            // movement here; movements 2+ are covered by the ratified check regardless.
+            let agent_turns = session
+                .active
+                .as_ref()
+                .map(|p| {
+                    p.transcript
+                        .iter()
+                        .filter(|t| t.speaker == Speaker::Agent)
+                        .count()
+                })
+                .unwrap_or(0);
+            let offer_options = !session.ratified.is_empty() || agent_turns >= 2;
             // Run the turn BEFORE mutating any state, so a backend error or an unparseable
             // reply leaves `session` untouched (no half-written transcript, no desynced
             // resume id) and a retry with the same session is clean.
@@ -362,6 +431,7 @@ pub async fn advance(
                 &human_input,
                 session.grounding.as_ref(),
                 depth,
+                offer_options,
             );
             let raw = fac.turn(&prompt, resume.as_deref()).await?;
             let reply = parse_reply(&raw.output)?;
@@ -371,6 +441,7 @@ pub async fn advance(
                 agent_session_id: None,
                 transcript: vec![],
                 pending_artifact: None,
+                pending_options: Vec::new(),
             });
             progress.agent_session_id = Some(raw.session_id);
             if !human_input.is_empty() {
@@ -380,14 +451,15 @@ pub async fn advance(
                 });
             }
             match reply {
-                MovementReply::Ask { question } => {
+                MovementReply::Ask { question, options } => {
                     progress.transcript.push(Turn {
                         speaker: Speaker::Agent,
                         text: question.clone(),
                     });
                     progress.pending_artifact = None;
+                    progress.pending_options = options.clone();
                     store::save(repo_root, session)?;
-                    Ok(FacilitationState::AwaitingHuman { question })
+                    Ok(FacilitationState::AwaitingHuman { question, options })
                 }
                 MovementReply::Complete {
                     artifact_section,
@@ -398,6 +470,7 @@ pub async fn advance(
                         text: artifact_section.clone(),
                     });
                     progress.pending_artifact = Some(artifact_section.clone());
+                    progress.pending_options = Vec::new();
                     store::save(repo_root, session)?;
                     Ok(FacilitationState::AwaitingRatification { artifact_section })
                 }
@@ -434,6 +507,7 @@ mod tests {
             "",
             None,
             Depth::Full,
+            false,
         );
         let light = build_turn_prompt(
             &constitution_skill(),
@@ -441,6 +515,7 @@ mod tests {
             "",
             None,
             Depth::Light,
+            false,
         );
         assert!(
             light.to_lowercase().contains("brief") || light.to_lowercase().contains("light"),
@@ -466,6 +541,7 @@ mod tests {
             "",
             Some(&sample_grounding()),
             Depth::Full,
+            false,
         );
         assert!(
             p.contains("small_cli") || p.contains("SmallCli") || p.contains("shape"),
@@ -485,6 +561,7 @@ mod tests {
             "",
             Some(&sample_grounding()),
             Depth::Full,
+            false,
         );
         assert!(
             p.contains("Session") && p.contains("Movement"),
@@ -500,6 +577,7 @@ mod tests {
             "",
             Some(&sample_grounding()),
             Depth::Full,
+            false,
         );
         assert!(
             p.contains("transport is iroh"),
@@ -521,6 +599,7 @@ mod tests {
             "",
             None,
             Depth::Full,
+            false,
         );
         assert!(!with_none.contains("the code suggests these entities"));
         assert!(!with_none.contains("Grounding:"));
@@ -532,6 +611,7 @@ mod tests {
             "",
             Some(&sample_grounding()),
             Depth::Full,
+            false,
         );
         assert!(with_some.contains("the code suggests these entities"));
     }
@@ -542,7 +622,8 @@ mod tests {
         assert_eq!(
             r,
             MovementReply::Ask {
-                question: "Who is this for?".into()
+                question: "Who is this for?".into(),
+                options: vec![],
             }
         );
     }
@@ -566,6 +647,67 @@ mod tests {
     }
 
     #[test]
+    fn parses_an_ask_reply_with_options() {
+        let r = parse_reply(r#"{"ask": "Which stack?", "options": ["Rust", "Go", "  "]}"#).unwrap();
+        assert_eq!(
+            r,
+            MovementReply::Ask {
+                question: "Which stack?".into(),
+                // The blank option is filtered out so it never renders as an empty button.
+                options: vec!["Rust".into(), "Go".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn ask_options_are_deduped_and_null_tolerant() {
+        // A repeated option would throw a duplicate-key error in the UI, so it is deduped here.
+        let r = parse_reply(r#"{"ask": "q?", "options": ["A", "A", "B"]}"#).unwrap();
+        assert_eq!(
+            r,
+            MovementReply::Ask {
+                question: "q?".into(),
+                options: vec!["A".into(), "B".into()],
+            }
+        );
+        // An explicit null (a model may write it instead of omitting) is treated as no options,
+        // not a deserialization failure that would drop the whole reply.
+        let r = parse_reply(r#"{"ask": "q?", "options": null}"#).unwrap();
+        assert_eq!(
+            r,
+            MovementReply::Ask {
+                question: "q?".into(),
+                options: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn the_prompt_asks_for_options_only_once_the_core_idea_is_captured() {
+        let with = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Frame,
+            "",
+            None,
+            Depth::Full,
+            true,
+        );
+        assert!(with.contains("`options`"), "offers options when enabled");
+        let without = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Constitution,
+            "",
+            None,
+            Depth::Full,
+            false,
+        );
+        assert!(
+            without.to_lowercase().contains("open question"),
+            "asks an open question before the core idea is captured"
+        );
+    }
+
+    #[test]
     fn tolerates_prose_around_the_json_object() {
         // A `claude -p` reply may wrap the JSON in prose or a fenced block; extract the object.
         let r = parse_reply(
@@ -575,7 +717,8 @@ mod tests {
         assert_eq!(
             r,
             MovementReply::Ask {
-                question: "What is out of scope?".into()
+                question: "What is out of scope?".into(),
+                options: vec![],
             }
         );
     }
@@ -832,7 +975,8 @@ mod tests {
         assert_eq!(
             r,
             MovementReply::Ask {
-                question: "go?".into()
+                question: "go?".into(),
+                options: vec![],
             }
         );
     }
