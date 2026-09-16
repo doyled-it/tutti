@@ -846,15 +846,28 @@
     margin-top: 0;
   }
   .bubble.md :global(p) {
-    margin: 6px 0;
+    margin: 4px 0;
   }
   .bubble.md :global(ul),
   .bubble.md :global(ol) {
-    margin: 6px 0;
+    margin: 4px 0;
     padding-left: 20px;
   }
   .bubble.md :global(li) {
-    margin: 3px 0;
+    margin: 1px 0;
+  }
+  /* marked wraps loose-list items (blank line between them) in <p>, whose margins otherwise
+     stack with the <li> margin into large gaps. Collapse the inner paragraph margins. */
+  .bubble.md :global(li) :global(p) {
+    margin: 0;
+  }
+  /* Trim the leading/trailing margin of the first/last block so the bubble is not top/bottom
+     padded twice (its own padding plus a block margin). */
+  .bubble.md :global(> :first-child) {
+    margin-top: 0;
+  }
+  .bubble.md :global(> :last-child) {
+    margin-bottom: 0;
   }
   .bubble.md :global(code) {
     font-size: 12px;
