@@ -7,8 +7,18 @@
 <script lang="ts">
   import { subsessions } from "$lib/stores";
   import { roleLabel, selectSubsession } from "$lib/subsessions";
+  import { ResizableWidth } from "$lib/resizable.svelte";
+  import Resizer from "./Resizer.svelte";
 
   let selected = $derived($subsessions.list.find((s) => s.key === $subsessions.selected) ?? null);
+
+  // The draggable width of the subsession list (the detail flexes to fill), persisted.
+  const split = new ResizableWidth({
+    key: "tutti.subsessionsListWidth",
+    min: 140,
+    max: 480,
+    default: 200,
+  });
 
   // Sticky-bottom autoscroll for the live transcript. `transcriptEl` is reactive so the effect
   // re-runs once the element binds; `stick` and `lastKey` are plain locals (bookkeeping across
@@ -45,7 +55,7 @@
   {#if $subsessions.list.length === 0}
     <div class="empty">Start a run to watch its stages.</div>
   {:else}
-    <div class="list">
+    <div class="list" style="width:{split.width}px">
       {#each $subsessions.list as s (s.key)}
         <button
           type="button"
@@ -62,6 +72,8 @@
         </button>
       {/each}
     </div>
+
+    <Resizer onResize={split.onResize} ariaLabel="Resize the subsession list" />
 
     <div class="detail">
       {#if selected}
@@ -112,8 +124,11 @@
     font-size: 13px;
   }
   .list {
+    /* Width is set inline (draggable, persisted); max-width caps it against the viewport so the
+       detail pane and the drag handle stay reachable on a narrow window. */
     flex: none;
     width: 200px;
+    max-width: 50vw;
     border-right: 1px solid var(--border);
     padding: 10px 8px;
     display: flex;

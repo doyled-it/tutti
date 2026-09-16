@@ -14,6 +14,7 @@
     type ChatMessage,
   } from "$lib/orchestrator";
   import { gateStatus, orchestratorBusy } from "$lib/stores";
+  import { autogrow } from "$lib/autogrow";
   import TriageProposalCard from "./TriageProposalCard.svelte";
 
   // Fired after a triage apply so the host can refresh the board it is showing.
@@ -166,6 +167,7 @@
     <textarea
       bind:value={draft}
       onkeydown={onKey}
+      use:autogrow={{ value: draft }}
       placeholder="Ask about this project, or work out its verification gate..."
       disabled={thinking}></textarea>
     <button onclick={send} disabled={thinking || !draft.trim()}>Send</button>
@@ -231,9 +233,9 @@
   }
   .compose textarea {
     flex: 1;
+    /* Height is driven by the autogrow action (grows to fit the message up to a cap). */
     resize: none;
     min-height: 44px;
-    max-height: 160px;
     padding: 8px 10px;
     font: inherit;
     font-size: 13px;
