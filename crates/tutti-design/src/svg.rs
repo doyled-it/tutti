@@ -26,6 +26,10 @@ h3{font-size:20px; margin:26px 0 4px; font-weight:600}
 a{color:var(--amber); text-decoration:none; border-bottom:1px solid rgba(255,180,84,.32)}
 code,.mono{font-family:"JetBrains Mono",monospace}
 code{background:var(--ink3); border:1px solid var(--line); padding:.08em .42em; border-radius:5px; font-size:.84em; color:var(--amber2)}
+table{border-collapse:collapse; margin:18px 0; font-size:15px; display:block; overflow-x:auto}
+th,td{border:1px solid var(--line); padding:7px 12px; text-align:left; vertical-align:top}
+th{background:var(--ink3); font-weight:600}
+blockquote{margin:14px 0; padding-left:14px; border-left:2px solid var(--line); color:var(--faint)}
 .diagram{background:radial-gradient(120% 120% at 50% 0%,rgba(255,255,255,.02),transparent 60%),var(--ink2); border:1px solid var(--line); border-radius:16px; padding:26px 22px 16px; margin:22px 0 8px; overflow-x:auto}
 .diagram .cap{font-family:"JetBrains Mono",monospace; font-size:11.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--faint); margin:6px 0 18px; display:flex; align-items:center; gap:10px}
 .diagram .cap .fig{color:var(--amber)}

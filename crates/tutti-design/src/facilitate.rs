@@ -268,6 +268,7 @@ fn build_turn_prompt(
     movement: MovementId,
     human_input: &str,
     grounding: Option<&RepoGrounding>,
+    prior: &[MovementArtifact],
     depth: Depth,
     offer_options: bool,
 ) -> String {
@@ -299,6 +300,22 @@ fn build_turn_prompt(
     let grounding_block = grounding
         .map(|g| grounding_block(movement, g))
         .unwrap_or_default();
+    // The sections already ratified in earlier movements. Injecting them stops a later movement's
+    // fresh agent conversation from re-asking what the design already settled (each movement runs
+    // its own agent session, so without this it has no memory of the prior movements).
+    let prior_block = if prior.is_empty() {
+        String::new()
+    } else {
+        let sections = prior
+            .iter()
+            .map(|a| format!("## {}\n{}", definition(a.movement).title, a.section))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        format!(
+            "\n\nAlready decided in earlier movements of THIS design. Treat these as settled: \
+             build on them and do NOT re-ask what they already answer.\n\n{sections}"
+        )
+    };
     // Style: get to the point. Terse questions, no restating the human's answer, and only ask
     // when the answer genuinely changes the design, else propose the section.
     let style = "Style: keep every message to at most one or two sentences. Do not restate or \
@@ -330,7 +347,7 @@ fn build_turn_prompt(
         "{skill_body}\n\n\
          You are facilitating the \"{title}\" movement. Guiding question: {question}\n\n\
          {cover_line}\n{checklist}\
-         {grounding_block}\n\n\
+         {grounding_block}{prior_block}\n\n\
          {style}\n\n\
          Ask ONE question at a time. {options_line}\n\n\
          Reply with a single JSON object and nothing else: either {ask_example} while you still \
@@ -430,6 +447,7 @@ pub async fn advance(
                 movement,
                 &human_input,
                 session.grounding.as_ref(),
+                &session.artifacts,
                 depth,
                 offer_options,
             );
@@ -506,6 +524,7 @@ mod tests {
             MovementId::Domain,
             "",
             None,
+            &[],
             Depth::Full,
             false,
         );
@@ -514,6 +533,7 @@ mod tests {
             MovementId::Domain,
             "",
             None,
+            &[],
             Depth::Light,
             false,
         );
@@ -540,6 +560,7 @@ mod tests {
             MovementId::Frame,
             "",
             Some(&sample_grounding()),
+            &[],
             Depth::Full,
             false,
         );
@@ -560,6 +581,7 @@ mod tests {
             MovementId::Domain,
             "",
             Some(&sample_grounding()),
+            &[],
             Depth::Full,
             false,
         );
@@ -576,6 +598,7 @@ mod tests {
             MovementId::Decide,
             "",
             Some(&sample_grounding()),
+            &[],
             Depth::Full,
             false,
         );
@@ -598,6 +621,7 @@ mod tests {
             MovementId::Domain,
             "",
             None,
+            &[],
             Depth::Full,
             false,
         );
@@ -610,6 +634,7 @@ mod tests {
             MovementId::Domain,
             "",
             Some(&sample_grounding()),
+            &[],
             Depth::Full,
             false,
         );
@@ -660,6 +685,47 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_injects_prior_ratified_sections_so_later_movements_do_not_re_ask() {
+        let prior = vec![
+            MovementArtifact {
+                movement: MovementId::Frame,
+                section: "MLB Races tracks division and wildcard races for fans.".into(),
+            },
+            MovementArtifact {
+                movement: MovementId::Impact,
+                section: "Fans see who is in and what rivals need.".into(),
+            },
+        ];
+        let p = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Domain,
+            "",
+            None,
+            &prior,
+            Depth::Full,
+            true,
+        );
+        assert!(
+            p.contains("Already decided"),
+            "carries the prior-decisions block"
+        );
+        assert!(p.contains("tracks division and wildcard races"));
+        assert!(p.contains("what rivals need"));
+        assert!(p.to_lowercase().contains("do not re-ask"));
+        // With no prior artifacts (the first movement), the block is absent.
+        let first = build_turn_prompt(
+            &constitution_skill(),
+            MovementId::Constitution,
+            "",
+            None,
+            &[],
+            Depth::Full,
+            false,
+        );
+        assert!(!first.contains("Already decided"));
+    }
+
+    #[test]
     fn ask_options_are_deduped_and_null_tolerant() {
         // A repeated option would throw a duplicate-key error in the UI, so it is deduped here.
         let r = parse_reply(r#"{"ask": "q?", "options": ["A", "A", "B"]}"#).unwrap();
@@ -689,6 +755,7 @@ mod tests {
             MovementId::Frame,
             "",
             None,
+            &[],
             Depth::Full,
             true,
         );
@@ -698,6 +765,7 @@ mod tests {
             MovementId::Constitution,
             "",
             None,
+            &[],
             Depth::Full,
             false,
         );
