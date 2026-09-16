@@ -4,7 +4,19 @@
 <script lang="ts">
   import type { IssueDetail, Status } from "$lib/ipc";
   import { renderMarkdown } from "$lib/markdown";
+  import { ResizableWidth } from "$lib/resizable.svelte";
+  import Resizer from "./Resizer.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+
+  // The draggable width of the drawer, which is docked on the right and grows leftward, so its
+  // handle sits on its left edge (a leftward drag grows it). Persisted, like the roadmap rail.
+  const split = new ResizableWidth({
+    key: "tutti.issueDrawerWidth",
+    min: 280,
+    max: 720,
+    default: 340,
+    grow: "left",
+  });
 
   let {
     issue,
@@ -88,71 +100,84 @@
   }
 </script>
 
-<aside class="drawer">
-  <div class="drawer-top">
-    <button class="close" onclick={onClose} aria-label="Close">Close</button>
-  </div>
-  {#if loading || !issue}
-    <div class="loading">Loading...</div>
-  {:else}
-    <div class="content">
-      <div class="issue-title">#{issue.id} {issue.title}</div>
-      <span class={`badge ${issue.status}`}>{statusLabel[issue.status]}</span>
+<aside class="drawer" style="width:{split.width}px">
+  <Resizer onResize={split.onResize} ariaLabel="Resize the issue panel" />
+  <div class="drawer-inner">
+    <div class="drawer-top">
+      <button class="close" onclick={onClose} aria-label="Close">Close</button>
+    </div>
+    {#if loading || !issue}
+      <div class="loading">Loading...</div>
+    {:else}
+      <div class="content">
+        <div class="issue-title">#{issue.id} {issue.title}</div>
+        <span class={`badge ${issue.status}`}>{statusLabel[issue.status]}</span>
 
-      <div class="kv"><b>Milestone</b>{issue.milestone ?? "None"}</div>
-      <div class="kv labels-row">
-        <b>Labels</b>
-        {#if issue.labels.length}
-          <span class="chips">
-            {#each issue.labels as lbl, i (i)}
-              {@const color = lbl.color || "8b949e"}
-              {@const hex = `#${color}`}
-              {@const rgb = hexToRgb(color)}
-              {@const parts = splitScoped(lbl.name)}
-              {#if parts}
-                <span class="lbl scoped">
-                  <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}
-                    >{parts.scope}</span
+        <div class="kv"><b>Milestone</b>{issue.milestone ?? "None"}</div>
+        <div class="kv labels-row">
+          <b>Labels</b>
+          {#if issue.labels.length}
+            <span class="chips">
+              {#each issue.labels as lbl, i (i)}
+                {@const color = lbl.color || "8b949e"}
+                {@const hex = `#${color}`}
+                {@const rgb = hexToRgb(color)}
+                {@const parts = splitScoped(lbl.name)}
+                {#if parts}
+                  <span class="lbl scoped">
+                    <span class="scope" style={`background:${hex};color:${textOn(rgb)}`}
+                      >{parts.scope}</span
+                    >
+                    <span
+                      class="value"
+                      style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.18);color:${lighten(rgb)};border-color:${lighten(rgb)}`}
+                      >{parts.value}</span
+                    >
+                  </span>
+                {:else}
+                  <span class="lbl solid" style={`background:${hex};color:${textOn(rgb)}`}
+                    >{lbl.name}</span
                   >
-                  <span
-                    class="value"
-                    style={`background:rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.18);color:${lighten(rgb)};border-color:${lighten(rgb)}`}
-                    >{parts.value}</span
-                  >
-                </span>
-              {:else}
-                <span class="lbl solid" style={`background:${hex};color:${textOn(rgb)}`}
-                  >{lbl.name}</span
-                >
-              {/if}
-            {/each}
-          </span>
+                {/if}
+              {/each}
+            </span>
+          {:else}
+            None
+          {/if}
+        </div>
+        <div class="kv"><b>Branch</b>{issue.branch}</div>
+
+        <div class="col-h">Description</div>
+        {#if issue.body}
+          <div class="body-md" use:externalLinks>{@html renderMarkdown(issue.body)}</div>
         {:else}
-          None
+          <div class="body-text">No description.</div>
         {/if}
       </div>
-      <div class="kv"><b>Branch</b>{issue.branch}</div>
-
-      <div class="col-h">Description</div>
-      {#if issue.body}
-        <div class="body-md" use:externalLinks>{@html renderMarkdown(issue.body)}</div>
-      {:else}
-        <div class="body-text">No description.</div>
-      {/if}
-    </div>
-  {/if}
+    {/if}
+  </div>
 </aside>
 
 <style>
   .drawer {
-    flex: 0 0 340px;
-    min-width: 0;
+    /* Width is set inline (draggable, persisted); the Resizer sits on the left edge. The
+       max-width caps a large persisted/dragged width so the board and the drag handle stay
+       reachable on a narrow window. */
+    flex: none;
+    max-width: 75vw;
     height: 100%;
     background: var(--bg-panel);
     border-left: 1px solid var(--border);
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     animation: slide-in 0.16s ease-out;
+  }
+  .drawer-inner {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
   @keyframes slide-in {
     from {
@@ -185,6 +210,10 @@
     color: var(--text-dim);
   }
   .content {
+    /* flex:1 + min-height:0 bounds the height inside the column so overflow-y actually scrolls
+       (the wrapping .drawer-inner is overflow:hidden). */
+    flex: 1;
+    min-height: 0;
     padding: 14px 16px;
     overflow-y: auto;
     font-size: 12px;

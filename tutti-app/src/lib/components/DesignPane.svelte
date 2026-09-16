@@ -9,7 +9,10 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api } from "$lib/ipc";
   import { renderMarkdown } from "$lib/markdown";
+  import { autogrow } from "$lib/autogrow";
+  import { ResizableWidth } from "$lib/resizable.svelte";
   import { designBusy } from "$lib/stores";
+  import Resizer from "./Resizer.svelte";
   import {
     startAgent,
     appendDelta,
@@ -65,6 +68,14 @@
   // Bound DOM nodes for the ergonomics fixes below.
   let transcriptEl = $state<HTMLDivElement | null>(null);
   let composerEl = $state<HTMLTextAreaElement | null>(null);
+
+  // The draggable width of the chat pane (the preview flexes to fill the rest), persisted.
+  const split = new ResizableWidth({
+    key: "tutti.designChatWidth",
+    min: 320,
+    max: 1000,
+    default: 560,
+  });
 
   // Sticky-bottom autoscroll, mirroring SubsessionsPane: only follow the tail when the reader is
   // already near the bottom, so scrolling up to re-read a question is not fought on every
@@ -426,7 +437,7 @@
     </div>
   {:else}
     <div class="body">
-      <div class="chat">
+      <div class="chat" style="width:{split.width}px">
         <div class="progress">
           {#each status.movements as m (m)}
             <span
@@ -471,6 +482,7 @@
               bind:this={composerEl}
               bind:value={draft}
               onkeydown={onKey}
+              use:autogrow={{ value: draft }}
               placeholder="Answer the question..."
               disabled={thinking}></textarea>
             <button onclick={reply} disabled={thinking || !draft.trim()}>Send</button>
@@ -480,6 +492,7 @@
             {#if reviseOpen}
               <textarea
                 bind:value={reviseText}
+                use:autogrow={{ value: reviseText }}
                 placeholder="What should change?"
                 disabled={thinking}></textarea>
               <div class="ratify-actions">
@@ -594,6 +607,8 @@
         {/if}
       </div>
 
+      <Resizer onResize={split.onResize} ariaLabel="Resize the chat and preview panes" />
+
       <div class="preview">
         {#if preview}
           <iframe class="preview-frame" title="Design preview" sandbox="" srcdoc={preview}></iframe>
@@ -680,7 +695,11 @@
     min-height: 0;
   }
   .chat {
-    flex: 1;
+    /* Width is set inline (draggable, persisted); the preview flexes to fill the rest. The
+       max-width caps a large persisted/dragged width against the viewport so the preview and the
+       drag handle can never be pushed off-screen on a narrow window. */
+    flex: none;
+    max-width: 75vw;
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -799,9 +818,9 @@
   .compose textarea,
   .ratify-bar textarea {
     flex: 1;
+    /* Height is driven by the autogrow action (grows to fit the message up to a cap). */
     resize: none;
     min-height: 44px;
-    max-height: 160px;
     padding: 8px 10px;
     font: inherit;
     font-size: 13px;

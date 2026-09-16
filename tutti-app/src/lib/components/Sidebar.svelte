@@ -7,6 +7,7 @@
   import { api } from "$lib/ipc";
   import type { Probe, ProjectEntry } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
+  import { ResizableWidth } from "$lib/resizable.svelte";
   import TuttiWordmark from "./TuttiWordmark.svelte";
 
   let {
@@ -35,29 +36,13 @@
     onSection?: (s: "board" | "orchestrator" | "subsessions" | "design") => void;
   } = $props();
 
-  const WIDTH_KEY = "tutti.sidebarWidth";
-  const MIN_WIDTH = 140;
-  const MAX_WIDTH = 360;
-  const DEFAULT_WIDTH = 160;
-
-  let width = $state(DEFAULT_WIDTH);
-
-  function clamp(w: number): number {
-    return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, w));
-  }
-
-  $effect(() => {
-    const stored = localStorage.getItem(WIDTH_KEY);
-    if (stored) {
-      const parsed = Number(stored);
-      if (Number.isFinite(parsed)) width = clamp(parsed);
-    }
+  // The persisted, clamped sidebar width, shared with the other resizable splits.
+  const split = new ResizableWidth({
+    key: "tutti.sidebarWidth",
+    min: 140,
+    max: 360,
+    default: 160,
   });
-
-  function onResize(deltaX: number) {
-    width = clamp(width + deltaX);
-    localStorage.setItem(WIDTH_KEY, String(width));
-  }
 
   let adding = $state(false);
   let dir = $state("");
@@ -131,7 +116,7 @@
 </script>
 
 <div class="sidebar-wrap">
-  <aside class="sidebar" style={`width:${width}px`}>
+  <aside class="sidebar" style={`width:${split.width}px`}>
     <div class="brand-header">
       <TuttiWordmark size={20} />
     </div>
@@ -213,7 +198,7 @@
       >
     </nav>
   </aside>
-  <Resizer {onResize} ariaLabel="Resize sidebar" />
+  <Resizer onResize={split.onResize} ariaLabel="Resize sidebar" />
 </div>
 
 <style>

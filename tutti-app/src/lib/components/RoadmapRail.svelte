@@ -6,6 +6,7 @@
 <script lang="ts">
   import type { MilestoneRow } from "$lib/ipc";
   import Resizer from "./Resizer.svelte";
+  import { ResizableWidth } from "$lib/resizable.svelte";
 
   let {
     milestones,
@@ -17,31 +18,15 @@
     onSelect: (id: number | null) => void;
   } = $props();
 
-  const WIDTH_KEY = "tutti.railWidth";
-  const MIN_WIDTH = 120;
-  const MAX_WIDTH = 320;
-  const DEFAULT_WIDTH = 160;
-
-  let width = $state(DEFAULT_WIDTH);
-
-  function clamp(w: number): number {
-    return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, w));
-  }
-
-  $effect(() => {
-    const stored = localStorage.getItem(WIDTH_KEY);
-    if (stored) {
-      const parsed = Number(stored);
-      if (Number.isFinite(parsed)) width = clamp(parsed);
-    }
+  // The rail sits on the right edge and grows leftward, so its handle is on its left edge and a
+  // leftward drag grows it (`grow: "left"`). Persisted, shared with the other resizable splits.
+  const split = new ResizableWidth({
+    key: "tutti.railWidth",
+    min: 120,
+    max: 320,
+    default: 160,
+    grow: "left",
   });
-
-  function onResize(deltaX: number) {
-    // The rail sits on the right edge of the window and grows leftward as the handle,
-    // on its left edge, is dragged left, so a negative pointer delta increases width.
-    width = clamp(width - deltaX);
-    localStorage.setItem(WIDTH_KEY, String(width));
-  }
 
   function pct(m: MilestoneRow): number {
     if (m.total === 0) return 0;
@@ -50,8 +35,8 @@
 </script>
 
 <aside class="rail-wrap">
-  <Resizer {onResize} ariaLabel="Resize roadmap rail" />
-  <div class="rail" style={`width:${width}px`}>
+  <Resizer onResize={split.onResize} ariaLabel="Resize roadmap rail" />
+  <div class="rail" style={`width:${split.width}px`}>
     <div class="col-h">Roadmap</div>
     <div
       class="ms all"
