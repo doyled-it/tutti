@@ -6,7 +6,9 @@
      this component is wiring only. -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { api } from "$lib/ipc";
+  import { renderMarkdown } from "$lib/markdown";
   import { designBusy } from "$lib/stores";
   import {
     startAgent,
@@ -76,6 +78,27 @@
     if (!el) return;
     // "Near the bottom" tolerance so a reader parked at the end stays stuck through a delta.
     stick = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }
+
+  // Links inside rendered markdown open in the user's external browser, not the Tauri webview
+  // (mirrors IssueDrawer). Applied to the section bubble's {@html} container.
+  function externalLinks(node: HTMLElement) {
+    const handler = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement)?.closest("a");
+      const href = a?.getAttribute("href");
+      if (a && href) {
+        e.preventDefault();
+        void openUrl(href);
+      }
+    };
+    node.addEventListener("click", handler);
+    node.addEventListener("auxclick", handler);
+    return {
+      destroy: () => {
+        node.removeEventListener("click", handler);
+        node.removeEventListener("auxclick", handler);
+      },
+    };
   }
 
   $effect(() => {
@@ -423,7 +446,13 @@
                  indicator stand in until the clean question or section lands. -->
             {#if !(m.role === "agent" && m.kind === "text")}
               <div class="msg {m.role} {m.kind}">
-                <div class="bubble">{m.text}</div>
+                {#if m.kind === "section"}
+                  <!-- A proposed artifact is markdown; render it (sanitized) so headings, bold,
+                       and lists format instead of showing raw `##`/`**` in a monospace block. -->
+                  <div class="bubble md" use:externalLinks>{@html renderMarkdown(m.text)}</div>
+                {:else}
+                  <div class="bubble">{m.text}</div>
+                {/if}
               </div>
             {/if}
           {/each}
@@ -709,9 +738,47 @@
     background: var(--accent-bg);
     border-color: var(--accent-border);
   }
-  .msg.agent.section .bubble {
-    font-family: monospace;
+  /* A proposed section is a wider, rendered-markdown block rather than a chat bubble. */
+  .msg.agent.section .bubble.md {
+    max-width: 100%;
+    width: 100%;
+  }
+  .bubble.md :global(h1),
+  .bubble.md :global(h2),
+  .bubble.md :global(h3) {
+    font-size: 15px;
+    margin: 10px 0 6px;
+  }
+  .bubble.md :global(h1:first-child),
+  .bubble.md :global(h2:first-child),
+  .bubble.md :global(h3:first-child) {
+    margin-top: 0;
+  }
+  .bubble.md :global(p) {
+    margin: 6px 0;
+  }
+  .bubble.md :global(ul),
+  .bubble.md :global(ol) {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+  .bubble.md :global(li) {
+    margin: 3px 0;
+  }
+  .bubble.md :global(code) {
     font-size: 12px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg);
+  }
+  .bubble.md :global(pre) {
+    overflow-x: auto;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--bg);
+  }
+  .bubble.md :global(a) {
+    color: var(--accent);
   }
   .bubble.thinking {
     color: var(--text-faint);
