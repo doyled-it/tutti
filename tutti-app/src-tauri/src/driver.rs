@@ -121,6 +121,11 @@ async fn run_loop(
         subsession: Some(sub_tx),
     };
 
+    // Reclaim any issue left `status:in-progress` by a prior run that was killed or crashed mid
+    // issue (the selector only sees `status:ready`, so an orphaned in-progress issue would never
+    // be picked up again). Best effort: a failure here must not block the run.
+    let _ = engine.reclaim_orphaned_in_progress().await;
+
     loop {
         if cancel.load(Ordering::Relaxed) {
             break;

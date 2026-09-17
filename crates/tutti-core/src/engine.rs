@@ -6,7 +6,7 @@
 //! executor), record, plan.
 
 use crate::config::Config;
-use crate::domain::{Issue, IssueState};
+use crate::domain::{Issue, IssueId, IssueState};
 use crate::events::{EngineEvent, EngineHooks, SubsessionEvent};
 use crate::executor::{Executor, ShipResult};
 use crate::message::{
@@ -242,6 +242,30 @@ impl<'a> Engine<'a> {
         let milestones = self.forge.list_milestones().await?;
         let order = crate::tracking::milestone_floor_order(&milestones);
         Ok(pick_by_milestone_floor(ready, &order))
+    }
+
+    /// Reset issues left `status:in-progress` by a prior run (a crash, a kill, or an app restart)
+    /// back to `status:ready`, so a fresh run picks them up again instead of orphaning them: the
+    /// selector only sees `status:ready`, so an in-progress issue with no live claim would sit
+    /// forever. Call once at run start. It is safe there because a starting run holds no claims,
+    /// so every in-progress issue is stale by definition; a mid-run issue is never reset (this is
+    /// not called inside the drain loop). Closed issues are left alone. Returns the reclaimed ids.
+    pub async fn reclaim_orphaned_in_progress(&self) -> Result<Vec<IssueId>> {
+        let labels = self.cfg.status_labels();
+        let mut reclaimed = Vec::new();
+        for issue in self.forge.list_issues().await? {
+            if issue.state == IssueState::Open && issue.has_label(&labels.in_progress) {
+                self.forge
+                    .edit_labels(
+                        issue.id,
+                        std::slice::from_ref(&labels.ready),
+                        std::slice::from_ref(&labels.in_progress),
+                    )
+                    .await?;
+                reclaimed.push(issue.id);
+            }
+        }
+        Ok(reclaimed)
     }
 
     /// The claimed body of one iteration. Creates an isolated worktree per issue,
@@ -825,6 +849,47 @@ mod tests {
         assert!(forge.is_done(IssueId(1)));
         // The routing strategy, not the agent's guess, decided the branch.
         assert!(forge.merged_bases().contains(&"version/v0.1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn reclaims_an_orphaned_in_progress_issue() {
+        // An issue left status:in-progress by a killed run must be reset to status:ready so a
+        // fresh run selects it again (the selector only sees status:ready).
+        let cfg = cfg();
+        let orphan = Issue {
+            id: IssueId(7),
+            title: "orphan".into(),
+            body: String::new(),
+            labels: vec!["status:in-progress".into()],
+            milestone: None,
+            state: IssueState::Open,
+        };
+        let forge = FakeForge::new(vec![orphan, ready(1)], CiState::Pass);
+        let backend = FakeBackend::new();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let reclaimed = engine.reclaim_orphaned_in_progress().await.unwrap();
+        assert_eq!(reclaimed, vec![IssueId(7)]);
+        // It now selects as ready (and ascending order still puts #1 first, then #7).
+        let ready_ids: Vec<u64> = forge
+            .list_ready_issues(&SelectFilter {
+                require_label: "status:ready".into(),
+                skip_labels: vec![],
+                milestone: None,
+                milestone_floor: false,
+            })
+            .await
+            .unwrap()
+            .iter()
+            .map(|i| i.id.0)
+            .collect();
+        assert!(ready_ids.contains(&7), "the orphan is ready again");
     }
 
     #[tokio::test]
