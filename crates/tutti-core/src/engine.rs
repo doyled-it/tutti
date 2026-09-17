@@ -227,7 +227,15 @@ impl<'a> Engine<'a> {
     /// ordering over a set the forge hands over in a single call, so it is applied here as
     /// exactly that.
     async fn select_ready_issue(&self) -> Result<Option<Issue>> {
-        let ready = self.forge.list_ready_issues(&self.select_filter()).await?;
+        let mut ready = self.forge.list_ready_issues(&self.select_filter()).await?;
+        // Drain in ascending issue-id order. A decomposed backlog is seeded in dependency order
+        // (a research spike, then the walking skeleton, then the ribs), and issue ids ascend with
+        // creation, so ascending id follows that order. Without this the forge lists newest-first
+        // (GitHub's default), and taking the first would drain the backlog in reverse: the last
+        // rib before the walking skeleton before the foundation. Dependency-aware selection (only
+        // building an issue once its prerequisites are done) is a further refinement; this is the
+        // deterministic base order it ranks within.
+        ready.sort_by_key(|i| i.id.0);
         if !self.cfg.select.milestone_floor || self.cfg.select.milestone.is_some() {
             return Ok(ready.into_iter().next());
         }
@@ -817,6 +825,29 @@ mod tests {
         assert!(forge.is_done(IssueId(1)));
         // The routing strategy, not the agent's guess, decided the branch.
         assert!(forge.merged_bases().contains(&"version/v0.1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn drains_ready_issues_in_ascending_id_order() {
+        // The forge lists newest-first (GitHub's default), so a decomposed backlog seeded in
+        // dependency order would be listed in reverse. The engine must still select the lowest id
+        // first, so the research spike and walking skeleton run before the ribs.
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(3), ready(1), ready(2)], CiState::Pass);
+        let backend = FakeBackend::new();
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+        let got = engine.select_ready_issue().await.unwrap().unwrap();
+        assert_eq!(
+            got.id,
+            IssueId(1),
+            "lowest id selected despite newest-first listing"
+        );
     }
 
     #[tokio::test]
