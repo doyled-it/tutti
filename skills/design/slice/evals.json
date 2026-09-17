@@ -10,20 +10,29 @@
   },
   {
     "skills": ["design-slice"],
-    "query": "The human proposed one big feature as the first slice. Continue.",
+    "query": "The human proposed one big feature as the first thing to build. Continue.",
     "inputs": ["let us build the full voice pipeline first"],
     "expected_behavior": [
-      "steers toward the thinnest slice that still runs end to end",
+      "steers toward a thin walking skeleton that runs end to end before the fat feature",
       "keeps asking one question at a time"
     ]
   },
   {
     "skills": ["design-slice"],
-    "query": "Backbone, walking skeleton, and prioritized ribs are all clear. Wrap up.",
-    "inputs": ["backbone mapped; a thin end-to-end slice chosen; ribs ordered by value"],
+    "query": "The human asks what to cut for a minimal first release. Continue.",
+    "inputs": ["what should we cut to ship a small MVP first?"],
+    "expected_behavior": [
+      "does not cut or defer in-scope work; explains the whole design is built and only the order is decided here",
+      "keeps asking one question at a time"
+    ]
+  },
+  {
+    "skills": ["design-slice"],
+    "query": "Backbone, walking skeleton, and the full ordered scope are all clear. Wrap up.",
+    "inputs": ["backbone mapped; walking skeleton chosen; the rest of the scope sequenced by dependency and value"],
     "expected_behavior": [
       "emits a complete reply with a Slice artifact section",
-      "the section holds the backbone, the walking-skeleton slice, and the prioritized ribs",
+      "the section holds the backbone, the walking-skeleton increment, and the remaining scope in build order",
       "stops asking questions once coverage is met"
     ]
   }
