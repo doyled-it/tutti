@@ -10,6 +10,7 @@ import {
   stepToUi,
   activeToStep,
   messagesFromActive,
+  groupBacklog,
   type DesignMessage,
   type DesignStep,
 } from "./design";
@@ -195,5 +196,30 @@ describe("stepToUi", () => {
   it("maps a complete step to complete mode", () => {
     const step: DesignStep = { kind: "complete", movement: "decompose" };
     expect(stepToUi(step)).toEqual({ mode: "complete", text: "" });
+  });
+});
+
+describe("groupBacklog", () => {
+  it("groups issues under their milestone and folds unnamed into a sole milestone", () => {
+    const { groups, looseIssues } = groupBacklog({
+      milestones: [{ title: "M1" }, { title: "M2" }],
+      loose_issues: [
+        { title: "A", body: "", milestone: "M1" },
+        { title: "B", body: "", milestone: "M2" },
+        { title: "C", body: "", milestone: "M2" },
+      ],
+    });
+    expect(groups.map((g) => g.title)).toEqual(["M1", "M2"]);
+    expect(groups[0].issues.map((i) => i.title)).toEqual(["A"]);
+    expect(groups[1].issues.map((i) => i.title)).toEqual(["B", "C"]);
+    expect(looseIssues).toEqual([]);
+  });
+
+  it("puts an issue with an unknown milestone in loose issues", () => {
+    const { looseIssues } = groupBacklog({
+      milestones: [{ title: "M1" }],
+      loose_issues: [{ title: "X", body: "", milestone: "Ghost" }],
+    });
+    expect(looseIssues.map((i) => i.title)).toEqual(["X"]);
   });
 });

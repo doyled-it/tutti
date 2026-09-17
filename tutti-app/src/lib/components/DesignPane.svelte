@@ -23,6 +23,7 @@
     stepToUi,
     activeToStep,
     messagesFromActive,
+    groupBacklog,
     type DesignMessage,
     type DesignSessionStatus,
     type DesignStep,
@@ -58,6 +59,9 @@
   function stackLabel(id: string): string {
     return DESIGN_STACKS.find((s) => s.id === id)?.label ?? id;
   }
+
+  // The proposed backlog grouped by milestone for display (null until a proposal exists).
+  let backlog = $derived(proposal ? groupBacklog(proposal.plan) : null);
 
   // The agent's recommended stack, but only when it is one the picker can actually select, so the
   // hint never names a stack the control will not reflect. Null when absent or unrecognized.
@@ -580,17 +584,27 @@
           <div class="backlog">
             <div class="backlog-title">Proposed backlog</div>
             <div class="plan">
-              {#if proposal.plan.milestone}
-                <div class="plan-milestone">
-                  {proposal.plan.milestone.title}{proposal.plan.milestone.due
-                    ? ` (due ${proposal.plan.milestone.due})`
-                    : ""}
+              <!-- Grouped by milestone (design phase) via the `backlog` derived. Keyed by index:
+                   the plan is ephemeral and a model may emit two milestones or issues with the
+                   same title, which a title key would throw on (each_key_duplicate). -->
+              {#each backlog?.groups ?? [] as group, gi (gi)}
+                <div class="plan-epic">
+                  <div class="plan-epic-title">
+                    {group.title}{group.due ? ` (due ${group.due})` : ""}
+                  </div>
+                  <ul class="plan-issues">
+                    {#each group.issues as issue, ii (ii)}
+                      <li>
+                        {issue.title}
+                        {#if issue.acceptance && issue.acceptance.length}
+                          <span class="plan-meta">{issue.acceptance.length} AC</span>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
                 </div>
-              {/if}
-              <!-- Keyed by index: the plan is ephemeral (re-rendered on each propose) and a model
-                   may emit two epics or issues with the same title, which a title key would throw
-                   on (each_key_duplicate). -->
-              {#each proposal.plan.epics ?? [] as epic, ei (ei)}
+              {/each}
+              {#each backlog?.epics ?? [] as epic, ei (ei)}
                 <div class="plan-epic">
                   <div class="plan-epic-title">{epic.title}</div>
                   <ul class="plan-issues">
@@ -605,11 +619,11 @@
                   </ul>
                 </div>
               {/each}
-              {#if proposal.plan.loose_issues && proposal.plan.loose_issues.length}
+              {#if backlog && backlog.looseIssues.length}
                 <div class="plan-epic">
                   <div class="plan-epic-title">Loose issues</div>
                   <ul class="plan-issues">
-                    {#each proposal.plan.loose_issues as issue, li (li)}
+                    {#each backlog.looseIssues as issue, li (li)}
                       <li>
                         {issue.title}
                         {#if issue.acceptance && issue.acceptance.length}
@@ -1060,12 +1074,6 @@
     border-radius: 8px;
     padding: 10px 12px;
     font-size: 13px;
-  }
-  .plan-milestone {
-    font-weight: 600;
-    padding-bottom: 6px;
-    margin-bottom: 6px;
-    border-bottom: 1px solid var(--border);
   }
   .plan-epic {
     margin: 8px 0;

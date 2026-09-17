@@ -23,6 +23,11 @@ pub struct ProposedIssue {
     pub acceptance: Vec<String>,
     #[serde(default)]
     pub deps: Vec<String>,
+    /// The title of the milestone (design phase) this issue belongs to, matched against
+    /// `BacklogPlan.milestones`. None assigns the issue to no milestone (or the legacy single
+    /// `BacklogPlan.milestone` when that is the only one).
+    #[serde(default)]
+    pub milestone: Option<String>,
 }
 
 /// A proposed epic grouping issues.
@@ -47,6 +52,13 @@ pub struct ProposedMilestone {
 /// `loose_issues` are issues with no epic.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BacklogPlan {
+    /// The design's phases as milestones (M0, M1, ...). Each issue references one by title. The
+    /// primary grouping: milestones drive the roadmap, the Lanes view, and the engine's
+    /// milestone-floor ordering, so a phase-structured design becomes native forge milestones.
+    #[serde(default)]
+    pub milestones: Vec<ProposedMilestone>,
+    /// A single legacy milestone, kept so a plan or session written before `milestones` still
+    /// seeds. When `milestones` is non-empty this is ignored.
     #[serde(default)]
     pub milestone: Option<ProposedMilestone>,
     #[serde(default)]
@@ -153,7 +165,26 @@ pub fn render_plan(plan: &BacklogPlan) -> String {
     let mut out = String::new();
     out.push_str("# Backlog plan\n");
 
-    if let Some(m) = &plan.milestone {
+    // The set of declared milestone titles (deduped, trimmed) is computed once and reused, so the
+    // fold loop and the loose-issues tail agree with each other and with `seed`, which keys its
+    // single-milestone fallback on the deduped map. When exactly one distinct milestone exists, an
+    // issue that names none is folded into it.
+    let known: std::collections::HashSet<&str> = plan
+        .milestones
+        .iter()
+        .chain(plan.milestone.iter())
+        .map(|m| m.title.trim())
+        .collect();
+    let sole_milestone = known.len() == 1;
+
+    // Milestones (the design's phases), each with the issues assigned to it, in plan order.
+    // Deduped by trimmed title so a title appearing in both the list and the legacy single field
+    // renders once, agreeing with the deduped `known`/`seed` view.
+    let mut rendered_titles: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for m in plan.milestones.iter().chain(plan.milestone.iter()) {
+        if !rendered_titles.insert(m.title.trim()) {
+            continue;
+        }
         out.push_str("\nMilestone: ");
         out.push_str(&m.title);
         if let Some(due) = &m.due {
@@ -162,6 +193,16 @@ pub fn render_plan(plan: &BacklogPlan) -> String {
             out.push(')');
         }
         out.push('\n');
+        for issue in plan.loose_issues.iter().filter(|i| match &i.milestone {
+            Some(t) => t.trim() == m.title.trim(),
+            None => sole_milestone,
+        }) {
+            out.push_str("  - ");
+            out.push_str(&issue.title);
+            out.push_str(" (");
+            out.push_str(&issue.acceptance.len().to_string());
+            out.push_str(" acceptance criteria)\n");
+        }
     }
 
     for epic in &plan.epics {
@@ -177,9 +218,19 @@ pub fn render_plan(plan: &BacklogPlan) -> String {
         }
     }
 
-    if !plan.loose_issues.is_empty() {
+    // Issues shown under no milestone above: those naming an undeclared milestone, plus unnamed
+    // issues when there is not a sole milestone to fold them into.
+    let truly_unassigned: Vec<&ProposedIssue> = plan
+        .loose_issues
+        .iter()
+        .filter(|i| match &i.milestone {
+            Some(t) => !known.contains(t.trim()),
+            None => !sole_milestone,
+        })
+        .collect();
+    if !truly_unassigned.is_empty() {
         out.push_str("\nLoose issues:\n");
-        for issue in &plan.loose_issues {
+        for issue in truly_unassigned {
             out.push_str("  - ");
             out.push_str(&issue.title);
             out.push_str(" (");
@@ -244,6 +295,12 @@ fn new_issue_for(issue: &ProposedIssue, ready_label: &str) -> NewIssue {
 /// it is documented as "open and recently closed, bounded", so a very old closed issue that
 /// has aged out of that window could be recreated on a much later re-run.
 ///
+/// Milestone assignment happens only when an issue is CREATED. A re-seed skips an issue whose
+/// marker already exists, so it does NOT retro-assign a milestone to an issue that was seeded
+/// before it carried one (nor move it between milestones). To migrate an existing backlog onto
+/// milestones, delete the issues first, then seed: the recreated issues pick up their assignment.
+/// (Re-assigning skipped issues would need a forge "set milestone" primitive, tracked separately.)
+///
 /// Returns a `SeedReport`. Any `Forge` error is wrapped in `DesignError::Forge`.
 pub async fn seed(
     plan: &BacklogPlan,
@@ -264,28 +321,48 @@ pub async fn seed(
             .map_err(wrap)?;
     }
 
-    // Reuse a milestone with the same title, or create one. Matched exact-after-trim: the
-    // planner owns canonical, case-consistent titles, so only accidental leading/trailing
-    // whitespace is normalized away, not case.
-    let milestone_id = match &plan.milestone {
-        Some(m) => {
-            let existing = forge.list_milestones().await.map_err(wrap)?;
-            let id = match existing
-                .into_iter()
-                .find(|x| x.title.trim() == m.title.trim())
-            {
-                Some(found) => found.id,
-                None => {
-                    forge
-                        .create_milestone(&m.title, m.due.as_deref(), &m.description)
-                        .await
-                        .map_err(wrap)?
-                        .id
-                }
-            };
-            Some(id)
+    // Create (or reuse) every milestone the plan declares, building a title -> id map so each
+    // issue can be assigned to its phase. `plan.milestones` is the phase list; the legacy single
+    // `plan.milestone` is folded in for a plan written before the list existed. Matched
+    // exact-after-trim: the planner owns canonical, case-consistent titles, so only accidental
+    // leading/trailing whitespace is normalized away, not case.
+    let existing_milestones = forge.list_milestones().await.map_err(wrap)?;
+    let mut milestone_ids: std::collections::HashMap<String, tutti_core::tracking::MilestoneId> =
+        std::collections::HashMap::new();
+    let declared: Vec<&ProposedMilestone> = plan
+        .milestones
+        .iter()
+        .chain(plan.milestone.iter())
+        .collect();
+    for m in declared {
+        let key = m.title.trim().to_string();
+        if milestone_ids.contains_key(&key) {
+            continue;
         }
-        None => None,
+        let id = match existing_milestones.iter().find(|x| x.title.trim() == key) {
+            Some(found) => found.id,
+            None => {
+                forge
+                    .create_milestone(&m.title, m.due.as_deref(), &m.description)
+                    .await
+                    .map_err(wrap)?
+                    .id
+            }
+        };
+        milestone_ids.insert(key, id);
+    }
+    // Resolve an issue's milestone title to an id. When the issue names none and the plan has
+    // exactly one milestone, fall back to it (the common single-phase case); otherwise None.
+    let single_milestone = if milestone_ids.len() == 1 {
+        milestone_ids.values().next().copied()
+    } else {
+        None
+    };
+    let resolve_milestone = |issue: &ProposedIssue| -> Option<tutti_core::tracking::MilestoneId> {
+        match &issue.milestone {
+            Some(title) => milestone_ids.get(title.trim()).copied(),
+            None => single_milestone,
+        }
     };
 
     // Markers already present on the forge, so a re-run can recognize its own prior work.
@@ -331,7 +408,7 @@ pub async fn seed(
             }
             let new = new_issue_for(issue, ready_label);
             forge
-                .create_issue(&new, milestone_id, Some(epic_id))
+                .create_issue(&new, resolve_milestone(issue), Some(epic_id))
                 .await
                 .map_err(wrap)?;
             report.created.push(issue.title.clone());
@@ -345,7 +422,7 @@ pub async fn seed(
         }
         let new = new_issue_for(issue, ready_label);
         forge
-            .create_issue(&new, milestone_id, None)
+            .create_issue(&new, resolve_milestone(issue), None)
             .await
             .map_err(wrap)?;
         report.created.push(issue.title.clone());
@@ -369,21 +446,25 @@ pub fn backlog_prompt(session: &crate::session::SessionState) -> String {
     format!(
         "You are decomposing a ratified software design into a build backlog.\n\n\
          The ratified design:\n\n{design}\n\
-         From this ratified design, produce the milestone, epic, and issue backlog as a \
-         single JSON object matching this schema:\n\
-         {{\"milestone\": {{\"title\": \"...\", \"due\": null, \"description\": \"...\"}}, \
-         \"epics\": [{{\"title\": \"...\", \"body\": \"...\", \"issues\": [{{\"title\": \"...\", \
-         \"body\": \"...\", \"acceptance\": [\"<EARS line>\"], \"deps\": [\"<prerequisite issue \
-         title>\"]}}]}}], \"loose_issues\": [<same issue shape, for issues with no epic>], \
+         From this ratified design, produce the milestone and issue backlog as a single JSON \
+         object matching this schema:\n\
+         {{\"milestones\": [{{\"title\": \"...\", \"due\": null, \"description\": \"...\"}}], \
+         \"loose_issues\": [{{\"title\": \"...\", \"body\": \"...\", \"acceptance\": \
+         [\"<EARS line>\"], \"deps\": [\"<prerequisite issue title>\"], \"milestone\": \
+         \"<one of the milestone titles above>\"}}], \
          \"recommended_stack\": \"<python|rust|typescript|go>\", \"stack_rationale\": \"<one \
          sentence>\"}}.\n\n\
+         `milestones` are the design's phases in build order (a walking-skeleton phase first, \
+         then each subsequent increment); use the phase names from the design (for example \
+         \"M1 Walking Skeleton\"). Put EVERY issue in `loose_issues` and set its `milestone` to \
+         the exact title of the phase it belongs to, so the phases become native milestones \
+         rather than tracker issues. Do NOT use epics.\n\n\
          Every issue must be small, testable, and dependency-ordered. Each `acceptance` line is \
          an EARS criterion of the form `WHEN [condition] THE SYSTEM SHALL [behavior]`. `deps` \
-         names prerequisite issues by their exact title. `milestone` is optional; omit it or \
-         set it to null if there is only one. For `recommended_stack`, choose the single best \
-         fit from python | rust | typescript | go given the design's decisions and structure \
-         (for example a Cloudflare Worker or static web app is typescript), and give a one-line \
-         `stack_rationale`.\n\n\
+         names prerequisite issues by their exact title. For `recommended_stack`, choose the \
+         single best fit from python | rust | typescript | go given the design's decisions and \
+         structure (for example a Cloudflare Worker or static web app is typescript), and give \
+         a one-line `stack_rationale`.\n\n\
          Reply with the JSON object and nothing else."
     )
 }
@@ -423,7 +504,33 @@ mod tests {
             labels: vec![],
             acceptance: vec![],
             deps: vec![],
+            milestone: None,
         }
+    }
+
+    #[test]
+    fn render_plan_folds_an_unnamed_issue_into_a_sole_milestone_deduped() {
+        // The legacy single milestone and the list carry the same title (dedupes to one), so an
+        // unnamed issue must still be folded into that milestone, not vanish. Regression guard for
+        // the two-different-sole-tests bug.
+        let m = ProposedMilestone {
+            title: "M1".to_string(),
+            due: None,
+            description: String::new(),
+        };
+        let plan = BacklogPlan {
+            milestones: vec![m.clone()],
+            milestone: Some(m),
+            loose_issues: vec![issue("Unnamed issue")],
+            ..Default::default()
+        };
+        let rendered = render_plan(&plan);
+        assert!(
+            rendered.contains("Unnamed issue"),
+            "the unnamed issue is folded into the sole (deduped) milestone, not dropped"
+        );
+        // It appears once, not once per duplicate header.
+        assert_eq!(rendered.matches("Unnamed issue").count(), 1);
     }
 
     #[test]
@@ -711,6 +818,44 @@ mod tests {
 
             let milestones = forge.list_milestones().await.unwrap();
             assert_eq!(milestones.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn seed_creates_phase_milestones_and_assigns_issues_to_them() {
+            let forge = FakeForge::new(vec![], CiState::Pass);
+            let ms = |t: &str| ProposedMilestone {
+                title: t.to_string(),
+                due: None,
+                description: String::new(),
+            };
+            let in_ms = |title: &str, milestone: &str| {
+                let mut i = issue(title);
+                i.milestone = Some(milestone.to_string());
+                i
+            };
+            let plan = BacklogPlan {
+                milestones: vec![ms("M1 Skeleton"), ms("M2 Certainty")],
+                loose_issues: vec![
+                    in_ms("Walk the pipeline", "M1 Skeleton"),
+                    in_ms("Magic number", "M2 Certainty"),
+                ],
+                ..Default::default()
+            };
+
+            seed(&plan, &forge, "status:ready").await.unwrap();
+
+            let milestones = forge.list_milestones().await.unwrap();
+            assert_eq!(milestones.len(), 2, "both phases became milestones");
+            // Each issue lands under the milestone it named.
+            for m in &milestones {
+                let children = forge.milestone_children(m.id).await.unwrap();
+                let titles: Vec<&str> = children.iter().map(|c| c.title.as_str()).collect();
+                if m.title == "M1 Skeleton" {
+                    assert_eq!(titles, vec!["Walk the pipeline"]);
+                } else {
+                    assert_eq!(titles, vec!["Magic number"]);
+                }
+            }
         }
 
         #[tokio::test]
