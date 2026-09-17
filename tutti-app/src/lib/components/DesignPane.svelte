@@ -55,6 +55,17 @@
     { id: "go", label: "Go (gofmt, vet, test)" },
   ];
 
+  function stackLabel(id: string): string {
+    return DESIGN_STACKS.find((s) => s.id === id)?.label ?? id;
+  }
+
+  // The agent's recommended stack, but only when it is one the picker can actually select, so the
+  // hint never names a stack the control will not reflect. Null when absent or unrecognized.
+  let recommendedStack = $derived.by(() => {
+    const rec = proposal?.plan.recommended_stack;
+    return rec && DESIGN_STACKS.some((s) => s.id === rec) ? rec : null;
+  });
+
   let draft = $state("");
   let reviseOpen = $state(false);
   let reviseText = $state("");
@@ -356,6 +367,11 @@
     designBusy.set(true);
     try {
       proposal = await api.designProposeBacklog();
+      // Pre-select the stack the agent recommended from the design (the user can still change
+      // it), or the default when the reply carried no valid recommendation. Reset every propose
+      // so a stale recommendation from a discarded proposal never lingers in the picker.
+      const rec = proposal.plan.recommended_stack;
+      scaffoldStack = rec && DESIGN_STACKS.some((s) => s.id === rec) ? rec : "typescript";
     } catch (e) {
       error = String(e);
     } finally {
@@ -563,15 +579,66 @@
         {:else if proposal}
           <div class="backlog">
             <div class="backlog-title">Proposed backlog</div>
-            <pre class="backlog-text">{proposal.rendered}</pre>
+            <div class="plan">
+              {#if proposal.plan.milestone}
+                <div class="plan-milestone">
+                  {proposal.plan.milestone.title}{proposal.plan.milestone.due
+                    ? ` (due ${proposal.plan.milestone.due})`
+                    : ""}
+                </div>
+              {/if}
+              <!-- Keyed by index: the plan is ephemeral (re-rendered on each propose) and a model
+                   may emit two epics or issues with the same title, which a title key would throw
+                   on (each_key_duplicate). -->
+              {#each proposal.plan.epics ?? [] as epic, ei (ei)}
+                <div class="plan-epic">
+                  <div class="plan-epic-title">{epic.title}</div>
+                  <ul class="plan-issues">
+                    {#each epic.issues as issue, ii (ii)}
+                      <li>
+                        {issue.title}
+                        {#if issue.acceptance && issue.acceptance.length}
+                          <span class="plan-meta">{issue.acceptance.length} AC</span>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/each}
+              {#if proposal.plan.loose_issues && proposal.plan.loose_issues.length}
+                <div class="plan-epic">
+                  <div class="plan-epic-title">Loose issues</div>
+                  <ul class="plan-issues">
+                    {#each proposal.plan.loose_issues as issue, li (li)}
+                      <li>
+                        {issue.title}
+                        {#if issue.acceptance && issue.acceptance.length}
+                          <span class="plan-meta">{issue.acceptance.length} AC</span>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+            </div>
             {#if proposal.scaffold_pending && !scaffolded}
               <div class="scaffold-step">
                 <div class="scaffold-title">Scaffold the stack</div>
-                <p class="scaffold-hint">
-                  You deferred the stack to the design chat. Pick the one the conversation landed
-                  on. Tutti lays down its lint, type, test, gate, and CI setup, then seeds the
-                  backlog.
-                </p>
+                {#if recommendedStack}
+                  <p class="scaffold-hint">
+                    Tutti recommends <strong>{stackLabel(recommendedStack)}</strong>
+                    from the design{proposal.plan.stack_rationale
+                      ? `: ${proposal.plan.stack_rationale.replace(/[.!?]?$/, ".")}`
+                      : "."} Change it below if you prefer another. Tutti lays down its lint, type, test,
+                    gate, and CI setup, then seeds the backlog.
+                  </p>
+                {:else}
+                  <p class="scaffold-hint">
+                    You deferred the stack to the design chat. Pick the one the conversation landed
+                    on. Tutti lays down its lint, type, test, gate, and CI setup, then seeds the
+                    backlog.
+                  </p>
+                {/if}
                 <label class="scaffold-label" for="scaffold-stack">Stack</label>
                 <select id="scaffold-stack" bind:value={scaffoldStack} disabled={thinking}>
                   {#each DESIGN_STACKS as s (s.id)}
@@ -985,15 +1052,39 @@
     font-size: 13px;
     margin-bottom: 6px;
   }
-  .backlog-text {
-    max-height: 240px;
+  .plan {
+    max-height: 300px;
     overflow: auto;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 10px;
-    font-size: 12px;
-    white-space: pre-wrap;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .plan-milestone {
+    font-weight: 600;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .plan-epic {
+    margin: 8px 0;
+  }
+  .plan-epic-title {
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .plan-issues {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .plan-issues li {
+    margin: 2px 0;
+  }
+  .plan-meta {
+    color: var(--text-faint);
+    font-size: 11px;
+    margin-left: 4px;
   }
   .seed-report {
     font-size: 13px;
