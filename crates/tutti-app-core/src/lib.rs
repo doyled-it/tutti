@@ -151,13 +151,19 @@ fn card(issue: &Issue, labels: &StatusLabels, skip: &[String]) -> IssueCard {
     }
 }
 
-fn milestone_row(m: &Milestone) -> MilestoneRow {
+/// `open_done` is the count of open issues in this milestone that carry `status:done` (shipped
+/// but not yet closed, e.g. a staging routing); it is added to the forge's closed-based done so
+/// the roadmap matches the board's `status:done`-aware Done column. `seen` is how many of the
+/// milestone's issues were visible in the issue list. `total` is the larger of the forge's exact
+/// count and `seen` (the forge count can be 0 in tests, or lag), and done is capped at total.
+fn milestone_row(m: &Milestone, open_done: u32, seen: u32) -> MilestoneRow {
+    let total = m.progress.total.max(seen);
     MilestoneRow {
         id: m.id.0,
         title: m.title.clone(),
         open: m.state == TrackState::Open,
-        total: m.progress.total,
-        done: m.progress.done,
+        total,
+        done: (m.progress.done + open_done).min(total),
     }
 }
 
@@ -445,11 +451,33 @@ pub async fn assemble_board(
 ) -> Result<Board> {
     let labels = cfg.status_labels();
     let milestones = forge.list_milestones().await?;
-    let rows: Vec<MilestoneRow> = milestones.iter().map(milestone_row).collect();
+    // All issues, used both for the columns (below) and to correct the milestone progress. The
+    // forge's `progress.done` counts CLOSED issues, but a shipped issue carries `status:done` and
+    // is not closed until the integration branch promotes to trunk (so with a staging routing a
+    // done issue stays open). Add those open-but-done issues so the roadmap agrees with the board's
+    // Done column, which classifies `status:done` as done.
+    let all_issues = forge.list_issues().await?;
+    let rows: Vec<MilestoneRow> = milestones
+        .iter()
+        .map(|m| {
+            let in_ms = all_issues
+                .iter()
+                .filter(|i| i.milestone.as_deref().map(str::trim) == Some(m.title.trim()));
+            let mut seen = 0u32;
+            let mut open_done = 0u32;
+            for i in in_ms {
+                seen += 1;
+                if i.state != IssueState::Closed && i.has_label(&labels.done) {
+                    open_done += 1;
+                }
+            }
+            milestone_row(m, open_done, seen)
+        })
+        .collect();
 
     let issues = match select {
         Some(mid) => forge.milestone_children(mid).await?,
-        None => forge.list_issues().await?,
+        None => all_issues,
     };
 
     let (mut ready, mut in_progress, mut done, mut untriaged, mut needs_human) =
@@ -837,6 +865,22 @@ mod tests {
         assert_eq!(board.done.len(), 1);
         assert_eq!(board.selected_milestone, None);
         assert_eq!(board.milestones.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn milestone_progress_counts_open_status_done_issues() {
+        // A shipped issue carries status:done but stays open until promotion (a staging routing),
+        // so the forge's closed-based progress would miss it. The roadmap must count it as done,
+        // matching the board's Done column.
+        let forge = FakeForge::new(vec![], CiState::Pass);
+        let m = forge.create_milestone("Phase 1", None, "").await.unwrap();
+        seed_issue(&forge, m.id, "status:done").await; // open + status:done
+        seed_issue(&forge, m.id, "status:ready").await;
+
+        let board = assemble_board(&forge, &cfg(), None).await.unwrap();
+        let row = board.milestones.iter().find(|r| r.id == m.id.0).unwrap();
+        assert_eq!(row.total, 2, "both issues counted");
+        assert_eq!(row.done, 1, "the open status:done issue counts as done");
     }
 
     #[tokio::test]
