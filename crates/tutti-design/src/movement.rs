@@ -106,11 +106,11 @@ pub const RAILS: &[Movement] = &[
     Movement {
         id: MovementId::Slice,
         title: "Slice",
-        guiding_question: "What is the thinnest end-to-end path, then the ribs?",
+        guiding_question: "In what order is the whole app built, walking skeleton first?",
         checklist: &[
             "backbone mapped",
-            "walking skeleton sliced",
-            "ribs prioritized",
+            "walking skeleton (first end-to-end increment)",
+            "remaining scope sequenced (nothing cut)",
         ],
         diagram_skills: &["story_map"],
     },
