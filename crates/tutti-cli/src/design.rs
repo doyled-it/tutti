@@ -748,6 +748,7 @@ mod tests {
                 labels: vec![],
                 acceptance: vec!["WHEN the test runs THE SYSTEM SHALL create this issue".into()],
                 deps: vec![],
+                milestone: None,
             }],
             ..Default::default()
         };

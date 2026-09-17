@@ -78,6 +78,8 @@ export interface ProposedIssue {
   labels?: string[];
   acceptance?: string[];
   deps?: string[];
+  /** The title of the milestone (phase) this issue belongs to. */
+  milestone?: string | null;
 }
 export interface ProposedEpic {
   title: string;
@@ -90,6 +92,9 @@ export interface ProposedMilestone {
   description?: string;
 }
 export interface BacklogPlan {
+  /** The design's phases as milestones; each issue references one by title. */
+  milestones?: ProposedMilestone[];
+  /** Legacy single milestone, kept for back-compat. */
   milestone?: ProposedMilestone | null;
   epics?: ProposedEpic[];
   loose_issues?: ProposedIssue[];
@@ -105,6 +110,36 @@ export interface BacklogProposal {
   rendered: string;
   /** The project deferred its stack to the design chat; offer a scaffold step before seed. */
   scaffold_pending: boolean;
+}
+
+export interface BacklogGroup {
+  title: string;
+  due?: string | null;
+  issues: ProposedIssue[];
+}
+
+// Group a backlog plan for display: one group per milestone (phase) with the issues assigned to
+// it, then any epics, then issues assigned to no milestone. When there is exactly one milestone,
+// an issue that names none is folded into it, matching the seed's fallback.
+export function groupBacklog(plan: BacklogPlan): {
+  groups: BacklogGroup[];
+  epics: ProposedEpic[];
+  looseIssues: ProposedIssue[];
+} {
+  const milestones = [...(plan.milestones ?? []), ...(plan.milestone ? [plan.milestone] : [])];
+  const loose = plan.loose_issues ?? [];
+  const sole = milestones.length === 1;
+  const known = new Set(milestones.map((m) => m.title.trim()));
+  const groups: BacklogGroup[] = milestones.map((m) => ({
+    title: m.title,
+    due: m.due,
+    issues: loose.filter((i) => (i.milestone ? i.milestone.trim() === m.title.trim() : sole)),
+  }));
+  const looseIssues = loose.filter((i) => {
+    if (i.milestone) return !known.has(i.milestone.trim());
+    return !sole; // an unnamed issue with a sole milestone was folded above
+  });
+  return { groups, epics: plan.epics ?? [], looseIssues };
 }
 
 export interface SeedReport {
