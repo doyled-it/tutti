@@ -541,10 +541,11 @@ pub async fn design_scaffold(
     state: State<'_, AppState>,
 ) -> Result<ScaffoldReportDto, String> {
     let _busy = acquire_busy(&state.design_busy)?;
-    let (integration_branch, repo, repo_root) = {
+    let (config, integration_branch, repo, repo_root) = {
         let guard = state.project.lock().await;
         let p = guard.as_ref().ok_or("no project loaded")?;
         (
+            p.config.clone(),
             p.config.integration_branch.clone(),
             p.repo.clone(),
             p.repo_root.clone(),
@@ -564,6 +565,44 @@ pub async fn design_scaffold(
     // Post-write warnings (a failed `uv sync`, lockfile generation, ...) are not fatal, but the
     // gate tooling is then half-configured, so carry them to the pane instead of dropping them.
     let mut warnings = report.warnings;
+    // Wire the scaffolded stack's real gate into tutti.toml. When the stack is deferred to the
+    // design chat, init wrote the no-op gate (`["true"]`) because no stack was chosen yet; the
+    // scaffold just laid down the gate script (e.g. scripts/check.sh) but left tutti.toml
+    // pointing at the no-op, so the engine would ship every issue unverified. Re-render the file
+    // from the loaded config with the stack's gate, and update the in-memory config so a run
+    // started this session uses it too. Best effort: a write failure is a warning, not fatal.
+    let params = tutti_app_core::InitParams {
+        trunk: config.trunk.clone(),
+        routing: config.routing.clone(),
+        integration_branch: config.integration_branch.clone(),
+        model: config.model.clone(),
+        max_issues_per_run: config.max_issues_per_run,
+        require_label: config.select.require_label.clone(),
+        skip_labels: config.select.skip_labels.clone(),
+        gate_commands: profile.gate_commands.clone(),
+        forge_kind: match config.forge.kind {
+            tutti_core::config::ForgeKind::GitHub => "github",
+            tutti_core::config::ForgeKind::Gitea => "gitea",
+            tutti_core::config::ForgeKind::GitLab => "gitlab",
+        }
+        .to_string(),
+        login: config.forge.login.clone(),
+    };
+    match std::fs::write(
+        repo_root.join("tutti.toml"),
+        tutti_app_core::render_tutti_toml(&params),
+    ) {
+        Ok(()) => {
+            let mut guard = state.project.lock().await;
+            if let Some(p) = guard.as_mut() {
+                p.config.gate.commands = profile.gate_commands.clone();
+            }
+        }
+        Err(e) => warnings.push(format!(
+            "could not update tutti.toml with the {} gate ({e}); set [gate] commands by hand",
+            profile.display_name
+        )),
+    }
     // Commit + push the scaffold. Stage everything EXCEPT `.tutti/` so the design session state
     // and the `.tutti/scaffold.pending` marker are never committed or published (the marker is a
     // local signal; the session is internal). Unlike `seed_stack`, which runs on a pristine repo
