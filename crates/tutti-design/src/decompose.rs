@@ -45,7 +45,7 @@ pub struct ProposedMilestone {
 
 /// The whole proposed backlog. `milestone` is an optional title+due; epics group issues;
 /// `loose_issues` are issues with no epic.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BacklogPlan {
     #[serde(default)]
     pub milestone: Option<ProposedMilestone>,
@@ -53,6 +53,14 @@ pub struct BacklogPlan {
     pub epics: Vec<ProposedEpic>,
     #[serde(default)]
     pub loose_issues: Vec<ProposedIssue>,
+    /// The stack the agent recommends for a new repo, derived from the ratified design (one of
+    /// the built-in stack ids: python | rust | typescript | go). None for an existing repo or
+    /// when the design does not imply one; the scaffold step pre-selects it.
+    #[serde(default)]
+    pub recommended_stack: Option<String>,
+    /// A one-line justification for `recommended_stack`, shown beside the scaffold picker.
+    #[serde(default)]
+    pub stack_rationale: Option<String>,
 }
 
 impl BacklogPlan {
@@ -366,11 +374,16 @@ pub fn backlog_prompt(session: &crate::session::SessionState) -> String {
          {{\"milestone\": {{\"title\": \"...\", \"due\": null, \"description\": \"...\"}}, \
          \"epics\": [{{\"title\": \"...\", \"body\": \"...\", \"issues\": [{{\"title\": \"...\", \
          \"body\": \"...\", \"acceptance\": [\"<EARS line>\"], \"deps\": [\"<prerequisite issue \
-         title>\"]}}]}}], \"loose_issues\": [<same issue shape, for issues with no epic>]}}.\n\n\
+         title>\"]}}]}}], \"loose_issues\": [<same issue shape, for issues with no epic>], \
+         \"recommended_stack\": \"<python|rust|typescript|go>\", \"stack_rationale\": \"<one \
+         sentence>\"}}.\n\n\
          Every issue must be small, testable, and dependency-ordered. Each `acceptance` line is \
          an EARS criterion of the form `WHEN [condition] THE SYSTEM SHALL [behavior]`. `deps` \
          names prerequisite issues by their exact title. `milestone` is optional; omit it or \
-         set it to null if there is only one.\n\n\
+         set it to null if there is only one. For `recommended_stack`, choose the single best \
+         fit from python | rust | typescript | go given the design's decisions and structure \
+         (for example a Cloudflare Worker or static web app is typescript), and give a one-line \
+         `stack_rationale`.\n\n\
          Reply with the JSON object and nothing else."
     )
 }
@@ -481,6 +494,7 @@ mod tests {
                 issues: vec![issue("Issue A"), issue("Issue B")],
             }],
             loose_issues: vec![issue("Loose Issue")],
+            ..Default::default()
         };
 
         let rendered = render_plan(&plan);
@@ -502,6 +516,7 @@ mod tests {
                 issues: vec![issue("Issue A"), issue("Issue B")],
             }],
             loose_issues: vec![issue("Loose Issue")],
+            ..Default::default()
         };
         assert_eq!(plan.issue_count(), 3);
     }
@@ -527,6 +542,25 @@ mod tests {
         let plan = parse_backlog(reply).unwrap();
         assert_eq!(plan.issue_count(), 1);
         assert_eq!(plan.epics[0].title, "Auth");
+    }
+
+    #[test]
+    fn parse_backlog_reads_the_recommended_stack() {
+        let reply = "{\"epics\":[{\"title\":\"A\",\"body\":\"b\",\"issues\":[{\"title\":\"I\",\"body\":\"b\",\"acceptance\":[\"WHEN x THE SYSTEM SHALL y\"],\"deps\":[]}]}],\"loose_issues\":[],\"recommended_stack\":\"typescript\",\"stack_rationale\":\"Cloudflare Worker + static web app.\"}";
+        let plan = parse_backlog(reply).unwrap();
+        assert_eq!(plan.recommended_stack.as_deref(), Some("typescript"));
+        assert_eq!(
+            plan.stack_rationale.as_deref(),
+            Some("Cloudflare Worker + static web app.")
+        );
+    }
+
+    #[test]
+    fn parse_backlog_tolerates_a_missing_recommended_stack() {
+        // An older or terse reply without the field still parses; the scaffold step falls back.
+        let reply = "{\"epics\":[{\"title\":\"A\",\"body\":\"b\",\"issues\":[{\"title\":\"I\",\"body\":\"b\",\"acceptance\":[\"WHEN x THE SYSTEM SHALL y\"],\"deps\":[]}]}],\"loose_issues\":[]}";
+        let plan = parse_backlog(reply).unwrap();
+        assert_eq!(plan.recommended_stack, None);
     }
 
     #[test]
@@ -571,6 +605,7 @@ mod tests {
                 issues: vec![issue("Issue A"), issue("Issue B")],
             }],
             loose_issues: vec![issue("Loose Issue")],
+            ..Default::default()
         }
     }
 
@@ -622,6 +657,7 @@ mod tests {
                 milestone: None,
                 epics: vec![],
                 loose_issues: vec![issue("Solo issue")],
+                ..Default::default()
             };
 
             let report = seed(&plan, &forge, "status:ready").await.unwrap();
@@ -644,6 +680,7 @@ mod tests {
                 milestone: None,
                 epics: vec![],
                 loose_issues: vec![tagged],
+                ..Default::default()
             };
 
             seed(&plan, &forge, "status:ready").await.unwrap();
@@ -667,6 +704,7 @@ mod tests {
                 }),
                 epics: vec![],
                 loose_issues: vec![issue("Some issue")],
+                ..Default::default()
             };
 
             seed(&plan, &forge, "status:ready").await.unwrap();
@@ -693,6 +731,7 @@ mod tests {
                     },
                 ],
                 loose_issues: vec![],
+                ..Default::default()
             };
 
             let report = seed(&plan, &forge, "status:ready").await.unwrap();

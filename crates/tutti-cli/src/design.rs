@@ -749,6 +749,7 @@ mod tests {
                 acceptance: vec!["WHEN the test runs THE SYSTEM SHALL create this issue".into()],
                 deps: vec![],
             }],
+            ..Default::default()
         };
         let forge = tutti_forge_github::GitHubForge {
             repo: repo.clone(),

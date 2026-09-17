@@ -93,6 +93,11 @@ export interface BacklogPlan {
   milestone?: ProposedMilestone | null;
   epics?: ProposedEpic[];
   loose_issues?: ProposedIssue[];
+  /** The stack the agent recommends for a new repo (python | rust | typescript | go), derived
+   * from the design; the scaffold step pre-selects it. */
+  recommended_stack?: string | null;
+  /** One-line justification for `recommended_stack`, shown beside the scaffold picker. */
+  stack_rationale?: string | null;
 }
 
 export interface BacklogProposal {
