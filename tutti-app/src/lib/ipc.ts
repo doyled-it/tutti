@@ -219,8 +219,14 @@ export const api = {
   onSubsession: (cb: (ev: SubsessionEvent) => void) =>
     listen<SubsessionEvent>("subsession://event", (e) => cb(e.payload)),
   // Fired once when a whole run ends (any exit path, including error), so the UI can
-  // leave the running state even when no terminal DrainComplete was emitted.
-  onRunEnded: (cb: () => void) => listen("engine://run-ended", () => cb()),
+  // leave the running state even when no terminal DrainComplete was emitted. The payload
+  // carries the failure reason when the run stopped on an error, and null on a clean end.
+  onRunEnded: (cb: (reason: string | null) => void) =>
+    listen<string | null>("engine://run-ended", (e) => cb(e.payload ?? null)),
+  // Fired only when a run stops on an engine error, carrying a human-readable reason, so the
+  // UI can tell the user WHY it stopped instead of showing a silent "idle, 0 shipped".
+  onRunError: (cb: (reason: string) => void) =>
+    listen<string>("engine://run-error", (e) => cb(e.payload)),
   getTranscript: () => invoke<OrchestratorTranscript>("get_transcript"),
   sendOrchestratorMessage: (message: string) =>
     invoke<void>("send_orchestrator_message", { message }),
