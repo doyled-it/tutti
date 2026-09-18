@@ -11,7 +11,7 @@ use tutti_core::domain::{
 };
 use tutti_core::status::{Status, StatusLabels};
 use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap};
-use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
+use tutti_core::traits::{remote_head_sha, ClaimGuard, EngineError, Forge, Result};
 
 /// Ceiling for `gh issue list --limit` when listing the whole backlog for the board.
 /// `gh` paginates internally up to this, so unlike the REST adapters no page loop is
@@ -199,12 +199,28 @@ impl Forge for GitHubForge {
     }
 
     async fn push_branch(&self, branch: &str) -> Result<()> {
-        // Push the engine-owned feature branch to origin so a PR can be opened
-        // against it. force-with-lease because feat branches are engine-owned and
-        // recreated with `git worktree add -B`; a stale remote tip must yield to
-        // the freshly built local branch, but not clobber an unexpected foreign push.
-        self.git(&["push", "-u", "--force-with-lease", "origin", branch])
-            .await?;
+        // Push the engine-owned feature branch to origin so a PR can be opened against it. The
+        // branch is recreated from base each run (`git worktree add -B`), so a stale remote tip
+        // must yield to the freshly built local branch, but a foreign push must not be
+        // clobbered. A bare `--force-with-lease` leases against the local `origin/<branch>`
+        // remote-tracking ref, which git refuses with "stale info" when that ref is out of date
+        // (the branch was deleted or replaced out-of-band), permanently wedging the issue. So
+        // lease against the remote's ACTUAL current tip, read live with ls-remote: an absent
+        // branch is a plain create, and an existing one is leased against its real sha, still
+        // refusing to clobber a foreign push that lands in the race window.
+        let ls = self
+            .git(&["ls-remote", "--heads", "origin", branch])
+            .await
+            .unwrap_or_default();
+        match remote_head_sha(&ls) {
+            Some(sha) => {
+                let lease = format!("--force-with-lease={branch}:{sha}");
+                self.git(&["push", "-u", &lease, "origin", branch]).await?;
+            }
+            None => {
+                self.git(&["push", "-u", "origin", branch]).await?;
+            }
+        }
         Ok(())
     }
 

@@ -143,3 +143,41 @@ pub trait RoutingStrategy: Send + Sync {
     fn name(&self) -> &'static str;
     fn target_branch(&self, issue: &Issue) -> Result<BranchPlan>;
 }
+
+/// The commit SHA a `git ls-remote --heads origin <branch>` output points at, or `None` when
+/// the branch is absent on the remote (empty output). `ls-remote` prints one line per matching
+/// ref, `"<sha>\t<refname>"`, so the SHA is the first whitespace-delimited token of the first
+/// line.
+///
+/// A forge adapter uses this to lease a force-push against the remote's ACTUAL current tip
+/// instead of a bare `--force-with-lease`, which leases against the local `origin/<branch>`
+/// remote-tracking ref and is refused with "stale info" whenever that ref is out of date (the
+/// branch was deleted or replaced out-of-band), permanently wedging the issue.
+pub fn remote_head_sha(ls_remote_output: &str) -> Option<&str> {
+    // `split_whitespace().next()` skips blank/whitespace-only lines and never yields an empty
+    // token, so the first token of the first non-blank line is the SHA (or None if there is no
+    // matching ref).
+    ls_remote_output
+        .lines()
+        .find_map(|line| line.split_whitespace().next())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_head_sha_reads_the_sha_from_ls_remote_output() {
+        let out = "0123456789abcdef0123456789abcdef01234567\trefs/heads/feat/issue-3\n";
+        assert_eq!(
+            remote_head_sha(out),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+    }
+
+    #[test]
+    fn remote_head_sha_is_none_for_an_absent_branch() {
+        assert_eq!(remote_head_sha(""), None);
+        assert_eq!(remote_head_sha("\n  \n"), None);
+    }
+}
