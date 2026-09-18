@@ -64,7 +64,7 @@ pub async fn start(
     let run_cancel = cancel.clone();
     let app_run = app.clone();
     tokio::spawn(async move {
-        run_loop(config, repo, repo_root, run_cancel, tx, sub_tx).await;
+        let outcome = run_loop(config, repo, repo_root, run_cancel, tx, sub_tx).await;
 
         let st = app_run.state::<AppState>();
         {
@@ -72,11 +72,23 @@ pub async fn start(
             run.state = RunState::Idle;
             run.cancel = None;
         }
+        // Surface a run that ended on an error rather than swallowing it into a silent idle.
+        // The reason goes to the backend log (visible in the dev console / terminal) and to a
+        // dedicated UI event, so the user sees WHY a run stopped instead of "idle, 0 shipped".
+        let error = match outcome {
+            Ok(()) => None,
+            Err(reason) => {
+                eprintln!("[tutti] run ended on error: {reason}");
+                let _ = app_run.emit("engine://run-error", reason.clone());
+                Some(reason)
+            }
+        };
         // A guaranteed terminal signal for the UI, emitted on every exit path (including
         // an engine error, where `drain_with` returns before its own DrainComplete). The
         // frontend drives run-state off this, not off the per-pass DrainComplete, so a
-        // failed run never leaves the UI stuck in "running".
-        let _ = app_run.emit("engine://run-ended", ());
+        // failed run never leaves the UI stuck in "running". The optional reason lets a
+        // listener that missed `run-error` still show why it stopped.
+        let _ = app_run.emit("engine://run-ended", error);
     });
 
     Ok(())
@@ -85,6 +97,9 @@ pub async fn start(
 /// Build the adapters and drain repeatedly until no work is ready or `cancel` fires.
 /// `drain_with` emits `DrainStarted`/`DrainComplete` per pass (used by the UI to reconcile
 /// the board); the run's own start/end is signalled separately by the caller.
+/// Run the drain loop, returning the error that ended it (if any) rather than swallowing it, so
+/// the caller can surface why a run stopped. `Ok(())` means a clean end (no ready work or a
+/// cancel); `Err` carries a human-readable reason.
 async fn run_loop(
     config: Config,
     repo: String,
@@ -92,17 +107,13 @@ async fn run_loop(
     cancel: Arc<AtomicBool>,
     tx: tokio::sync::mpsc::UnboundedSender<EngineEvent>,
     sub_tx: tokio::sync::mpsc::UnboundedSender<SubsessionEvent>,
-) {
-    let forge = match build_forge(&config, &repo, repo_root.clone()) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
+) -> Result<(), String> {
+    let forge = build_forge(&config, &repo, repo_root.clone())
+        .map_err(|e| format!("could not build the forge adapter: {e}"))?;
     let backend = ClaudeBackend::default();
     let workspace = GitWorkspace::new(repo_root.clone());
-    let engine = match Engine::new(&config, forge.as_ref(), &backend, Box::new(workspace)) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
+    let engine = Engine::new(&config, forge.as_ref(), &backend, Box::new(workspace))
+        .map_err(|e| format!("could not build the engine: {e}"))?;
     // codegraph context, gated by config and binary presence. `detect` returns None when
     // the binary is absent, so this is a full no-op on machines without codegraph.
     let codegraph = if config.codegraph_enabled() {
@@ -132,7 +143,11 @@ async fn run_loop(
         }
         match engine.drain_with(&hooks).await {
             Ok((shipped, _)) if shipped > 0 => continue, // more may be ready
-            _ => break,                                  // 0 shipped or error
+            Ok(_) => break,                              // 0 shipped: no ready work or a clean stop
+            // A real engine error (a git worktree collision, a forge/API failure, ...) previously
+            // vanished into a silent idle. Return it so the caller logs it and tells the user.
+            Err(e) => return Err(format!("the engine stopped on an error: {e}")),
         }
     }
+    Ok(())
 }

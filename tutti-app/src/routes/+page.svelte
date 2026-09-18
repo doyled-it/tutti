@@ -247,6 +247,9 @@
       // subsession event from the new run can arrive while this is suspended and would be
       // wiped by a clear placed after. Clearing early costs nothing if the start then fails.
       clearSubsessions();
+      // Clear a stale error banner from a prior failed run so it does not linger over a fresh
+      // run; a new failure re-sets it via the run-ended reason.
+      loadError = null;
       await api.startRun();
       // Optimistic: show running immediately and zero the shipped count for this run (the
       // backend confirms via DrainStarted, and ends via run-ended).
@@ -297,9 +300,14 @@
       }
     });
     // The run's true end (any exit path, including an engine error): leave the running
-    // state and reconcile the board one last time against forge truth.
-    const endedPromise = api.onRunEnded(async () => {
+    // state and reconcile the board one last time against forge truth. When the run stopped
+    // on an error, the reason rides the event payload; surface it so an aborted run does not
+    // read as a silent "idle, 0 shipped".
+    const endedPromise = api.onRunEnded(async (reason) => {
       runStatus.update((r) => ({ ...r, state: "idle", current: undefined }));
+      if (reason) {
+        loadError = reason;
+      }
       try {
         board.set(await api.getBoard($board?.selected_milestone ?? undefined));
       } catch {
