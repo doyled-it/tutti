@@ -264,6 +264,24 @@ pub fn merge_package_json(existing: &str) -> Option<String> {
     Some(root.to_string())
 }
 
+/// Merge the `vcs` block into an existing `biome.json` so `biome check .` honors the
+/// `.gitignore` (and thus skips the engine's `.tutti/` artifacts). Additive: creates the
+/// `vcs` block if absent and adds each key only when the user has not set it, so an explicit
+/// `useIgnoreFile: false` is respected and an already-configured file is left byte-identical
+/// (idempotent). Returns `None` (leave the file untouched) if the content is not a JSON
+/// object, or if `vcs` is present as a non-object.
+pub fn merge_biome(existing: &str) -> Option<String> {
+    let root = CstRootNode::parse(existing, &ParseOptions::default()).ok()?;
+    let obj = root.object_value()?;
+    let vcs = obj.object_value_or_create("vcs")?;
+    // `useIgnoreFile` only takes effect with `enabled` + `clientKind`, so add all three; each
+    // is additive, so a user who deliberately disabled vcs keeps their choice.
+    cst_add_if_absent(&vcs, "enabled", true);
+    cst_add_if_absent(&vcs, "clientKind", "git");
+    cst_add_if_absent(&vcs, "useIgnoreFile", true);
+    Some(root.to_string())
+}
+
 /// A config file that exists and will be merged, with a preview diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigMerge {
@@ -309,6 +327,7 @@ fn merge_config(stack_id: &str, path: &Path, existing: &str) -> MergeAttempt {
         ("rust", Some("clippy.toml")) => merge_clippy_toml(existing),
         ("typescript", Some("tsconfig.json")) => merge_tsconfig(existing),
         ("typescript", Some("package.json")) => merge_package_json(existing),
+        ("typescript", Some("biome.json")) => merge_biome(existing),
         _ => return MergeAttempt::NoMerger,
     };
     match merged {
@@ -1325,6 +1344,44 @@ mod tests {
             v["devDependencies"]["@biomejs/biome"].is_string(),
             "biome is a dev dependency:\n{out}"
         );
+    }
+
+    #[test]
+    fn merge_biome_adds_the_vcs_ignore_block() {
+        let out = merge_biome("{ \"linter\": { \"enabled\": true } }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["vcs"]["enabled"], serde_json::json!(true));
+        assert_eq!(v["vcs"]["clientKind"], serde_json::json!("git"));
+        assert_eq!(
+            v["vcs"]["useIgnoreFile"],
+            serde_json::json!(true),
+            "biome must honor .gitignore so it skips .tutti/:\n{out}"
+        );
+        // The user's existing config is preserved.
+        assert_eq!(v["linter"]["enabled"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn merge_biome_is_idempotent_and_respects_an_explicit_opt_out() {
+        let once = merge_biome("{ \"formatter\": { \"enabled\": true } }").unwrap();
+        assert_eq!(
+            merge_biome(&once).unwrap(),
+            once,
+            "a second merge must produce no further change"
+        );
+        // An explicit opt-out is additive-respected: useIgnoreFile:false is left alone.
+        let out = merge_biome("{ \"vcs\": { \"useIgnoreFile\": false } }").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["vcs"]["useIgnoreFile"],
+            serde_json::json!(false),
+            "an explicit useIgnoreFile:false must be preserved:\n{out}"
+        );
+    }
+
+    #[test]
+    fn merge_biome_returns_none_on_unparseable_input() {
+        assert!(merge_biome("not json at all }{").is_none());
     }
 
     /// Live: retrofit a clean Go fixture (valid, gofmt-clean, test-passing code, no tooling)

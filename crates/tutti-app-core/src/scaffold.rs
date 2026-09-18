@@ -364,7 +364,7 @@ jobs:
         ), false, FileRole::Tooling),
         f(".python-version", String::from("3.13\n"), false, FileRole::Tooling),
         f(".gitignore", String::from(
-"__pycache__/\n.venv/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n"), false, FileRole::Tooling),
+"__pycache__/\n.venv/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n.tutti/\n"), false, FileRole::Tooling),
         f(&format!("src/{pkg}/__init__.py"), format!(
 "\"\"\"The {pkg} package.\"\"\"\n\nfrom {pkg}.core import add\n\n__all__ = [\"add\"]\n"), false, FileRole::Sample),
         f(&format!("src/{pkg}/core.py"), String::from(
@@ -518,7 +518,7 @@ jobs:
         ),
         f(
             ".gitignore",
-            String::from("/target/\n"),
+            String::from("/target/\n.tutti/\n"),
             false,
             FileRole::Tooling,
         ),
@@ -604,6 +604,7 @@ fn typescript_files(ctx: &ScaffoldContext) -> Vec<ScaffoldFile> {
             String::from(
                 r#"{
   "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "linter": { "enabled": true, "rules": { "recommended": true } },
   "formatter": { "enabled": true, "indentStyle": "space" }
 }
@@ -704,7 +705,7 @@ jobs:
         ),
         f(
             ".gitignore",
-            String::from("node_modules/\n"),
+            String::from("node_modules/\n.tutti/\n"),
             false,
             FileRole::Tooling,
         ),
@@ -857,7 +858,7 @@ jobs:
         ),
         f(
             ".gitignore",
-            String::from("*.exe\n*.test\n*.out\n"),
+            String::from("*.exe\n*.test\n*.out\n.tutti/\n"),
             false,
             FileRole::Tooling,
         ),
@@ -1062,6 +1063,45 @@ mod tests {
             );
             by_path(".gitignore");
         }
+    }
+
+    /// Every profile gitignores `.tutti/`, so the agent's `.tutti/handoff.json` (and the
+    /// other engine artifacts) are never swept into a feat commit by `git add -A` and never
+    /// linted by the gate. Without this the committed handoff file fails the project's own
+    /// format check (biome flagged it) and blocks every merge.
+    #[test]
+    fn every_profile_gitignores_the_tutti_dir() {
+        for profile in available_stacks() {
+            let id = profile.id;
+            let files = (profile.files)(&ctx());
+            let gitignore = &files
+                .iter()
+                .find(|f| f.path == std::path::Path::new(".gitignore"))
+                .unwrap_or_else(|| panic!("{id} missing .gitignore"))
+                .contents;
+            assert!(
+                gitignore.lines().any(|l| l.trim() == ".tutti/"),
+                "{id} .gitignore must ignore .tutti/ (got: {gitignore:?})"
+            );
+        }
+    }
+
+    /// The TypeScript gate is `biome check .`, which walks the whole tree (unlike ruff /
+    /// cargo fmt / gofmt, which only touch source files). Even with `.tutti/` gitignored the
+    /// file is still on disk in the worktree when the ship-gate re-runs, so biome must be
+    /// told to honor the ignore file, or it flags the on-disk `.tutti/handoff.json`.
+    #[test]
+    fn typescript_biome_honors_the_ignore_file() {
+        let files = (typescript_profile().files)(&ctx());
+        let biome = &files
+            .iter()
+            .find(|f| f.path == std::path::Path::new("biome.json"))
+            .expect("typescript biome.json")
+            .contents;
+        assert!(
+            biome.contains("\"useIgnoreFile\": true"),
+            "biome.json must set vcs.useIgnoreFile so biome skips gitignored .tutti/ (got: {biome})"
+        );
     }
 
     /// Each profile's AGENTS.md is the full constitution, not just the gate blurb: the
