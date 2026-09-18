@@ -11,7 +11,7 @@ use tutti_core::domain::{
 };
 use tutti_core::status::{Status, StatusLabels};
 use tutti_core::tracking::{Epic, EpicId, Milestone, MilestoneId, Roadmap};
-use tutti_core::traits::{ClaimGuard, EngineError, Forge, Result};
+use tutti_core::traits::{remote_head_sha, ClaimGuard, EngineError, Forge, Result};
 
 /// Issues requested per page when listing the whole backlog.
 const ISSUE_PAGE_SIZE: usize = 100;
@@ -462,8 +462,24 @@ impl Forge for GiteaForge {
     }
 
     async fn push_branch(&self, branch: &str) -> Result<()> {
-        self.git(&["push", "-u", "--force-with-lease", "origin", branch])
-            .await?;
+        // Lease the force-push against the remote's actual current tip (read live with
+        // ls-remote), not the local `origin/<branch>` remote-tracking ref. A bare
+        // `--force-with-lease` is refused with "stale info" when that ref is out of date (the
+        // branch was deleted or replaced out-of-band), permanently wedging the issue. An absent
+        // branch is a plain create; an existing one is leased against its real sha.
+        let ls = self
+            .git(&["ls-remote", "--heads", "origin", branch])
+            .await
+            .unwrap_or_default();
+        match remote_head_sha(&ls) {
+            Some(sha) => {
+                let lease = format!("--force-with-lease={branch}:{sha}");
+                self.git(&["push", "-u", &lease, "origin", branch]).await?;
+            }
+            None => {
+                self.git(&["push", "-u", "origin", branch]).await?;
+            }
+        }
         Ok(())
     }
 
