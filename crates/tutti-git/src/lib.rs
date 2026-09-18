@@ -48,26 +48,20 @@ impl GitWorkspace {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// Resolve `base` to a commit-ish that exists locally for `git worktree add`.
+    /// Resolve `base` to a commit-ish for `git worktree add`, refreshed to the current remote
+    /// tip.
     ///
-    /// The engine picks `base` from `Forge::branch_exists`, which is remote truth
-    /// ("exists on origin"). `git worktree add` resolves its base as a local
-    /// commit-ish, so on a fresh clone an integration branch that exists on origin
-    /// but not locally would fail or resolve to a stale ref. Prefer the local ref,
-    /// fall back to `origin/<base>`, and otherwise error asking for a fetch.
+    /// The engine picks `base` from `Forge::branch_exists`, which is remote truth ("exists on
+    /// origin"). An integration branch is remote-authoritative: the engine pushes every merge
+    /// to it, and a human fix, a promotion, or another runner may advance `origin/<base>` since
+    /// this clone last saw it. So a worktree must start from the CURRENT remote tip, not a
+    /// stale local `<base>` or a stale `origin/<base>` remote-tracking ref (either would build
+    /// on outdated integration state and conflict at merge). Fetch `origin/<base>` first, then
+    /// prefer it, falling back to a local ref only when there is no `origin/<base>` to fetch (a
+    /// repo with no remote, or a transient fetch failure that leaves only the local ref).
     async fn resolve_base(&self, base: &str) -> Result<String> {
-        if self
-            .git(&[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{base}^{{commit}}"),
-            ])
-            .await
-            .is_ok()
-        {
-            return Ok(base.to_string());
-        }
+        // Best-effort: no remote, or a transient failure, falls through to the refs we have.
+        let _ = self.git(&["fetch", "origin", base]).await;
         let origin = format!("origin/{base}");
         if self
             .git(&[
@@ -80,6 +74,18 @@ impl GitWorkspace {
             .is_ok()
         {
             return Ok(origin);
+        }
+        if self
+            .git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{base}^{{commit}}"),
+            ])
+            .await
+            .is_ok()
+        {
+            return Ok(base.to_string());
         }
         Err(EngineError::Forge(format!(
             "base ref '{base}' not found locally or as origin/{base}; fetch first"
@@ -97,8 +103,8 @@ impl Workspace for GitWorkspace {
         let _ = self
             .git(&["worktree", "remove", "--force", &path_str])
             .await;
-        // Resolve `base` to a ref that exists locally (it may be remote-only on a
-        // fresh clone) before handing it to git.
+        // Resolve `base` to the current remote tip (fetched), falling back to a local ref,
+        // before handing it to git.
         let base_ref = self.resolve_base(base).await?;
         // git worktree add -B <branch> <path> <base>
         // `-B` creates the branch or resets it to `base` if it already exists
@@ -143,8 +149,8 @@ impl Workspace for GitWorkspace {
     }
 
     async fn has_commits(&self, handle: &WorkspaceHandle, base: &str) -> Result<bool> {
-        // Resolve `base` the same way `create` does (local ref, then origin/<base>),
-        // then count commits on the worktree's HEAD that are not on that base. A
+        // Resolve `base` the same way `create` does (the refreshed origin/<base>, else a
+        // local ref), then count commits on the worktree's HEAD that are not on that base. A
         // non-zero count means the agent committed its own work.
         let base_ref = self.resolve_base(base).await?;
         let path_str = handle.path.to_string_lossy().into_owned();
@@ -238,6 +244,62 @@ mod tests {
             "base content should be checked out"
         );
         assert_eq!(h.branch, "feat/issue-3");
+    }
+
+    /// A worktree bases off the CURRENT remote tip, not a stale local ref. Simulates the
+    /// engine's clone falling behind after `origin/<base>` was advanced out-of-band (a human
+    /// fix, a promotion, another runner): `create` must fetch and start from the new tip, so
+    /// the freshly seeded content is present and the build does not conflict at merge.
+    #[tokio::test]
+    async fn create_bases_off_the_refreshed_remote_tip_not_a_stale_local_ref() {
+        // A bare "origin" plus two clones: `engine` (falls behind) and `other` (advances it).
+        let origin = tempfile::tempdir().unwrap();
+        run_git(origin.path(), vec!["init", "--bare", "-b", "main"]).await;
+        let seed = temp_repo().await;
+        run_git(
+            seed.path(),
+            vec!["remote", "add", "origin", origin.path().to_str().unwrap()],
+        )
+        .await;
+        run_git(seed.path(), vec!["push", "origin", "main"]).await;
+
+        let engine = tempfile::tempdir().unwrap();
+        run_git(
+            engine.path().parent().unwrap(),
+            vec![
+                "clone",
+                origin.path().to_str().unwrap(),
+                engine.path().to_str().unwrap(),
+            ],
+        )
+        .await;
+
+        // Another clone advances origin/main with a new file the engine has not seen.
+        let other = tempfile::tempdir().unwrap();
+        run_git(
+            other.path().parent().unwrap(),
+            vec![
+                "clone",
+                origin.path().to_str().unwrap(),
+                other.path().to_str().unwrap(),
+            ],
+        )
+        .await;
+        run_git(other.path(), vec!["config", "user.email", "o@o.o"]).await;
+        run_git(other.path(), vec!["config", "user.name", "o"]).await;
+        std::fs::write(other.path().join("added-remotely.txt"), "new").unwrap();
+        run_git(other.path(), vec!["add", "."]).await;
+        run_git(other.path(), vec!["commit", "-m", "feat: remote advance"]).await;
+        run_git(other.path(), vec!["push", "origin", "main"]).await;
+
+        // The engine clone is now behind and has NOT fetched: its local `main` and its
+        // `origin/main` tracking ref both predate the remote advance.
+        let ws = GitWorkspace::new(engine.path());
+        let h = ws.create(IssueId(7), "main").await.unwrap();
+        assert!(
+            h.path.join("added-remotely.txt").exists(),
+            "worktree must be based on the refreshed remote tip, not the stale local ref"
+        );
     }
 
     #[tokio::test]
