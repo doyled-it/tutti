@@ -115,6 +115,12 @@
 
 <div class="pane">
   <div class="transcript">
+    {#if messages.length === 0 && !showThinking}
+      <div class="optional-note">
+        Optional. Design and the Board cover the whole build. Use this to course-correct or add a
+        one-off the backlog missed, not as a required step.
+      </div>
+    {/if}
     {#each messages as m, i}
       <div class="msg {m.role} {m.kind}">
         {#if m.kind === "tool"}
@@ -189,6 +195,13 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .optional-note {
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.5;
+    max-width: 60ch;
+    padding: 4px 2px;
   }
   .msg {
     display: flex;

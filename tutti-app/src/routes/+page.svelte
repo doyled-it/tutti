@@ -7,6 +7,7 @@
   import { get } from "svelte/store";
   import { api } from "$lib/ipc";
   import type { InitForm, IssueDetail, Probe, SubsessionEvent } from "$lib/ipc";
+  import { landingSection } from "$lib/board";
   import {
     projects,
     activeDir,
@@ -113,7 +114,9 @@
       throw e;
     }
     activeDir.set(dir);
-    board.set(await api.getBoard());
+    const b = await api.getBoard();
+    board.set(b);
+    section.set(landingSection(b));
     await loadGateStatus();
     selectedIssueId.set(null);
   }
@@ -144,7 +147,9 @@
       // show the previous project's issue over the new board.
       selectedIssueId.set(null);
       issueDetail = null;
-      board.set(await api.getBoard());
+      const b = await api.getBoard();
+      board.set(b);
+      section.set(landingSection(b));
       await loadGateStatus();
     } catch (e) {
       loadError = String(e);
@@ -165,7 +170,11 @@
       activeDir.set(entry.dir);
       selectedIssueId.set(null);
       issueDetail = null;
-      board.set(await api.getBoard());
+      const b = await api.getBoard();
+      board.set(b);
+      // A freshly initialized project has no backlog yet, so land on Design like the other
+      // entry points (switchTo, onAdd) rather than an empty Board.
+      section.set(landingSection(b));
       await loadGateStatus();
       pendingInit = null;
     } catch (e) {
