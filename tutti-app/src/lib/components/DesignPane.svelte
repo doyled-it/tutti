@@ -729,9 +729,9 @@
         {:else if seedReport}
           <div class="seed-report">
             <strong>Design complete.</strong>
-            Seeded {seedReport.created.length} issue(s), skipped {seedReport.skipped.length} already
-            present. Design is a one-time step per project. Head to the Board and hit Run to build
-            it; come back here only to extend the backlog later.
+            Seeded {seedReport.created.length} issue(s), skipped {seedReport.skipped.length} already present.
+            Design is a one-time step per project. Head to the Board and hit Run to build it; come back
+            here only to extend the backlog later.
             <div class="compose-actions">
               <button class="accent" onclick={() => section.set("board")}>Go to the Board</button>
             </div>
