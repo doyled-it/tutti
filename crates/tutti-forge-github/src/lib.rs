@@ -49,26 +49,77 @@ impl GitHubForge {
     }
 }
 
-/// Run `program` with `args`, erroring on a non-zero exit. Used for the mutating
-/// commands where a non-zero status is a genuine failure.
+/// The most attempts `run` makes for a command that keeps failing transiently (the first try
+/// plus retries). Bounded so a real outage still fails and surfaces rather than hanging.
+const MAX_RUN_ATTEMPTS: u32 = 5;
+
+/// True when a failed command's stderr looks like a transient network/connection problem: the
+/// request most likely never reached the server or no response came back, so a retry is safe
+/// even for a mutating call. Deliberately NARROW: a genuine failure (a rejected push, a missing
+/// label, an unmergeable PR, a gate failure) must not match, or the engine would spin on it.
+fn is_transient_forge_error(stderr: &str) -> bool {
+    // Connection/transport failures from git and gh, plus the transient server-side HTTP codes.
+    // 4xx (a real client error) and a plain "rejected" are intentionally excluded.
+    const NEEDLES: &[&str] = &[
+        "error connecting to",
+        "could not resolve host",
+        "couldn't resolve host",
+        "temporary failure in name resolution",
+        "connection reset",
+        "connection refused",
+        "connection timed out",
+        "operation timed out",
+        "network is unreachable",
+        "the remote end hung up unexpectedly",
+        "unexpected disconnect",
+        "gnutls_handshake",
+        "openssl ssl_",
+        "tls connection",
+        "http 502",
+        "http 503",
+        "http 504",
+        "http 429",
+        "server error (502",
+        "server error (503",
+        "was submitted too quickly", // gh secondary rate limit
+    ];
+    let low = stderr.to_ascii_lowercase();
+    NEEDLES.iter().any(|n| low.contains(n))
+}
+
+/// Run `program` with `args`, erroring on a non-zero exit. Used for the mutating commands where
+/// a non-zero status is a genuine failure. Retries a transient network/connection failure with
+/// exponential backoff (see `is_transient_forge_error`), so a brief blip does not halt a
+/// long-running unattended drain; a persistent outage still fails after `MAX_RUN_ATTEMPTS`.
 async fn run(program: &str, args: &[&str], cwd: Option<&std::path::Path>) -> Result<String> {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let out = cmd
-        .output()
-        .await
-        .map_err(|e| EngineError::Forge(format!("{program} {:?}: {e}", args)))?;
-    if !out.status.success() {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        // A spawn failure (e.g. the binary is missing) is not transient: fail immediately.
+        let out = cmd
+            .output()
+            .await
+            .map_err(|e| EngineError::Forge(format!("{program} {:?}: {e}", args)))?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if is_transient_forge_error(&stderr) && attempt < MAX_RUN_ATTEMPTS {
+            // Exponential backoff: 0.5s, 1s, 2s, 4s. Bounded by MAX_RUN_ATTEMPTS.
+            let delay = std::time::Duration::from_millis(500 * (1u64 << (attempt - 1)));
+            tokio::time::sleep(delay).await;
+            continue;
+        }
         return Err(EngineError::Forge(format!(
             "{program} {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
+            args, stderr
         )));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run `program` and return its stdout REGARDLESS of exit status; only Err on a spawn
@@ -533,7 +584,36 @@ impl Forge for GitHubForge {
 
 #[cfg(test)]
 mod tests {
+    use super::is_transient_forge_error;
     use super::parse::parse_pr_number;
+
+    #[test]
+    fn transient_forge_errors_are_recognized_for_retry() {
+        // The exact stderr that halted a live drain, plus the common connection failures.
+        for s in [
+            "error connecting to api.github.com",
+            "fatal: unable to access '...': Could not resolve host: github.com",
+            "ssh: connect to host github.com port 22: Connection refused",
+            "fatal: unable to access: The requested URL returned error: HTTP 503",
+            "You have exceeded a secondary rate limit ... was submitted too quickly",
+        ] {
+            assert!(is_transient_forge_error(s), "should retry: {s}");
+        }
+    }
+
+    #[test]
+    fn real_failures_are_not_treated_as_transient() {
+        // Genuine errors must NOT retry, or the engine would spin on a real failure.
+        for s in [
+            "! [rejected] feat/issue-3 -> feat/issue-3 (stale info)",
+            "error: label 'status:foo' not found",
+            "pull request is not mergeable: the merge commit cannot be cleanly created",
+            "HTTP 404: Not Found",
+            "HTTP 422: Validation Failed",
+        ] {
+            assert!(!is_transient_forge_error(s), "should NOT retry: {s}");
+        }
+    }
 
     #[test]
     fn pr_number_parsing_via_open_pr_helper() {
