@@ -11,7 +11,7 @@
   import { renderMarkdown } from "$lib/markdown";
   import { autogrow } from "$lib/autogrow";
   import { ResizableWidth } from "$lib/resizable.svelte";
-  import { designBusy } from "$lib/stores";
+  import { designBusy, section, board } from "$lib/stores";
   import Resizer from "./Resizer.svelte";
   import {
     startAgent,
@@ -411,6 +411,14 @@
     try {
       seedReport = await api.designSeedBacklog(proposal.plan);
       proposal = null;
+      // Refresh the global board so the just-seeded issues are present the moment the user
+      // moves to the Board (via the "Go to the Board" button or the sidebar). Best-effort: a
+      // failed board read must not mask the successful seed.
+      try {
+        board.set(await api.getBoard());
+      } catch {
+        // Leave the board as-is; it reconciles on the next board read (a run, a re-switch).
+      }
     } catch (e) {
       error = String(e);
     } finally {
@@ -720,7 +728,13 @@
           </div>
         {:else if seedReport}
           <div class="seed-report">
-            Seeded {seedReport.created.length} issue(s), skipped {seedReport.skipped.length} already present.
+            <strong>Design complete.</strong>
+            Seeded {seedReport.created.length} issue(s), skipped {seedReport.skipped.length} already
+            present. Design is a one-time step per project. Head to the Board and hit Run to build
+            it; come back here only to extend the backlog later.
+            <div class="compose-actions">
+              <button class="accent" onclick={() => section.set("board")}>Go to the Board</button>
+            </div>
           </div>
         {:else if status.complete}
           <div class="compose-actions">

@@ -24,6 +24,21 @@ export const BOARD_BUCKETS: ColumnKey[] = [
   "done",
 ];
 
+/** The total number of issues across every board bucket. */
+export function boardIssueCount(board: Board): number {
+  return BOARD_BUCKETS.reduce((n, k) => n + board[k].length, 0);
+}
+
+/**
+ * Where to land when a project is opened. A project with no issues in any bucket has not been
+ * designed yet, so Design is the first thing to do; once a backlog exists, the Board is the
+ * working surface. A null board (nothing loaded) also lands on Design.
+ */
+export function landingSection(board: Board | null): "design" | "board" {
+  if (!board) return "design";
+  return boardIssueCount(board) === 0 ? "design" : "board";
+}
+
 /** A lane chip: one card plus the short style class its status maps to. */
 export type LaneChip = { card: IssueCard; cls: string };
 

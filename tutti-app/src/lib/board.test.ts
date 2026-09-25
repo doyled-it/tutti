@@ -10,6 +10,8 @@ import {
   columnFullySelected,
   pruneSelection,
   triageSummary,
+  landingSection,
+  boardIssueCount,
 } from "./board";
 import type { Board, IssueCard, TriageOutcome } from "./ipc";
 
@@ -29,6 +31,31 @@ function board(over: Partial<Board>): Board {
     ...over,
   };
 }
+
+describe("landingSection", () => {
+  it("lands on design for a never-designed (empty) project", () => {
+    expect(landingSection(board({}))).toBe("design");
+    expect(landingSection(null)).toBe("design");
+  });
+
+  it("lands on the board once any bucket has an issue", () => {
+    expect(landingSection(board({ ready: [card(1, "ready")] }))).toBe("board");
+    expect(landingSection(board({ done: [card(2, "done")] }))).toBe("board");
+    expect(landingSection(board({ untriaged: [card(3, "untriaged")] }))).toBe("board");
+  });
+
+  it("counts issues across every bucket", () => {
+    const b = board({
+      untriaged: [card(1, "untriaged")],
+      ready: [card(2, "ready")],
+      in_progress: [card(3, "in_progress")],
+      done: [card(4, "done")],
+      needs_human: [card(5, "needs_human")],
+    });
+    expect(boardIssueCount(b)).toBe(5);
+    expect(boardIssueCount(board({}))).toBe(0);
+  });
+});
 
 describe("boardColumns", () => {
   it("omits the untriaged column when the bucket is empty", () => {

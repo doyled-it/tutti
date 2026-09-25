@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Left rail: the persisted project list, an "add project" affordance, per-row switch and
-     remove, and the primary nav (Board, Orchestrator, and Subsessions are all live).
-     Switching is disabled while a run or chat turn is active. Resizable via a drag handle
-     on the right edge, with the width persisted to localStorage. -->
+     remove, and the primary nav, ordered by the workflow (Design, Board, Subsessions) with the
+     optional Orchestrator escape hatch below a separator. Switching is disabled while a run or
+     chat turn is active. Resizable via a drag handle on the right edge, width persisted to
+     localStorage. -->
 <script lang="ts">
   import { api } from "$lib/ipc";
   import type { Probe, ProjectEntry } from "$lib/ipc";
@@ -179,22 +180,38 @@
       {/if}
     </div>
 
+    <!--
+      Ordered by the workflow: Design first (shape the app + seed the backlog), then Board
+      (watch and drive the autonomous build), then Subsessions (live per-agent detail). The
+      Orchestrator is an optional escape hatch (chat to course-correct), so it sits below a
+      separator, deliberately last.
+    -->
     <nav class="nav">
-      <button class="nav-item" class:on={section === "board"} onclick={() => onSection?.("board")}
-        >Board</button
+      <button
+        class="nav-item"
+        class:on={section === "design"}
+        onclick={() => onSection?.("design")}
+        title="Start here: shape the app and seed the backlog">Design</button
       >
       <button
         class="nav-item"
-        class:on={section === "orchestrator"}
-        onclick={() => onSection?.("orchestrator")}>Orchestrator</button
+        class:on={section === "board"}
+        onclick={() => onSection?.("board")}
+        title="Watch and drive the autonomous build">Board</button
       >
       <button
         class="nav-item"
         class:on={section === "subsessions"}
-        onclick={() => onSection?.("subsessions")}>Subsessions</button
+        onclick={() => onSection?.("subsessions")}
+        title="Live per-agent activity while the build runs">Subsessions</button
       >
-      <button class="nav-item" class:on={section === "design"} onclick={() => onSection?.("design")}
-        >Design</button
+      <div class="nav-sep" role="separator" aria-orientation="horizontal"></div>
+      <button
+        class="nav-item muted"
+        class:on={section === "orchestrator"}
+        onclick={() => onSection?.("orchestrator")}
+        title="Optional: chat to course-correct or add one-off work the backlog missed"
+        >Orchestrator</button
       >
     </nav>
   </aside>
@@ -385,6 +402,17 @@
   .nav-item.on {
     background: var(--hover);
     font-weight: 600;
+  }
+  .nav-item.muted {
+    color: var(--text-dim);
+  }
+  .nav-item.muted.on {
+    color: var(--text);
+  }
+  .nav-sep {
+    height: 1px;
+    background: var(--border);
+    margin: 6px 6px;
   }
   button.nav-item {
     display: block;
