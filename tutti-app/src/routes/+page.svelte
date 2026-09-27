@@ -300,7 +300,12 @@
       const { board: nb, run: nr } = applyEvent($board, $runStatus, ev);
       board.set(nb);
       runStatus.set(nr);
-      if (ev.kind === "drain_complete") {
+      // Reconcile against forge truth after each ship (not only at the end of a drain pass):
+      // `applyEvent` moves the card between columns but does not recompute milestone progress,
+      // so the Roadmap rail would otherwise sit stale for the whole run. `drain_with` ships
+      // many issues per pass and emits `drain_complete` only once at the end, so refreshing on
+      // `issue_shipped` is what keeps the roadmap live as issues land.
+      if (ev.kind === "issue_shipped" || ev.kind === "drain_complete") {
         try {
           board.set(await api.getBoard($board?.selected_milestone ?? undefined));
         } catch {
