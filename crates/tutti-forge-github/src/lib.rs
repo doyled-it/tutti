@@ -45,8 +45,18 @@ impl GitHubForge {
     async fn pr_for_branch(&self, branch: &str) -> Result<PrHandle> {
         let out = self
             .gh(&[
-                "pr", "list", "--repo", &self.repo, "--head", branch, "--state", "open", "--json",
-                "number", "--jq", ".[0].number",
+                "pr",
+                "list",
+                "--repo",
+                &self.repo,
+                "--head",
+                branch,
+                "--state",
+                "open",
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number",
             ])
             .await?;
         let number = out.trim().parse::<u64>().map_err(|_| {
@@ -317,7 +327,9 @@ impl Forge for GitHubForge {
             // marked done leaves an open PR for this branch; on the retry `gh pr create` fails
             // with "already exists". Adopt the existing PR (recover its number) rather than
             // wedging the issue on a create that can never succeed.
-            Err(e) if pr_already_exists(&e.to_string()) => return self.pr_for_branch(&pr.head).await,
+            Err(e) if pr_already_exists(&e.to_string()) => {
+                return self.pr_for_branch(&pr.head).await
+            }
             Err(e) => return Err(e),
         };
         // gh prints the PR URL; the number is the last path segment of the URL line.
@@ -633,7 +645,9 @@ mod tests {
         ));
         assert!(pr_already_exists("A pull request already exists"));
         // Unrelated failures must not match.
-        assert!(!pr_already_exists("HTTP 422: Validation Failed (missing base)"));
+        assert!(!pr_already_exists(
+            "HTTP 422: Validation Failed (missing base)"
+        ));
         assert!(!pr_already_exists("could not resolve host"));
     }
 
