@@ -39,6 +39,38 @@ impl GitHubForge {
         run("git", args, Some(&self.repo_root)).await
     }
 
+    /// Recover the open PR whose head is `branch` (used to adopt a PR a prior interrupted run
+    /// already opened). Errors if none is found, which should not happen on the path that calls
+    /// this (a create that failed with "already exists").
+    async fn pr_for_branch(&self, branch: &str) -> Result<PrHandle> {
+        let out = self
+            .gh(&[
+                "pr",
+                "list",
+                "--repo",
+                &self.repo,
+                "--head",
+                branch,
+                "--state",
+                "open",
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number",
+            ])
+            .await?;
+        let number = out.trim().parse::<u64>().map_err(|_| {
+            EngineError::Forge(format!(
+                "no open PR found for branch '{branch}' to adopt (got '{}')",
+                out.trim()
+            ))
+        })?;
+        Ok(PrHandle {
+            number,
+            branch: branch.to_string(),
+        })
+    }
+
     /// Move an issue to `to` by adding its status label and removing the other two.
     /// `gh issue edit --add-label/--remove-label` is idempotent, so removing an
     /// already-absent label is a no-op.
@@ -85,6 +117,13 @@ fn is_transient_forge_error(stderr: &str) -> bool {
     ];
     let low = stderr.to_ascii_lowercase();
     NEEDLES.iter().any(|n| low.contains(n))
+}
+
+/// True when a `gh pr create` failure means a PR for the same branch already exists (a prior
+/// interrupted run opened it). Matched so the caller can adopt that PR instead of wedging.
+fn pr_already_exists(stderr: &str) -> bool {
+    let low = stderr.to_ascii_lowercase();
+    low.contains("already exists") || low.contains("a pull request for branch")
 }
 
 /// Run `program` with `args`, erroring on a non-zero exit. Used for the mutating commands where
@@ -276,12 +315,23 @@ impl Forge for GitHubForge {
     }
 
     async fn open_pr(&self, pr: PrRequest) -> Result<PrHandle> {
-        let out = self
+        let created = self
             .gh(&[
                 "pr", "create", "--repo", &self.repo, "--base", &pr.base, "--head", &pr.head,
                 "--title", &pr.title, "--body", &pr.body,
             ])
-            .await?;
+            .await;
+        let out = match created {
+            Ok(out) => out,
+            // A prior run that was interrupted AFTER opening the PR but before the issue was
+            // marked done leaves an open PR for this branch; on the retry `gh pr create` fails
+            // with "already exists". Adopt the existing PR (recover its number) rather than
+            // wedging the issue on a create that can never succeed.
+            Err(e) if pr_already_exists(&e.to_string()) => {
+                return self.pr_for_branch(&pr.head).await
+            }
+            Err(e) => return Err(e),
+        };
         // gh prints the PR URL; the number is the last path segment of the URL line.
         let number = parse::parse_pr_number(&out)
             .ok_or_else(|| EngineError::Forge(format!("could not parse PR number from '{out}'")))?;
@@ -584,8 +634,22 @@ impl Forge for GitHubForge {
 
 #[cfg(test)]
 mod tests {
-    use super::is_transient_forge_error;
     use super::parse::parse_pr_number;
+    use super::{is_transient_forge_error, pr_already_exists};
+
+    #[test]
+    fn pr_already_exists_is_detected() {
+        // The exact gh message that halted a live run, plus a lowercase variant.
+        assert!(pr_already_exists(
+            "gh [\"pr\", \"create\", ...] failed: a pull request for branch \"feat/issue-4\" into branch \"staging\" already exists: https://github.com/o/r/pull/54"
+        ));
+        assert!(pr_already_exists("A pull request already exists"));
+        // Unrelated failures must not match.
+        assert!(!pr_already_exists(
+            "HTTP 422: Validation Failed (missing base)"
+        ));
+        assert!(!pr_already_exists("could not resolve host"));
+    }
 
     #[test]
     fn transient_forge_errors_are_recognized_for_retry() {
