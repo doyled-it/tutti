@@ -385,6 +385,20 @@ impl Forge for GitHubForge {
         self.set_status(issue, Status::Done).await
     }
 
+    async fn comment(&self, issue: IssueId, body: &str) -> Result<()> {
+        self.gh(&[
+            "issue",
+            "comment",
+            &issue.0.to_string(),
+            "--repo",
+            &self.repo,
+            "--body",
+            body,
+        ])
+        .await
+        .map(|_| ())
+    }
+
     /// Reclaim issues abandoned by a crash: in-progress issues with no open PR go back
     /// to ready. The CLI calls this once before draining.
     async fn recover_stale(&self) -> Result<()> {

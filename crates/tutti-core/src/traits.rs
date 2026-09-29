@@ -106,6 +106,12 @@ pub trait Forge: Send + Sync {
     async fn merge(&self, pr: &PrHandle, how: MergeMode) -> Result<()>;
     /// Mark done, append decision log, unblock dependents.
     async fn record(&self, issue: IssueId, outcome: &ShipRecord) -> Result<()>;
+    /// Post a comment on an issue (e.g. why the engine parked it for a human). The default is a
+    /// no-op so an adapter that has not wired a comment API still compiles; a real adapter
+    /// overrides it. Best-effort at the call sites: a failed comment must not fail the action.
+    async fn comment(&self, _issue: IssueId, _body: &str) -> Result<()> {
+        Ok(())
+    }
     /// Reclaim issues abandoned by a crash (in-progress with no open PR/MR -> ready).
     /// The default is a no-op; real adapters override it. Called once before draining.
     async fn recover_stale(&self) -> Result<()> {

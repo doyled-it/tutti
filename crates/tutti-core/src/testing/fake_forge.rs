@@ -34,6 +34,8 @@ struct State {
     next_issue: u64,
     /// Issues whose `edit_labels` is scripted to fail (see `fail_label_edits_for`).
     label_edit_failures: HashSet<IssueId>,
+    /// Comments posted per issue via `comment`, so a park's recorded reason can be asserted.
+    comments: HashMap<IssueId, Vec<String>>,
     /// How many times each Forge read has been called, so a caller's COST claims can be
     /// asserted rather than assumed. Without this, a refactor that reintroduces a fetch per
     /// candidate ordering passes every behavioural test.
@@ -62,6 +64,17 @@ impl FakeForge {
             }),
             default_ci: Mutex::new(default_ci),
         }
+    }
+
+    /// The comments posted on `id` via `comment`, for assertions.
+    pub fn comments_for(&self, id: IssueId) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .comments
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The state of a milestone, for assertions.
@@ -163,6 +176,17 @@ impl FakeForge {
 
 #[async_trait]
 impl Forge for FakeForge {
+    async fn comment(&self, issue: IssueId, body: &str) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .comments
+            .entry(issue)
+            .or_default()
+            .push(body.to_string());
+        Ok(())
+    }
+
     async fn list_ready_issues(&self, filter: &SelectFilter) -> Result<Vec<Issue>> {
         let mut st = self.state.lock().unwrap();
         *st.calls.entry("list_ready_issues").or_default() += 1;
