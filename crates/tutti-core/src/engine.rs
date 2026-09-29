@@ -307,8 +307,22 @@ impl<'a> Engine<'a> {
         filter
     }
 
-    async fn park_for_human(&self, id: crate::domain::IssueId, hooks: &EngineHooks) -> Result<()> {
+    async fn park_for_human(
+        &self,
+        id: crate::domain::IssueId,
+        reason: &str,
+        hooks: &EngineHooks,
+    ) -> Result<()> {
         hooks.emit(EngineEvent::IssueParked { id: id.0 });
+        // Record WHY the issue was parked, so a human (and a later triage) can tell a genuine
+        // block from a transient failure instead of finding a bare `needs-human` label with no
+        // explanation. Best-effort: a failed comment must not prevent the park itself.
+        if !reason.trim().is_empty() {
+            let _ = self
+                .forge
+                .comment(id, &format!("Parked for a human by the engine: {reason}"))
+                .await;
+        }
         // Add exactly the needs-human park label (not the whole skip set) and drop the
         // in-progress label, so the selector no longer sees the issue and a human can
         // find it by the park label.
@@ -339,16 +353,14 @@ impl<'a> Engine<'a> {
             .run_role(Role::Implementer, issue, None, wt, hooks)
             .await?;
         if impl_out.status != AgentStatus::ReadyToShip {
-            self.park_for_human(issue.id, hooks).await?;
-            return Ok(IterOutcome::Blocked(
-                impl_out.blocked_reason.unwrap_or_default(),
-            ));
+            let reason = impl_out.blocked_reason.unwrap_or_default();
+            self.park_for_human(issue.id, &reason, hooks).await?;
+            return Ok(IterOutcome::Blocked(reason));
         }
         let Some(mut handoff) = impl_out.handoff else {
-            self.park_for_human(issue.id, hooks).await?;
-            return Ok(IterOutcome::Blocked(
-                "agent reported ReadyToShip but produced no handoff".into(),
-            ));
+            let reason = "agent reported ReadyToShip but produced no handoff".to_string();
+            self.park_for_human(issue.id, &reason, hooks).await?;
+            return Ok(IterOutcome::Blocked(reason));
         };
 
         // Stage: review + verify loop. Re-review every fix; a clean review (no
@@ -374,27 +386,24 @@ impl<'a> Engine<'a> {
 
             iterations += 1;
             if iterations > self.cfg.max_review_iterations {
-                self.park_for_human(issue.id, hooks).await?;
-                return Ok(IterOutcome::Blocked(
-                    "review did not converge: a blocking or major finding survived the fix \
-                     budget"
-                        .into(),
-                ));
+                let reason =
+                    "review did not converge: a blocking or major finding survived the fix budget"
+                        .to_string();
+                self.park_for_human(issue.id, &reason, hooks).await?;
+                return Ok(IterOutcome::Blocked(reason));
             }
             let fix_out = self
                 .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
                 .await?;
             if fix_out.status != AgentStatus::ReadyToShip {
-                self.park_for_human(issue.id, hooks).await?;
-                return Ok(IterOutcome::Blocked(
-                    fix_out.blocked_reason.unwrap_or_default(),
-                ));
+                let reason = fix_out.blocked_reason.unwrap_or_default();
+                self.park_for_human(issue.id, &reason, hooks).await?;
+                return Ok(IterOutcome::Blocked(reason));
             }
             let Some(fix_handoff) = fix_out.handoff else {
-                self.park_for_human(issue.id, hooks).await?;
-                return Ok(IterOutcome::Blocked(
-                    "fix applier reported ReadyToShip but produced no handoff".into(),
-                ));
+                let reason = "fix applier reported ReadyToShip but produced no handoff".to_string();
+                self.park_for_human(issue.id, &reason, hooks).await?;
+                return Ok(IterOutcome::Blocked(reason));
             };
             handoff = fix_handoff;
             // loop back and re-review the fix
@@ -411,10 +420,9 @@ impl<'a> Engine<'a> {
         // is genuinely nothing to ship.
         let committed = self.workspace.commit_all(handle, &handoff.pr_title).await?;
         if !committed && !self.workspace.has_commits(handle, base).await? {
-            self.park_for_human(issue.id, hooks).await?;
-            return Ok(IterOutcome::Blocked(
-                "agent produced no file changes to commit".into(),
-            ));
+            let reason = "agent produced no file changes to commit".to_string();
+            self.park_for_human(issue.id, &reason, hooks).await?;
+            return Ok(IterOutcome::Blocked(reason));
         }
 
         // Stage: merge (mechanical executor). CI is the gate for real forges;
@@ -1543,6 +1551,19 @@ mod tests {
         let labels = forge.labels_of(IssueId(1));
         assert!(labels.contains(&"status:needs-human".to_string()));
         assert!(!labels.contains(&"status:ready".to_string()));
+        // The park records WHY on the issue, so a human can tell a real block from a
+        // transient failure instead of finding a bare needs-human label.
+        let comments = forge.comments_for(IssueId(1));
+        assert_eq!(
+            comments.len(),
+            1,
+            "the park posts exactly one reason comment"
+        );
+        assert!(
+            comments[0].contains("needs a device"),
+            "the comment carries the agent's blocked reason: {}",
+            comments[0]
+        );
     }
 
     fn blocked_outcome() -> AgentOutcome {
