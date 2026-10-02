@@ -15,7 +15,8 @@
     dropTrailingEmptyAssistant,
     type ChatMessage,
   } from "$lib/orchestrator";
-  import { gateStatus, orchestratorBusy } from "$lib/stores";
+  import { get } from "svelte/store";
+  import { gateStatus, orchestratorBusy, pendingPrompt } from "$lib/stores";
   import { autogrow } from "$lib/autogrow";
   import TriageProposalCard from "./TriageProposalCard.svelte";
 
@@ -55,15 +56,8 @@
   });
 
   onMount(() => {
-    (async () => {
-      try {
-        const t = await api.getTranscript();
-        messages = t.messages.map((m) => ({ role: m.role, text: m.text, kind: m.kind ?? "text" }));
-      } catch (e) {
-        error = String(e);
-      }
-    })();
-
+    // Declared before the async setup below so the primed-prompt send can await these
+    // registrations (the orchestrator://* subscriptions must be live before the turn starts).
     const unlisteners = [
       api.onOrchestratorDelta((text) => {
         messages = appendDelta(messages, text);
@@ -87,6 +81,26 @@
         messages = appendProposal(messages, p);
       }),
     ];
+
+    (async () => {
+      try {
+        const t = await api.getTranscript();
+        messages = t.messages.map((m) => ({ role: m.role, text: m.text, kind: m.kind ?? "text" }));
+      } catch (e) {
+        error = String(e);
+      }
+      // A primed prompt (e.g. "Resolve in chat" on a parked issue) is sent once. Await the
+      // listener registrations first so the orchestrator://* subscriptions are live before the
+      // turn starts, otherwise a fast first delta could be missed. Cleared immediately so a
+      // later remount does not resend it.
+      const primed = get(pendingPrompt);
+      if (primed) {
+        pendingPrompt.set(null);
+        await Promise.all(unlisteners).catch(() => {});
+        void sendText(primed);
+      }
+    })();
+
     return () => {
       unlisteners.forEach((p) => p.then((u) => u()));
       // Defensive: if the pane unmounts mid-turn (e.g. switching to the board section), do
@@ -99,13 +113,21 @@
   async function send() {
     const text = draft.trim();
     if (!text || thinking) return;
-    error = null;
-    messages = [...messages, { role: "user", text, kind: "text" }];
     draft = "";
+    await sendText(text);
+  }
+
+  // Send one message (the composer's draft, or a primed prompt). Appends the user bubble and
+  // starts a turn; the reply streams in over the orchestrator://* listeners.
+  async function sendText(text: string) {
+    const t = text.trim();
+    if (!t || thinking) return;
+    error = null;
+    messages = [...messages, { role: "user", text: t, kind: "text" }];
     thinking = true;
     orchestratorBusy.set(true);
     try {
-      await api.sendOrchestratorMessage(text);
+      await api.sendOrchestratorMessage(t);
     } catch (e) {
       // The error event also fires; this catch covers a rejected invoke with no event.
       error = String(e);

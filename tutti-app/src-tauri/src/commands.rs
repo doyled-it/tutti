@@ -252,6 +252,153 @@ pub async fn get_issue(id: u64, state: tauri::State<'_, AppState>) -> Result<Iss
         .map_err(|e| e.to_string())
 }
 
+/// The gathered context for resolving a parked issue, fed to `build_parked_prompt`.
+pub(crate) struct ParkedContext {
+    pub id: u64,
+    pub title: String,
+    pub body: String,
+    pub branch: String,
+    /// The engine's recorded park reason (the "Parked for a human" comment body), or empty.
+    pub reason: String,
+    /// A one-line summary of the issue's PR (number, state, url), or None if there is no PR.
+    pub pr: Option<String>,
+    /// True when an isolated worktree for this issue still exists on disk to inspect.
+    pub has_worktree: bool,
+}
+
+/// Build the primed Orchestrator prompt that opens a resolution session for a parked issue.
+/// Open-ended by design: the reason a human is needed varies (a decision, real hardware, a
+/// genuine code problem, or just a transient failure), so the prompt hands the agent the full
+/// context and asks it to work out what is needed WITH the user rather than prescribing fixed
+/// actions. Pure, so it is unit-tested.
+pub(crate) fn build_parked_prompt(ctx: &ParkedContext) -> String {
+    let mut s = String::new();
+    s.push_str(&format!(
+        "Issue #{} is parked for a human (status:needs-human) and I want to un-clog it. \
+         Help me work out what it needs and then take the action we agree on.\n\n",
+        ctx.id
+    ));
+    s.push_str(&format!("## #{} {}\n\n", ctx.id, ctx.title));
+    if !ctx.body.trim().is_empty() {
+        s.push_str(&ctx.body);
+        s.push_str("\n\n");
+    }
+    s.push_str("## Why the engine parked it\n\n");
+    if ctx.reason.trim().is_empty() {
+        s.push_str("No reason was recorded on the issue.\n\n");
+    } else {
+        s.push_str(&ctx.reason);
+        s.push_str("\n\n");
+    }
+    s.push_str("## State\n\n");
+    s.push_str(&format!("- Branch: `{}`\n", ctx.branch));
+    match &ctx.pr {
+        Some(pr) => s.push_str(&format!("- PR: {pr}\n")),
+        None => s.push_str("- PR: none open for this branch\n"),
+    }
+    if ctx.has_worktree {
+        s.push_str(&format!(
+            "- A worktree exists at `.worktrees/tutti-issue-{}` with the agent's in-progress \
+             changes to inspect.\n",
+            ctx.id
+        ));
+    }
+    s.push_str(
+        "\n## What I need from you\n\n\
+         Investigate as needed (read the full issue and its comments with `gh`, check the PR and \
+         its CI, inspect the worktree diff if one exists). Then tell me what is actually blocking \
+         it and the options. The reason could be a decision for me to make, something that needs \
+         real hardware or an external step, a genuine defect to fix, or just a transient failure. \
+         Once we agree, take the action: that may be re-queueing it (\
+         `gh issue edit <N> --add-label status:ready --remove-label status:needs-human`), \
+         editing the issue to clarify scope or acceptance, making a fix, or leaving it parked with \
+         a note. Start by telling me what you find.",
+    );
+    s
+}
+
+/// Assemble the primed resolution prompt for a parked issue: its content, the engine's recorded
+/// park reason, any PR, and whether a worktree remains. The Orchestrator agent takes it from
+/// there (it runs in the repo with `gh`/`git`).
+#[tauri::command]
+pub async fn parked_prompt(id: u64, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let (repo, repo_root, detail) = {
+        let guard = state.project.lock().await;
+        let p = guard.as_ref().ok_or("no project loaded")?;
+        let detail = issue_detail(p.forge.as_ref(), &p.config, id)
+            .await
+            .map_err(|e| e.to_string())?;
+        (p.repo.clone(), p.repo_root.clone(), detail)
+    };
+
+    // The park reason: the latest "Parked for a human" comment the engine wrote (best effort).
+    let reason = gh(&[
+        "issue",
+        "view",
+        &id.to_string(),
+        "--repo",
+        &repo,
+        "--json",
+        "comments",
+        "--jq",
+        "[.comments[] | select(.body | startswith(\"Parked for a human\"))] | last.body // \"\"",
+    ])
+    .await
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+
+    // Any PR for this branch (best effort): "#<n> <state> <url>".
+    let pr = gh(&[
+        "pr",
+        "list",
+        "--repo",
+        &repo,
+        "--head",
+        &detail.branch,
+        "--state",
+        "all",
+        "--json",
+        "number,state,url",
+        "--jq",
+        ".[0] | select(. != null) | \"#\\(.number) \\(.state) \\(.url)\"",
+    ])
+    .await
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+
+    let has_worktree = repo_root
+        .join(".worktrees")
+        .join(format!("tutti-issue-{id}"))
+        .is_dir();
+
+    Ok(build_parked_prompt(&ParkedContext {
+        id,
+        title: detail.title,
+        body: detail.body,
+        branch: detail.branch,
+        reason,
+        pr,
+        has_worktree,
+    }))
+}
+
+/// Run `gh` with `args`, returning stdout on success. Best-effort helper for the parked-issue
+/// context assembly (a failure degrades to missing context, never a hard error).
+async fn gh(args: &[&str]) -> Result<String, String> {
+    let out = tokio::process::Command::new("gh")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
 #[tauri::command]
 pub async fn start_run(
     app: tauri::AppHandle,
@@ -746,6 +893,46 @@ mod browse_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parked_prompt_carries_the_full_context() {
+        let ctx = ParkedContext {
+            id: 42,
+            title: "Compute magic numbers".into(),
+            body: "Acceptance: a magic number per race.".into(),
+            branch: "feat/issue-42".into(),
+            reason: "Parked for a human by the engine: needs a decision on tie-breaks".into(),
+            pr: Some("#7 OPEN https://example/pull/7".into()),
+            has_worktree: true,
+        };
+        let p = build_parked_prompt(&ctx);
+        assert!(p.contains("#42"));
+        assert!(p.contains("Compute magic numbers"));
+        assert!(p.contains("Acceptance: a magic number per race."));
+        assert!(p.contains("needs a decision on tie-breaks"));
+        assert!(p.contains("feat/issue-42"));
+        assert!(p.contains("#7 OPEN"));
+        assert!(p.contains(".worktrees/tutti-issue-42"));
+        // Open-ended: it must invite the agent to investigate and not prescribe a single action.
+        assert!(p.contains("Investigate"));
+    }
+
+    #[test]
+    fn parked_prompt_handles_a_missing_reason_pr_and_worktree() {
+        let ctx = ParkedContext {
+            id: 5,
+            title: "X".into(),
+            body: String::new(),
+            branch: "feat/issue-5".into(),
+            reason: String::new(),
+            pr: None,
+            has_worktree: false,
+        };
+        let p = build_parked_prompt(&ctx);
+        assert!(p.contains("No reason was recorded"));
+        assert!(p.contains("PR: none open"));
+        assert!(!p.contains(".worktrees/"));
+    }
 
     #[test]
     fn params_from_maps_every_field() {

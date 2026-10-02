@@ -22,10 +22,14 @@
     issue,
     loading,
     onClose,
+    onResolve = null,
   }: {
     issue: IssueDetail | null;
     loading: boolean;
     onClose: () => void;
+    // Open a context-primed Orchestrator session to resolve a parked issue. Only wired for a
+    // needs-human issue; the host assembles the prompt and switches to the chat.
+    onResolve?: ((id: number) => void) | null;
   } = $props();
 
   // Typed as Record<Status, string> rather than Record<string, string> so adding a board
@@ -112,6 +116,11 @@
       <div class="content">
         <div class="issue-title">#{issue.id} {issue.title}</div>
         <span class={`badge ${issue.status}`}>{statusLabel[issue.status]}</span>
+
+        {#if issue.status === "needs_human" && onResolve}
+          {@const parked = issue}
+          <button class="resolve" onclick={() => onResolve(parked.id)}> Resolve in chat </button>
+        {/if}
 
         <div class="kv"><b>Milestone</b>{issue.milestone ?? "None"}</div>
         <div class="kv labels-row">
@@ -239,6 +248,19 @@
   .badge.untriaged {
     border-color: var(--border);
     background: var(--hover);
+  }
+  .resolve {
+    display: block;
+    margin: 2px 0 12px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--on-accent);
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
   }
   .kv {
     font-size: 11px;

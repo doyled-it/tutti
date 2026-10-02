@@ -21,6 +21,7 @@
     gateStatus,
     subsessions,
     clearSubsessions,
+    pendingPrompt,
   } from "$lib/stores";
   import { applySubsession } from "$lib/subsessions";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -250,6 +251,20 @@
     issueDetail = null;
   }
 
+  // "Resolve in chat" on a parked issue: assemble its full context into a primed prompt, hand it
+  // to the Orchestrator, and switch there. The pane sends it on mount, so the chat opens already
+  // working the issue. Open-ended on purpose, the reason a human is needed varies.
+  async function resolveInChat(id: number) {
+    try {
+      const prompt = await api.parkedPrompt(id);
+      pendingPrompt.set(prompt);
+      closeDrawer();
+      section.set("orchestrator");
+    } catch (e) {
+      loadError = String(e);
+    }
+  }
+
   async function run() {
     try {
       // Clear BEFORE the await: `start_run` returns as soon as the run loop is spawned, so a
@@ -401,7 +416,12 @@
           <LanesView board={$board} onSelectIssue={selectIssue} />
         {/if}
         {#if $selectedIssueId !== null}
-          <IssueDrawer issue={issueDetail} loading={issueLoading} onClose={closeDrawer} />
+          <IssueDrawer
+            issue={issueDetail}
+            loading={issueLoading}
+            onClose={closeDrawer}
+            onResolve={resolveInChat}
+          />
         {:else}
           <RoadmapRail
             milestones={$board.milestones}
