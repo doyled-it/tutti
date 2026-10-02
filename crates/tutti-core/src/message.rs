@@ -57,6 +57,10 @@ pub enum AgentStatus {
     ReadyToShip,
     Blocked,
     Error,
+    /// The run was cut short by a usage/rate limit (a capacity condition, not a defect in the
+    /// issue). The engine treats this as transient: it releases the issue back to ready and
+    /// stops the drain rather than parking the issue for a human.
+    RateLimited,
 }
 
 /// Token/cost accounting for one run.

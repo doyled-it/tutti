@@ -86,7 +86,9 @@ impl ClaudeBackend {
             || (result.is_none() && stream::hit_usage_limit(full_output));
         if limit {
             return Ok(AgentOutcome {
-                status: AgentStatus::Error,
+                // A usage/rate limit is transient capacity, not a defect in the issue: the engine
+                // releases and stops rather than parking for a human.
+                status: AgentStatus::RateLimited,
                 handoff: None,
                 review: None,
                 plan: None,
@@ -501,7 +503,7 @@ mod outcome_tests {
     }
 
     #[test]
-    fn rate_limit_event_rejected_maps_to_error() {
+    fn rate_limit_event_rejected_maps_to_rate_limited() {
         // A structured rate_limit_event whose status is not "allowed" is a limit.
         let scan = stream::scan_stream(
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}"#,
@@ -520,12 +522,12 @@ mod outcome_tests {
                 "",
             )
             .unwrap();
-        assert_eq!(out.status, AgentStatus::Error);
+        assert_eq!(out.status, AgentStatus::RateLimited);
         assert!(out.summary.contains("limit"));
     }
 
     #[test]
-    fn usage_limit_maps_to_error() {
+    fn usage_limit_maps_to_rate_limited() {
         let dir = tempfile::tempdir().unwrap();
         let be = ClaudeBackend::default();
         // Defensive fallback: no result event captured, but the transcript carries a clear
@@ -541,7 +543,7 @@ mod outcome_tests {
                 "",
             )
             .unwrap();
-        assert_eq!(out.status, AgentStatus::Error);
+        assert_eq!(out.status, AgentStatus::RateLimited);
     }
 
     #[test]

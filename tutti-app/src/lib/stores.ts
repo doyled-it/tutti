@@ -69,7 +69,7 @@ export function applyEvent(
   ev: EngineEvent,
 ): { board: Board | null; run: RunUi } {
   if (!b) return { board: b, run: r };
-  const move = (id: number, to: "ready" | "in_progress" | "done") => {
+  const move = (id: number, to: "ready" | "in_progress" | "done" | "needs_human") => {
     // Search and strip EVERY bucket, including the two upstream ones: if the board is
     // stale relative to the forge (an issue was relabeled status:ready and claimed before
     // the next full refresh), a claim event can target a card still sitting in untriaged
@@ -106,6 +106,13 @@ export function applyEvent(
         run: { ...r, shipped: r.shipped + 1, current: undefined },
       };
     case "issue_released":
+      return { board: move(ev.id, "ready"), run: { ...r, current: undefined } };
+    case "issue_parked":
+      // A blocked issue dropped from the ready pool to needs-human for a person to look at.
+      return { board: move(ev.id, "needs_human"), run: { ...r, current: undefined } };
+    case "rate_limited":
+      // A usage/rate limit released the issue back to ready and stopped the run. The banner in
+      // the host surfaces the "paused, re-run when it clears" message; here just reflect the move.
       return { board: move(ev.id, "ready"), run: { ...r, current: undefined } };
     case "drain_complete":
       // A per-pass completion, not the end of the run: the continuous loop drains again

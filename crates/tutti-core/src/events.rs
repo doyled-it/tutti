@@ -28,6 +28,12 @@ pub enum EngineEvent {
     IssueParked {
         id: u64,
     },
+    /// The run hit a usage/rate limit and stopped. The issue was released back to ready (not
+    /// parked), so re-running once the limit clears resumes it. A transient capacity signal the
+    /// UI surfaces so the user knows to wait and re-run, not that something is broken.
+    RateLimited {
+        id: u64,
+    },
     DrainComplete {
         shipped: u32,
     },

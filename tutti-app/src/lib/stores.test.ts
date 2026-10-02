@@ -54,6 +54,25 @@ describe("applyEvent", () => {
     expect(run.current).toBeUndefined();
   });
 
+  it("rate_limited moves the card back to ready (never parked) and clears current", () => {
+    const claimed = applyEvent(base, idle, { kind: "issue_claimed", id: 10, title: "a" });
+    const { board, run } = applyEvent(claimed.board, claimed.run, {
+      kind: "rate_limited",
+      id: 10,
+    });
+    expect(board!.ready.map((c) => c.id)).toEqual([10]);
+    expect(board!.needs_human).toEqual([]);
+    expect(board!.in_progress).toEqual([]);
+    expect(run.current).toBeUndefined();
+  });
+
+  it("issue_parked moves the card to needs_human", () => {
+    const claimed = applyEvent(base, idle, { kind: "issue_claimed", id: 10, title: "a" });
+    const { board } = applyEvent(claimed.board, claimed.run, { kind: "issue_parked", id: 10 });
+    expect(board!.needs_human.map((c) => c.id)).toEqual([10]);
+    expect(board!.in_progress).toEqual([]);
+  });
+
   it("an event for an id not on the board does not corrupt state", () => {
     const { board } = applyEvent(base, idle, { kind: "issue_shipped", id: 999 });
     expect(board!.ready.map((c) => c.id)).toEqual([10]);
