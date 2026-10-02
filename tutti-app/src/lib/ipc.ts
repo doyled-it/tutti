@@ -210,6 +210,7 @@ export const api = {
   removeProject: (dir: string) => invoke<void>("remove_project", { dir }),
   getBoard: (milestone?: number) => invoke<Board>("get_board", { milestone: milestone ?? null }),
   getIssue: (id: number) => invoke<IssueDetail>("get_issue", { id }),
+  parkedPrompt: (id: number) => invoke<string>("parked_prompt", { id }),
   applyTriage: (issues: number[], to: TriageTarget) =>
     invoke<TriageOutcome>("apply_triage", { issues, to }),
   previewTriage: (issues: number[], to: TriageTarget) =>

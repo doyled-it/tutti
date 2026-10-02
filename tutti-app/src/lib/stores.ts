@@ -36,6 +36,13 @@ export const view = writable<"board" | "lanes">("board");
 export const section = writable<"board" | "orchestrator" | "subsessions" | "design">("board");
 
 /**
+ * A primed Orchestrator message waiting to be sent. "Resolve in chat" on a parked issue sets
+ * this to the context prompt and switches to the orchestrator; the pane sends it once on mount
+ * (after its listeners attach) and clears it, so the chat opens already working the issue.
+ */
+export const pendingPrompt = writable<string | null>(null);
+
+/**
  * True while an orchestrator chat turn is in flight. The sidebar blocks project switch/add/
  * remove while it is set (the same posture as an active engine run), so a project cannot be
  * swapped out from under a running turn. The backend enforces its own single-flight guard;
