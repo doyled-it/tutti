@@ -300,6 +300,11 @@
       const { board: nb, run: nr } = applyEvent($board, $runStatus, ev);
       board.set(nb);
       runStatus.set(nr);
+      if (ev.kind === "rate_limited") {
+        // Transient capacity, not a failure: the issue is back in Ready. Tell the user to
+        // re-run once the limit clears rather than leaving a silent stop.
+        loadError = `Paused: hit a usage/rate limit on #${ev.id}. The issue is back in Ready. Re-run when the limit clears to resume.`;
+      }
       // Reconcile against forge truth after each ship (not only at the end of a drain pass):
       // `applyEvent` moves the card between columns but does not recompute milestone progress,
       // so the Roadmap rail would otherwise sit stale for the whole run. `drain_with` ships

@@ -40,6 +40,9 @@ pub enum IterOutcome {
     StoppedCiRed,
     // Reserved for the gate stage, wired with the live implement adapter (not produced in slice 1).
     StoppedGateRed,
+    /// A role run hit a usage/rate limit. The issue was released back to ready (not parked), and
+    /// the drain stops so re-running once the limit clears resumes it. Transient, not a defect.
+    StoppedRateLimited,
 }
 
 pub struct Engine<'a> {
@@ -337,6 +340,24 @@ impl<'a> Engine<'a> {
             .await
     }
 
+    /// If `out` ended on a usage/rate limit, release the issue back to ready (not parked), emit
+    /// the `RateLimited` event, and return the stop outcome. A rate limit is transient capacity,
+    /// so the issue must stay in the ready pool for a re-run once it clears, never be parked for a
+    /// human. Returns `None` when `out` is not rate-limited, so the caller proceeds normally.
+    async fn stop_if_rate_limited(
+        &self,
+        id: crate::domain::IssueId,
+        out: &AgentOutcome,
+        hooks: &EngineHooks,
+    ) -> Result<Option<IterOutcome>> {
+        if out.status != AgentStatus::RateLimited {
+            return Ok(None);
+        }
+        hooks.emit(EngineEvent::RateLimited { id: id.0 });
+        self.forge.release(id).await?;
+        Ok(Some(IterOutcome::StoppedRateLimited))
+    }
+
     /// The stage pipeline for a claimed issue, run inside an already-created worktree.
     async fn run_stages(
         &self,
@@ -352,6 +373,12 @@ impl<'a> Engine<'a> {
         let impl_out = self
             .run_role(Role::Implementer, issue, None, wt, hooks)
             .await?;
+        if let Some(stop) = self
+            .stop_if_rate_limited(issue.id, &impl_out, hooks)
+            .await?
+        {
+            return Ok(stop);
+        }
         if impl_out.status != AgentStatus::ReadyToShip {
             let reason = impl_out.blocked_reason.unwrap_or_default();
             self.park_for_human(issue.id, &reason, hooks).await?;
@@ -374,6 +401,14 @@ impl<'a> Engine<'a> {
             let review_out = self
                 .run_role(Role::Reviewer, issue, None, wt, hooks)
                 .await?;
+            // Check for a rate limit BEFORE defaulting a missing review to Approve, or a
+            // rate-limited (empty) review would be treated as a clean approval and shipped.
+            if let Some(stop) = self
+                .stop_if_rate_limited(issue.id, &review_out, hooks)
+                .await?
+            {
+                return Ok(stop);
+            }
             let report = review_out.review.unwrap_or(ReviewReport {
                 findings: vec![],
                 verdict: crate::message::Verdict::Approve,
@@ -395,6 +430,9 @@ impl<'a> Engine<'a> {
             let fix_out = self
                 .run_role(Role::FixApplier, issue, Some(report), wt, hooks)
                 .await?;
+            if let Some(stop) = self.stop_if_rate_limited(issue.id, &fix_out, hooks).await? {
+                return Ok(stop);
+            }
             if fix_out.status != AgentStatus::ReadyToShip {
                 let reason = fix_out.blocked_reason.unwrap_or_default();
                 self.park_for_human(issue.id, &reason, hooks).await?;
@@ -487,6 +525,7 @@ impl<'a> Engine<'a> {
         hooks.emit(EngineEvent::DrainStarted);
         let mut shipped = 0;
         let mut consecutive_blocks = 0u32;
+        let mut rate_limited = false;
         for _ in 0..self.cfg.max_issues_per_run {
             if hooks.cancelled() {
                 break;
@@ -508,11 +547,20 @@ impl<'a> Engine<'a> {
                     }
                     continue;
                 }
+                // A usage/rate limit: the issue is already released back to ready, so stop the
+                // drain (re-running once the limit clears resumes it). Not a block, not a park.
+                IterOutcome::StoppedRateLimited => {
+                    rate_limited = true;
+                    break;
+                }
                 // A red CI or gate leaves a PR open: a genuine stop-for-human.
                 _ => break,
             }
         }
-        let plan = if shipped > 0 {
+        // Skip the planner when the pass ended on a rate limit: the same exhausted capacity
+        // would just fail the planner run too (silently defaulting to Stop with no signal), so
+        // a wasted agent call is avoided and the planning is deferred to the resuming run.
+        let plan = if shipped > 0 && !rate_limited {
             let decision = self.plan(hooks).await?;
             self.execute_plan(&decision).await?;
             Some(decision)
@@ -697,6 +745,12 @@ pub(crate) fn subsession_summary(role: Role, out: &Result<AgentOutcome>) -> (Str
         Ok(o) => o,
         Err(e) => return (format!("error: {e}"), false),
     };
+    // A usage/rate limit is role-independent and transient: say so plainly rather than let a
+    // rate-limited reviewer (empty report) read as "approved" or an implementer as a plain
+    // "blocked", which would misrepresent a capacity pause as a verdict on the issue.
+    if outcome.status == AgentStatus::RateLimited {
+        return ("rate-limited (released to ready)".to_string(), false);
+    }
     match role {
         Role::Implementer | Role::FixApplier | Role::Greener => {
             if outcome.status == AgentStatus::ReadyToShip {
@@ -1576,6 +1630,49 @@ mod tests {
             usage: Usage::default(),
             blocked_reason: Some("needs a human".into()),
         }
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_releases_the_issue_to_ready_and_does_not_park() {
+        // A usage/rate limit is transient capacity, so the issue must go back to the ready pool
+        // for a re-run, never be parked for a human (which is what happened before this fix).
+        let cfg = cfg();
+        let forge = FakeForge::new(vec![ready(1)], CiState::Pass);
+        let rate_limited = AgentOutcome {
+            status: AgentStatus::RateLimited,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "usage/rate limit".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("usage/rate limit".into()),
+        };
+        let backend = FakeBackend::new().script(Role::Implementer, rate_limited);
+        let engine = Engine::new(
+            &cfg,
+            &forge,
+            &backend,
+            Box::new(crate::workspace::NoopWorkspace::default()),
+        )
+        .unwrap();
+
+        let (shipped, _plan) = engine.drain().await.unwrap();
+        assert_eq!(shipped, 0, "a rate limit ships nothing and stops the drain");
+        // The issue is back in the ready pool, NOT parked for a human.
+        let labels = forge.labels_of(IssueId(1));
+        assert!(
+            labels.contains(&"status:ready".to_string()),
+            "the issue is released to ready: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"status:needs-human".to_string()),
+            "a rate limit must not park the issue: {labels:?}"
+        );
+        // No park comment, since nothing was parked.
+        assert!(
+            forge.comments_for(IssueId(1)).is_empty(),
+            "a rate limit records no park reason"
+        );
     }
 
     #[tokio::test]
@@ -2685,6 +2782,26 @@ mod tests {
         let (text, ok) = subsession_summary(Role::FixApplier, &err);
         assert!(!ok);
         assert!(text.starts_with("error:"), "got {text}");
+
+        // A rate-limited outcome reads as rate-limited for EVERY role (not "approved" for a
+        // reviewer with no report, nor a plain "blocked" for an implementer).
+        let limited = AgentOutcome {
+            status: AgentStatus::RateLimited,
+            handoff: None,
+            review: None,
+            plan: None,
+            summary: "usage/rate limit".into(),
+            usage: Usage::default(),
+            blocked_reason: Some("usage/rate limit".into()),
+        };
+        for role in [Role::Reviewer, Role::Implementer, Role::Planner] {
+            let (text, ok) = subsession_summary(role, &Ok(limited.clone()));
+            assert!(!ok, "{role:?} rate-limited must not show a success dot");
+            assert!(
+                text.contains("rate-limited"),
+                "{role:?} rate-limited summary should say so: {text}"
+            );
+        }
     }
 
     #[tokio::test]

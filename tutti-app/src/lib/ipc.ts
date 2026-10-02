@@ -185,6 +185,8 @@ export type EngineEvent =
   | { kind: "issue_claimed"; id: number; title: string }
   | { kind: "issue_shipped"; id: number }
   | { kind: "issue_released"; id: number }
+  | { kind: "issue_parked"; id: number }
+  | { kind: "rate_limited"; id: number }
   | { kind: "drain_complete"; shipped: number };
 
 // Mirrors tutti_core::message::Role (serde snake_case).
